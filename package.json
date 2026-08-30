@@ -1,0 +1,23 @@
+{
+  "name": "vike-react-hello-world",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vike dev --host 0.0.0.0 --port 43123",
+    "build": "vike build",
+    "preview": "vike build && vike preview --host 0.0.0.0 --port 43123"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vike": "^0.4.260",
+    "vike-react": "^0.6.25"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.1"
+  }
+}
