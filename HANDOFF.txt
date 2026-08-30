@@ -1,0 +1,43 @@
+SHORT DRAMA MAKER — continue from here
+
+Repo: https://github.com/nocodeprocode/short-drama-maker
+Work on branch: staging (development)
+main = production (currently one commit behind staging)
+
+What this is
+A Vike + React + Vite app with SSR enabled. First slice is a Hello World page.
+Official scaffold: create-vike / Bati with --react, then trimmed to one page.
+
+Run locally
+Node 22+
+npm install
+npm run dev
+Dev server: http://127.0.0.1:43123
+npm run build / npm run preview for production.
+
+Layout
+pages/+config.ts — Vike settings, ssr: true, vike-react
+pages/+Layout.tsx + pages/Layout.css — shell
+pages/index/+Page.tsx — Hello World (/)
+pages/_error/+Page.tsx — 404 and errors
+vite.config.ts — Vite + Vike + React, port 43123
+.cursor/mcp.json — hosted Supabase MCP (https://mcp.supabase.com/mcp)
+
+Already done
+- GitHub account nocodeprocode linked with gh auth (device login). Clone and push work.
+- staging and main created and pushed to GitHub. Same first demo snapshot was shipped to both.
+- Later work (Supabase MCP config) is on staging only. Stay on staging for new edits.
+- Demo verified: typecheck, production build, SSR HTML contains Hello World, 404 page works.
+
+Supabase (not finished)
+The Cursor Supabase plugin is installed on Cloud Agents as namespace "Supabase" but needsAuth.
+Plugins marketplace has no login button. Authenticate from cursor.com/agents → MCP dropdown (not Plugins), or add HTTP MCP url https://mcp.supabase.com/mcp and Connect.
+Cloud Agent cannot complete OAuth itself. Desktop login does not carry over.
+Fallback: Supabase PAT at https://supabase.com/dashboard/account/tokens, then MCP header Authorization: Bearer <token>. Do not commit the token.
+
+Next
+1. Open this repo locally, checkout staging.
+2. Authenticate Supabase MCP in Cursor desktop or cursor.com/agents MCP panel.
+3. Then wire Supabase into the Vike app if needed.
+
+Do not mention any temporary Cursor-hosted repo. GitHub is the source of truth.
