@@ -63,9 +63,15 @@ p {
   line-height: 1.55;
 }
 
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
 .badge {
   display: inline-block;
-  margin-top: 18px;
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -74,6 +80,21 @@ p {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--accent);
+}
+
+.badge-ok {
+  color: #2f6a3a;
+  border-color: #c9ddc8;
+}
+
+.badge-warn {
+  color: #8a4b12;
+  border-color: #ead2b2;
+}
+
+.status {
+  margin-top: 12px;
+  font-size: 0.92rem;
 }
 
 @media (max-width: 640px) {

@@ -25,6 +25,18 @@ npm run dev
 
 The SSR development server listens on [http://127.0.0.1:43123](http://127.0.0.1:43123).
 
+## Supabase
+
+This app talks to the `short-drama-maker` Supabase project through the official JavaScript client and the publishable key.
+
+```sh
+cp .env.example .env.local
+```
+
+Then fill in `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` from the project Connect panel. Do not put a secret or `service_role` key in this repo.
+
+The home page fetches Auth health during SSR so the first HTML already includes the connection status.
+
 ## Scripts
 
 | Command | What it does |
