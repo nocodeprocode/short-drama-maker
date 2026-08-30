@@ -1,3 +1,6 @@
+# Nested GitHub clone used only as a remote working copy
+/short-drama-maker/
+
 # MacOS
 .DS_Store
 

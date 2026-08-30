@@ -1,8 +1,15 @@
-# Vike React Hello World
+# Short Drama Maker
 
-A minimal [Vike](https://vike.dev) app that uses React and Vite with server-side rendering enabled. The home page is a Hello World demo.
+A [Vike](https://vike.dev) + React + Vite app with server-side rendering. The first slice is a Hello World demo.
 
 Generated from [vike.dev/new](https://vike.dev/new) (`create-vike` / Bati) with `--react`, then reduced to a single page.
+
+## Branches
+
+| Branch | Role |
+| --- | --- |
+| `staging` | Development. New work lands here. |
+| `main` | Production. Promote a verified `staging` snapshot here. |
 
 ## Requirements
 
