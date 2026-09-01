@@ -14,7 +14,7 @@ import { DIALOGUE_MAX_WORDS, dialogueTooClose, wordCount } from "../types/dialog
 import { LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
 import { isLongFormLength } from "../../engine/config/catalog.ts";
 import { recapBudgetSeconds } from "../plans/index.ts";
-import type { ValidatePlanInput } from "./validate-plan.ts";
+import { lineInMotion, type ValidatePlanInput } from "./validate-plan.ts";
 
 const BLOCK_CRAFT: LengthBudget = {
   length: "60_90",
@@ -223,6 +223,20 @@ function growToWindow(shots: PlanShot[], budget: LengthBudget): PlanShot[] {
 
 function sealBeats(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudget): PlanShot[] {
   if (!shots.length) return shots;
+  // A flat opening line ("Good morning, how was the flight") is not a hook.
+  // Pull the first line that is already in motion to the front; if none is,
+  // sharpen the opener into a question so the explosion lands by 3s.
+  if (shots[0]!.dialogue && !lineInMotion(shots[0]!.dialogue)) {
+    const motionAt = shots.findIndex((shot, index) => index > 0 && index < shots.length - 1 && shot.dialogue && lineInMotion(shot.dialogue) && !shot.recap);
+    if (motionAt > 0) {
+      const [moved] = shots.splice(motionAt, 1);
+      shots.unshift(moved!);
+    } else {
+      const opener = shots[0]!;
+      const line = opener.dialogue!.replace(/[.!\s]+$/, "");
+      opener.dialogue = `${line.split(/\s+/).slice(0, 6).join(" ")}?`;
+    }
+  }
   const first = shots[0]!;
   if (!first.dialogue) {
     first.type = "broll";

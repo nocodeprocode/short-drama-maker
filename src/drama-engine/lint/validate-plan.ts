@@ -34,6 +34,28 @@ function shotsOf(plan: EpisodePlan) {
   return plan.scenes.flatMap((scene) => scene.shots);
 }
 
+const MOTION_WORDS =
+  /\b(you|don'?t|stop|where|who|why|how|what|when|liar|lied|lie|knew|never|again|enough|get out|leave|now|dead|married|pregnant|paper|tuesday|three months|explain|admit|say it|look)\b/i;
+
+/** A line already in motion: a question, an exclamation, or a short accusatory punch. */
+export function lineInMotion(line: string | null | undefined): boolean {
+  const text = (line ?? "").trim();
+  if (!text) return false;
+  if (/[?!]\s*$/.test(text) || text.includes("?")) return true;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length <= 6 && MOTION_WORDS.test(text)) return true;
+  return words.length <= 4;
+}
+
+const REVERSAL_WORDS = /\b(but|unless|until|except|not (?:my|your|his|her)|never (?:was|were)|isn'?t (?:mine|yours|his|hers)|wasn'?t (?:me|him|her)|someone|who else|whose)\b/i;
+
+/** A button that leaves something unpaid: a question mark or a reversal. */
+export function asksAQuestion(text: string | null | undefined): boolean {
+  const line = (text ?? "").trim();
+  if (!line) return false;
+  return line.includes("?") || REVERSAL_WORDS.test(line);
+}
+
 function norm(name: string): string {
   return name.trim().toLowerCase();
 }
@@ -115,9 +137,21 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   const first = shots[hookIndex] ?? shots[0];
   const firstFn = first ? inferFunction(first, hookIndex, shots.length) : undefined;
   const recapSeconds = shots.filter((shot) => shot.recap).reduce((sum, shot) => sum + shot.duration_hint_seconds, 0);
-  const hookOk = Boolean(first && (HOOK_FUNCTIONS.has(firstFn!) || first.type === "dialogue" || first.type === "hero"));
+  // A dialogue opener counts as a hook only if the line is already in motion:
+  // a question, an accusation, an exclamation, or a short punch. "Good morning,
+  // how was your flight" is not a hook even on a hook_cu.
+  const inMotion = lineInMotion(first?.dialogue);
+  const hookOk = Boolean(
+    first && (HOOK_FUNCTIONS.has(firstFn!) ? !first.dialogue || inMotion : (first.type === "dialogue" || first.type === "hero") && inMotion),
+  );
   reports.push(
-    qc("HOOK_3S", hookOk, firstFn ?? "missing", "hook_cu / insert_evidence / slap_peak / in-motion dialogue", "block"),
+    qc(
+      "HOOK_3S",
+      hookOk,
+      first?.dialogue ? `${firstFn ?? "?"}: "${first.dialogue.slice(0, 40)}"` : firstFn ?? "missing",
+      "hook_cu / insert_evidence / slap_peak, and any opening line is a question, accusation or punch",
+      "block",
+    ),
   );
   if (input.episodeNumber && input.episodeNumber >= 2 && recapSeconds > 4.05) {
     reports.push(qc("HOOK_3S", false, `${recapSeconds}s recap`, "recap ≤4s, never replaces hook", "block"));
@@ -150,6 +184,18 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     ),
   );
   const buttonLine = last?.dialogue;
+  // The button has to leave a question on the table: either the cliffhanger
+  // text or the last spoken line must be an open question or a reversal.
+  const buttonAsks = asksAQuestion(input.plan.cliffhanger) || asksAQuestion(buttonLine);
+  reports.push(
+    qc(
+      "BUTTON_QUESTION",
+      buttonAsks || shots.length === 0,
+      buttonLine ? `"${buttonLine.slice(0, 40)}"` : input.plan.cliffhanger?.slice(0, 40) ?? "empty",
+      "button line or cliffhanger is an unpaid question or reversal",
+      "warn",
+    ),
+  );
   const buttonNovel = !dialogueTooClose(buttonLine, first?.dialogue) && !dialogueTooClose(buttonLine, input.plan.hook);
   reports.push(
     qc(

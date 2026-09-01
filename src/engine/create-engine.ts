@@ -58,7 +58,8 @@ import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
 import { analyzeTake, pickBestTake, scoreTake, type TakeAnalysis, type TakeVerdict } from "./pipeline/take-analysis.ts";
 import { runIdentityStage } from "./pipeline/identity-check.ts";
 import { wordErrorRate } from "./media/qc.ts";
-import { objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
+import { evidenceMotif, objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
+import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
 import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
 import { failoverRoute } from "./ai/router.ts";
 import {
@@ -1211,6 +1212,17 @@ export function createEngine(deps: EngineDeps = {}) {
         description: `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person.`,
         kind: "location",
       });
+      // The plate's lighting, in words. Every close-up in this location carries
+      // this note so the video model holds the room without a second image ref.
+      let notes: Record<string, unknown> = {};
+      if (ai.vision?.describeLocation) {
+        try {
+          const described = await ai.vision.describeLocation({ plate: image.bytes, plateMime: image.mime_type, location });
+          notes = { lighting_lock: described.lighting_lock, palette: described.palette, key_light: described.key_light, dressing: described.dressing };
+        } catch {
+          notes = {};
+        }
+      }
       const asset = await putAsset({
         owner_id: series.owner_id,
         series_id: series.id,
@@ -1218,7 +1230,7 @@ export function createEngine(deps: EngineDeps = {}) {
         bucket: "private-character",
         mime_type: image.mime_type,
         body: image.bytes,
-        metadata: { location },
+        metadata: { location, ...notes },
       });
       refs[location] = asset.id;
     }
@@ -1538,6 +1550,8 @@ export function createEngine(deps: EngineDeps = {}) {
         : scene?.scene_data.characters.find((name) => name !== pictured) ?? null;
     const prompt = dramaHooks.buildVideoPrompt({
       location,
+      locationNote: await locationNoteFor(series.id, location),
+      genre: seriesGenre(series),
       shot: live,
       partner,
       peopleCount: allowsTwoShot(live.shot_data.function) ? 2 : 1,
@@ -1737,6 +1751,20 @@ export function createEngine(deps: EngineDeps = {}) {
     return face ?? (seed.kind !== "full_body" ? seed : null);
   }
 
+  function seriesGenre(series: Series) {
+    return dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`);
+  }
+
+  /** Lighting note the vision model wrote for this location's plate, if any. */
+  async function locationNoteFor(seriesId: string, location: string | null | undefined): Promise<string | null> {
+    const series = store.series.get(seriesId);
+    const plateId = locationRefForScene(series?.location_refs ?? {}, location);
+    if (!plateId) return null;
+    const plate = (await liveAssetsForSeries(seriesId)).find((asset) => asset.id === plateId);
+    const note = plate?.metadata.lighting_lock;
+    return typeof note === "string" && note.trim() ? note : null;
+  }
+
   async function ensureInsertPlate(shot: Shot, seriesId: string): Promise<string | null> {
     const cached = shot.shot_data.insert_plate_id;
     if (cached) {
@@ -1746,10 +1774,12 @@ export function createEngine(deps: EngineDeps = {}) {
     const series = store.series.get(seriesId);
     if (!series) return null;
     const kind = shot.shot_data.function === "phone_ui" ? "phone_ui" : "object_insert";
+    const genre = seriesGenre(series);
     const image = await ai.image.generateReference({
       characterName: "evidence",
       description: objectPlateCamera(shot.shot_data.function, shot.shot_data.camera, {
         dialogue: shot.shot_data.dialogue,
+        motif: evidenceMotif({ camera: shot.shot_data.camera, genreMotifs: genre ? playbookFor(genre).visualMotifs : null }),
       }),
       kind,
     });
@@ -2709,7 +2739,7 @@ export function createEngine(deps: EngineDeps = {}) {
       episode_id: episode.id,
       shots: playable,
       assetIdFor: (shot) => assetByShot.get(shot.id)!,
-      genre: series ? dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`) : null,
+      genre: series ? seriesGenre(series) : null,
       sceneFor: (shot) => {
         const scene = store.scenes.get(shot.scene_id);
         return scene ? { location: scene.location || scene.scene_data.location, time: scene.scene_data.time } : null;

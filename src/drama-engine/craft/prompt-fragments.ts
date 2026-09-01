@@ -21,13 +21,54 @@ const FACE_CAMERA = /\b(face|eyes|jaw|brow|mouth|portrait|close-up on \w|tight s
 const COPYRIGHT_SAFE =
   "no logo, no brand name, no barcode, no printed merchant, no printed personal name, no readable date that looks like an ID";
 
-export function identitySafeLocation(location?: string | null): string {
+export function identitySafeLocation(location?: string | null, note?: string | null): string {
   const place = (location ?? "night interior").replace(/\s+/g, " ").trim();
-  return `same ${place}, same key light and grade as the location plate, no night-forest bokeh, no random other room, no readable signage`;
+  const described = note?.trim() ? ` ${note.trim().replace(/\.?$/, ".")}` : "";
+  return `same ${place}, same key light and grade as the location plate.${described} No night-forest bokeh, no random other room, no readable signage`;
 }
 
-export function locationLightingLock(location?: string | null): string {
-  return identitySafeLocation(location);
+export function locationLightingLock(location?: string | null, note?: string | null): string {
+  return identitySafeLocation(location, note);
+}
+
+/**
+ * Framing per shot function. Every single used to be an extreme close-up,
+ * which reads as twelve identical faces; drama coverage varies the size with
+ * the beat while staying one face and never OTS.
+ */
+export function framingForFunction(fn?: string | null): string {
+  switch (fn) {
+    case "hook_cu":
+    case "accusation_cu":
+    case "button_cu":
+    case "block_button":
+      return "Extreme close-up of ONE face filling the frame, eyes and mouth sharp, locked off. Not an extreme neck crop.";
+    case "reaction":
+    case "listener_hold":
+      return "Medium close-up of ONE face, head and shoulders, a little air above the head, locked off.";
+    case "slap_peak":
+    case "doorway_reveal":
+      return "Medium single of ONE person from the chest up with room to move, locked off.";
+    default:
+      return "Close-up of ONE face, head and top of shoulders, locked off.";
+  }
+}
+
+const OBJECT_WORDS =
+  /\b(paper|letter|envelope|note|phone|screen|ring|key|keys|photo|photograph|glass|receipt|contract|badge|watch|knife|ticket|passport|locket|necklace|cup|bottle|card|document|file|folder|box|pill|bracelet|invitation)s?\b/i;
+
+/**
+ * The evidence object for an insert: the shot's own camera if it names one,
+ * else the genre's motif, else plain paper. Never a person.
+ */
+export function evidenceMotif(input: { camera?: string | null; genreMotifs?: readonly string[] | null }): string {
+  const camera = input.camera ?? "";
+  if (OBJECT_WORDS.test(camera) && !FACE_CAMERA.test(camera)) {
+    return stripCopyrightBait(camera).replace(/^(insert|close[- ]?up|macro|tight)\s+(of|on)\s+/i, "");
+  }
+  const motif = input.genreMotifs?.find((row) => OBJECT_WORDS.test(row) && !FACE_CAMERA.test(row));
+  if (motif) return stripCopyrightBait(motif);
+  return "unlabeled paper on dark stone, handwritten block letters TUESDAY only";
 }
 
 export function stripCopyrightBait(text: string): string {
@@ -44,19 +85,20 @@ export function stripCopyrightBait(text: string): string {
 export function objectPlateCamera(
   fn?: string | null,
   camera?: string | null,
-  extras?: { dialogue?: string | null },
+  extras?: { dialogue?: string | null; motif?: string | null },
 ): string {
   const noOverlay = `no printed title, no caption overlay, no watermark, do not render the words evidence or insert or 9:16, ${COPYRIGHT_SAFE}`;
+  const motif = extras?.motif?.trim() || evidenceMotif({ camera });
   if (fn === "phone_ui") {
-    return `insert of a blank desk pad or unlabeled paper only, handwritten block letters TUESDAY, no people, no faces, ${noOverlay}`;
+    return `insert of a phone or blank desk pad face-up on the surface, screen dark or showing only an unreadable glow, ${motif.includes("phone") ? "" : "or " + motif + ", "}no people, no faces, ${noOverlay}`;
   }
   if (fn === "hook_cu" || fn === "insert_evidence") {
-    return `insert of unlabeled paper on dark stone, handwritten block letters TUESDAY only, no people, no faces, ${noOverlay}`;
+    return `insert of ${motif}, object only, no people, no faces, ${noOverlay}`;
   }
   if (camera && !FACE_CAMERA.test(camera)) {
-    return `${stripCopyrightBait(camera)}. unlabeled paper or object only, ${noOverlay}`;
+    return `${stripCopyrightBait(camera)}. ${motif}, object only, ${noOverlay}`;
   }
-  return `insert of unlabeled paper on dark stone, handwritten TUESDAY only, object only, no people, no faces, ${noOverlay}`;
+  return `insert of ${motif}, object only, no people, no faces, ${noOverlay}`;
 }
 
 export function cameraDescribesFace(camera: string | null | undefined): boolean {
@@ -205,6 +247,10 @@ Season beats: ${playbook.tenBeats.map((beat, i) => `${i + 1}. ${beat}`).join(" "
 
 export function lockedTakePrompt(input: {
   location?: string | null;
+  /** Lighting note read off the location plate by the vision model. */
+  locationNote?: string | null;
+  /** Evidence object for inserts, from the plan or the genre. */
+  motif?: string | null;
   camera: string;
   eyeline?: string | null;
   partner?: string | null;
@@ -218,7 +264,7 @@ export function lockedTakePrompt(input: {
   allowTwoShot?: boolean;
   cameraMove?: string | null;
 }): string {
-  const lighting = identitySafeLocation(input.location);
+  const lighting = identitySafeLocation(input.location, input.locationNote);
   const move = input.cameraMove?.trim()
     ? `one simple move only: ${input.cameraMove.trim()}`
     : "one simple move only: slow push or locked-off";
@@ -228,7 +274,7 @@ export function lockedTakePrompt(input: {
       "NO people. NO faces. NO second person. NO couple. NO two-shot. NO portrait. NO hands unless the first frame already shows only a hand on the object.",
       "Only the evidence object. Keep the same object, angle, and lighting as the first frame.",
       input.location ? `Same room, same grade: ${lighting}.` : null,
-      objectPlateCamera(input.shotFunction, input.camera),
+      objectPlateCamera(input.shotFunction, input.camera, { motif: input.motif }),
       LOCKED_TAKE_CLAUSE,
       move,
       NO_TEXT_CLAUSE,
@@ -274,7 +320,7 @@ export function lockedTakePrompt(input: {
         ? `This one person speaks exactly this line, using Audio 1 as the spoken performance: "${input.dialogue}"`
         : "silent reaction of this one face, mouth closed or slightly open";
   return [
-    "COVERAGE SINGLE. Extreme close-up of ONE face filling the frame, locked off. Not an extreme neck crop. FORBIDDEN: OTS, over-the-shoulder, over-shoulder, second head, second person, couple, two-shot, anyone else's shoulder.",
+    `COVERAGE SINGLE. ${framingForFunction(input.shotFunction)} FORBIDDEN: OTS, over-the-shoulder, over-shoulder, second head, second person, couple, two-shot, anyone else's shoulder.`,
     who,
     input.camera ? stripCopyrightBait(input.camera) : null,
     "IDENTITY LOCK. Image-to-video from reference image 1 only.",

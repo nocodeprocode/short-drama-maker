@@ -37,6 +37,7 @@ export type DramaQcId =
   | "TWO_SHOT_RISK"
   | "CONTINUITY_JUMP"
   | "LIGHT_JUMP"
+  | "BUTTON_QUESTION"
   | "COMIC_STING";
 
 export type QcReport = {

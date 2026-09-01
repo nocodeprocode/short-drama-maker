@@ -33,8 +33,44 @@ export type IdentityJudgeInput = {
   description?: string | null;
 };
 
+/**
+ * What a location plate looks like, in words a video model can hold onto.
+ * The plate itself is never sent to the video model for singles (extra image
+ * references cost identity in the bake-off); this description is.
+ */
+export type LocationNotes = {
+  /** One sentence: room, palette, key light direction and colour, two dressing anchors. */
+  lighting_lock: string;
+  palette: string;
+  key_light: string;
+  dressing: string[];
+  model: string;
+};
+
 export interface VisionEngine {
   judgeIdentity(input: IdentityJudgeInput): Promise<IdentityJudgement>;
+  describeLocation?(input: { plate: Uint8Array; plateMime?: string; location: string }): Promise<LocationNotes>;
+}
+
+const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
+Answer only with JSON: {"palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact room and light>"}.
+Rules: name real visible things only; no people; no brands or readable text; keep lighting_lock under 40 words.`;
+
+export function parseLocationNotes(content: string, model: string): LocationNotes {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const raw = JSON.parse(start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed) as Record<string, unknown>;
+  const dressing = Array.isArray(raw.dressing) ? raw.dressing.filter((row): row is string => typeof row === "string").slice(0, 4) : [];
+  const lock = typeof raw.lighting_lock === "string" ? raw.lighting_lock.trim() : "";
+  if (!lock) throw new Error("location note missing lighting_lock");
+  return {
+    lighting_lock: lock.slice(0, 320),
+    palette: typeof raw.palette === "string" ? raw.palette.slice(0, 80) : "",
+    key_light: typeof raw.key_light === "string" ? raw.key_light.slice(0, 120) : "",
+    dressing,
+    model,
+  };
 }
 
 type ChatResponse = {
@@ -109,6 +145,33 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the identity judgement");
       return parseIdentityJudgement(content, model);
+    },
+
+    async describeLocation(input) {
+      const body = await openRouterJson<ChatResponse>("/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          usage: { include: true },
+          provider: openRouterProvider("text"),
+          messages: [
+            { role: "system", content: LOCATION_RUBRIC },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: `Location: ${input.location}.` },
+                { type: "image_url", image_url: { url: dataUrl(input.plate, input.plateMime ?? "image/png") } },
+              ],
+            },
+          ],
+        }),
+      }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter returned no text for the location note");
+      return parseLocationNotes(content, model);
     },
   };
 }

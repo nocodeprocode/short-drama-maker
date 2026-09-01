@@ -1,6 +1,7 @@
 import type { EpisodeLength } from "../../engine/config/catalog.ts";
 import type { EpisodePlan, RenderManifest, Shot, StoryBible } from "../../engine/domain.ts";
 import {
+  evidenceMotif,
   lockedTakePrompt,
   objectPlateCamera,
   playbookPrompt,
@@ -18,7 +19,7 @@ import { buildSeasonCraft, enrichEpisodeStructure, recapAllowed, recapBudgetSeco
 import { allowsTwoShot, isObjectInsert, type AudioRole } from "../types/editorial.ts";
 import { LENGTH_BUDGETS } from "../types/pacing.ts";
 import type { DramaLintResult } from "../types/qc-drama.ts";
-import type { SkuPolicy } from "../types/genre.ts";
+import type { GenreId, SkuPolicy } from "../types/genre.ts";
 import type { VideoRoute } from "../../engine/domain.ts";
 
 export type DramaEngineHooks = {
@@ -28,6 +29,8 @@ export type DramaEngineHooks = {
   assertEpisodePlan(input: ValidatePlanInput): EpisodePlan;
   buildVideoPrompt(input: {
     location?: string | null;
+    locationNote?: string | null;
+    genre?: GenreId | null;
     shot: Shot;
     partner?: string | null;
     peopleCount?: number;
@@ -80,8 +83,11 @@ Do not write a 90-minute movie and slice it.`;
       const data = input.shot.shot_data;
       const twoShot = allowsTwoShot(data.function);
       const objectInsert = isObjectInsert(data);
+      const motif = objectInsert
+        ? evidenceMotif({ camera: data.camera, genreMotifs: input.genre ? playbookFor(input.genre).visualMotifs : null })
+        : null;
       const camera = objectInsert
-        ? objectPlateCamera(data.function, data.camera, { dialogue: data.dialogue })
+        ? objectPlateCamera(data.function, data.camera, { dialogue: data.dialogue, motif })
         : stripCopyrightBait(
             sanitizeCamera(data.camera, {
               lockedTake: (data.edit_mode ?? "locked_take") !== "already_cut",
@@ -90,6 +96,8 @@ Do not write a 90-minute movie and slice it.`;
           );
       return lockedTakePrompt({
         location: input.location,
+        locationNote: input.locationNote,
+        motif,
         camera,
         eyeline: data.eyeline,
         partner: input.partner,

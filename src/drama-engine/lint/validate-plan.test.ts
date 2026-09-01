@@ -94,6 +94,34 @@ function tenShotPlan(): EpisodePlan["scenes"][number]["shots"] {
   ];
 }
 
+describe("hook and button", () => {
+  it("does not accept a flat opening line as a hook, and repair pulls the first live line forward", () => {
+    const ten = tenShotPlan();
+    ten[0] = shot({ function: "hook_cu", duration_hint_seconds: 6, dialogue: "Good morning, how was the flight from Geneva." });
+    const flat = validateEpisodePlan({ plan: plan(ten), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    expect(flat.blocking.map((row) => row.id)).toContain("HOOK_3S");
+    const repaired = repairEpisodePlan({ plan: plan(ten), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const opener = repaired.scenes[0]!.shots[0]!;
+    expect(opener.function).toBe("hook_cu");
+    expect(opener.dialogue && /[?!]/.test(opener.dialogue) || /\b(don'?t|three months)\b/i.test(opener.dialogue ?? "")).toBe(true);
+    expect(validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 }).pass).toBe(true);
+  });
+
+  it("warns when neither the button line nor the cliffhanger leaves a question", () => {
+    const ten = tenShotPlan();
+    ten[ten.length - 1] = shot({ function: "button_cu", type: "hero", dialogue: "I am going home now.", duration_hint_seconds: 6 });
+    const result = validateEpisodePlan({
+      plan: plan(ten, { cliffhanger: "She walks out." }),
+      namedCast: CAST3,
+      length: "60_90",
+      episodeNumber: 1,
+    });
+    expect(result.warnings.map((row) => row.id)).toContain("BUTTON_QUESTION");
+    const asked = validateEpisodePlan({ plan: plan(tenShotPlan()), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    expect(asked.warnings.map((row) => row.id)).not.toContain("BUTTON_QUESTION");
+  });
+});
+
 describe("continuity", () => {
   it("keeps each regrouped scene on the location it was planned in", () => {
     const ten = tenShotPlan();
