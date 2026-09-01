@@ -622,6 +622,7 @@ describe("engine phase 0", () => {
           voice_onset_seconds: 1.22,
           sync_lag_ms: 20,
           viseme_pad_seconds: 0,
+          audio_slip_seconds: 0,
           internal_cut_count: 0,
           second_body: false,
           chest_skin_fraction: 0.05,

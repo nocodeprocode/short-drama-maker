@@ -28,8 +28,11 @@ export const DIALOGUE_ONSET_IGNORE_PLANTS_SECONDS = 4;
 /** I2V dialogue CUs skip this much so the still→scene morph is never shown. */
 export const I2V_SETTLE_DEFAULT_SECONDS = 1.5;
 
-/** Longest still→scene settle we will cut from a dialogue CU. */
-export const I2V_SETTLE_MAX_SECONDS = 3;
+/**
+ * Longest still→scene settle we will cut from a dialogue CU. The v9 Mara take
+ * was still sliding at 3.0s and clean at ~3.3s, so the cap sits just above.
+ */
+export const I2V_SETTLE_MAX_SECONDS = 3.5;
 
 export function visemeAudioPadSeconds(input: {
   voiceOnsetSeconds: number | null | undefined;

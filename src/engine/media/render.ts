@@ -14,6 +14,8 @@ export type RenderInput = {
   visemePadSeconds?: Array<number | null | undefined>;
   visemeMouthOpenSeconds?: Array<number | null | undefined>;
   visemeVoiceOnsetSeconds?: Array<number | null | undefined>;
+  /** Pre-built cues; when set, alignments are not used for captions. */
+  vtt?: string;
 };
 
 export type RenderOutput = {
@@ -63,7 +65,7 @@ export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutp
       `manifest has ${input.manifest.shots.length} shots but ${input.shotBodies.length} bodies were supplied`,
     );
   }
-  const vtt = buildEpisodeVtt(input);
+  const vtt = input.vtt ?? buildEpisodeVtt(input);
   const mixed = await assembleEpisodeMp4({
     manifest: input.manifest,
     shotBodies: input.shotBodies,

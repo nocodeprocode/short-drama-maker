@@ -2682,7 +2682,8 @@ export function createEngine(deps: EngineDeps = {}) {
         // The settle trim removes the I2V morph from the head of the take, so the
         // playable picture is what remains after it.
         const settle = shot.shot_data.take_analysis?.settle_in_seconds ?? 0;
-        if (take != null) return Math.max(0.4, take - settle);
+        const slip = shot.shot_data.take_analysis?.audio_slip_seconds ?? 0;
+        if (take != null) return Math.max(0.4, take - settle - slip);
         return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
       },
     });

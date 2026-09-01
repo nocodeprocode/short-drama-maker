@@ -348,6 +348,12 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
         measuredPad[index] = true;
         continue;
       }
+      // Slip edit: native audio starts earlier than picture, so the picture must
+      // end earlier by the same amount or the tail plays without its sound.
+      const slip = Math.max(0, shot.audio_slip_seconds ?? 0);
+      if (slip > 0.02) {
+        shot.out_point_seconds = Math.max(shot.in_point_seconds + 0.4, shot.out_point_seconds - slip);
+      }
       if (input.visemePadSeconds?.[index] != null) {
         visemePads[index] = Math.max(0, input.visemePadSeconds[index]!);
         measuredPad[index] = true;
@@ -460,15 +466,16 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
       const native = lane === "native" ? (input.shotBodies[index] ?? input.nativeAudio?.[index]) : null;
       const body = heardBodyForShot(lane, native, input.ttsBodies?.[index]);
       if (!body) continue;
-      const skip = heardFileSkipSeconds({
-        lane,
-        // Settle in-point trims picture and native audio by the same seconds; a
-        // measured pad is then a delay on top. Only the legacy auto-align trim
-        // (unmeasured pad) leaves the native track unskipped.
-        inPointSeconds:
-          lane === "native" && !measuredPad[index] && (visemePads[index] ?? 0) > 0.02 ? 0 : shot.in_point_seconds,
-        leadingSilenceSeconds: 0,
-      });
+      const skip =
+        heardFileSkipSeconds({
+          lane,
+          // Settle in-point trims picture and native audio by the same seconds; a
+          // measured pad is then a delay on top. Only the legacy auto-align trim
+          // (unmeasured pad) leaves the native track unskipped.
+          inPointSeconds:
+            lane === "native" && !measuredPad[index] && (visemePads[index] ?? 0) > 0.02 ? 0 : shot.in_point_seconds,
+          leadingSilenceSeconds: 0,
+        }) + (lane === "native" ? Math.max(0, shot.audio_slip_seconds ?? 0) : 0);
       const delay = heardDelaySeconds({
         pictureStartSeconds: shot.picture_start_seconds,
         audioStartSeconds: shot.audio_start_seconds,
@@ -557,41 +564,14 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     args.push("-filter_complex", filter, "-map", "[v]", "-map", "[a]");
     args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-shortest", mixed);
 
-    try {
-      await run("ffmpeg", args);
-      return new Uint8Array(await readFile(mixed));
-    } catch (mixError) {
-      if (process.env.SDM_DEBUG_MIX) {
-        process.stderr.write(`mix failed: ${mixError instanceof Error ? mixError.message : mixError}\n`);
-      }
-      const fallback = join(dir, "fallback.mp4");
-      try {
-        await run("ffmpeg", [
-          "-y",
-          "-i",
-          picture,
-          "-i",
-          bed,
-          "-filter_complex",
-          `[1:a]volume=0.16,loudnorm=I=${LOUDNESS.mixLufs}:TP=${LOUDNESS.truePeakDb}[a]`,
-          "-map",
-          "0:v",
-          "-map",
-          "[a]",
-          "-c:v",
-          "copy",
-          "-c:a",
-          "aac",
-          "-shortest",
-          fallback,
-        ]);
-        return new Uint8Array(await readFile(fallback));
-      } catch {
-        await run("ffmpeg", ["-y", "-i", picture, "-c", "copy", fallback]);
-        return new Uint8Array(await readFile(fallback));
-      }
+    // No fallback: a mix that drops the dialogue is not a lesser episode, it is
+    // a broken one. Fail so the render is refused and the reason is recorded.
+    await run("ffmpeg", args);
+    return new Uint8Array(await readFile(mixed));
+  } catch (error) {
+    if (process.env.SDM_DEBUG_MIX) {
+      process.stderr.write(`mix failed: ${error instanceof Error ? error.message : error}\n`);
     }
-  } catch {
     return null;
   } finally {
     await rm(dir, { recursive: true, force: true });

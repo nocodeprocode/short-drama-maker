@@ -303,6 +303,12 @@ export type RenderManifestShot = {
   picture_start_seconds?: number;
   audio_start_seconds?: number | null;
   hold_tail_seconds?: number;
+  /**
+   * Native audio starts this many seconds earlier relative to picture (a slip
+   * edit) to pull a mouth that opened before the voice back into sync. Picture
+   * loses the same seconds off its tail.
+   */
+  audio_slip_seconds?: number;
   scene_index?: number;
   scene_kind?: "recap" | "dialogue" | "evidence" | "button";
   transition_in?: RenderTransitionType;

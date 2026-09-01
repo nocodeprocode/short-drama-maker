@@ -28,12 +28,16 @@ export type TakeAnalysis = {
   /** Frame-vs-settled-reference diffs sampled every `settle_hop_seconds`, for audits. */
   settle_hop_seconds: number;
   settle_diffs: number[];
+  /** Morph velocity per sample (frame vs frame 0.3s later); what the settle is decided on. */
+  settle_steps?: number[];
   mouth_open_seconds: number | null;
   voice_onset_seconds: number | null;
   /** voice − mouth in ms. Negative = voice leads the mouth (needs a pad). */
   sync_lag_ms: number | null;
   /** Audio delay the mixer should apply so voice does not lead the lips. */
   viseme_pad_seconds: number;
+  /** Audio advance (slip) the mixer should apply when the lips opened before the voice. */
+  audio_slip_seconds: number;
   internal_cut_count: number;
   second_body: boolean;
   chest_skin_fraction: number | null;
@@ -64,12 +68,30 @@ export const SETTLE_MATCH_THRESHOLD = 14;
 /** Frames start diverging from a still this quickly; below this the take never morphed. */
 export const SETTLE_NO_MORPH_THRESHOLD = 10;
 export const SETTLE_HOP_SECONDS = 0.1;
-/** How far into the take the settled reference is sampled. */
-export const SETTLE_REFERENCE_SECONDS = 3.5;
+/** How far into the take the settle scan runs (must exceed the I2V cap plus one step window). */
+export const SETTLE_SCAN_SECONDS = 4.0;
+/**
+ * Morph velocity: gray diff between a frame and the frame `SETTLE_STEP_SECONDS`
+ * later. While the I2V still is sliding into the scene this is large; once the
+ * room holds still it drops to talking-head levels. The post-mux audit measures
+ * the very same quantity at each shot's open (`HEAD_STEP_MAX`), so the detector
+ * and the gate cannot disagree about whether a frame is settled.
+ */
+export const SETTLE_STEP_SECONDS = 0.3;
+export const SETTLE_STEP_MAX = 14;
 /** Mouth may lag voice by this much before we pad; anything bigger is a real lead. */
 export const SYNC_PAD_TRIGGER_MS = 120;
 /** Ship gate on the final cut, per line. */
 export const SYNC_SHIP_LIMIT_MS = 80;
+/**
+ * Wan sometimes opens the mouth well before the first sound. Up to this lead we
+ * leave it (people part their lips before speaking); beyond it the native audio
+ * is slipped earlier so the residual lead is `MOUTH_LEAD_RESIDUAL_MS`.
+ */
+export const MOUTH_LEAD_SLIP_TRIGGER_MS = 150;
+export const MOUTH_LEAD_RESIDUAL_MS = 60;
+/** Past this lead a slip would eat too much of the take; the take is rejected. */
+export const MOUTH_LEAD_MAX_MS = 700;
 
 const GRAY_W = 90;
 const GRAY_H = 160;
@@ -111,6 +133,38 @@ export function settleInPointFromDiffs(diffsVsSettled: readonly number[], hop = 
         return Math.min(I2V_SETTLE_MAX_SECONDS, Number((i * hop).toFixed(2)));
       }
     }
+  }
+  return I2V_SETTLE_MAX_SECONDS;
+}
+
+/** The morph counts as "done" once the frame has drifted this share of the total away from frame 0. */
+export const SETTLE_DRIFT_SHARE = 0.6;
+
+/**
+ * Settle from two series sampled every `hop`:
+ * - `steps[i]`: morph velocity, gray diff between frame i and the frame `SETTLE_STEP_SECONDS` later.
+ * - `drift[i]`: gray diff between frame i and frame 0.
+ *
+ * I2V takes hold the still for a beat, slide into the scene, then hold. A held
+ * still has low velocity but no drift; a slide has drift but high velocity. The
+ * settled frame is the first with low velocity AFTER most of the drift has
+ * happened. A take whose total drift is below the no-morph threshold never
+ * morphed (Seedance-style) and settles at 0. A take still sliding at the end of
+ * the scan settles at the cap.
+ */
+export function settleInPointFromSteps(
+  steps: readonly number[],
+  drift: readonly number[] = [],
+  hop = SETTLE_HOP_SECONDS,
+): number {
+  if (!steps.length) return 0;
+  const total = drift.length ? Math.max(...drift) : 0;
+  if (drift.length && total <= SETTLE_NO_MORPH_THRESHOLD) return 0;
+  const needed = drift.length ? total * SETTLE_DRIFT_SHARE : 0;
+  for (let i = 0; i < steps.length; i += 1) {
+    const calm = (steps[i] ?? 999) <= SETTLE_STEP_MAX && (steps[i + 1] ?? 0) <= SETTLE_STEP_MAX + 2;
+    const moved = !drift.length || (drift[i] ?? 0) >= needed;
+    if (calm && moved) return Math.min(I2V_SETTLE_MAX_SECONDS, Number((i * hop).toFixed(2)));
   }
   return I2V_SETTLE_MAX_SECONDS;
 }
@@ -193,13 +247,24 @@ export async function mouthMotionOnsetSecond(path: string, fromSeconds: number, 
 export async function measureSettle(
   path: string,
   durationSeconds: number,
-): Promise<{ settle_in_seconds: number; diffs: number[] }> {
-  const span = Math.min(SETTLE_REFERENCE_SECONDS, Math.max(0.5, durationSeconds - 0.3));
+): Promise<{ settle_in_seconds: number; diffs: number[]; steps: number[] }> {
+  const span = Math.min(SETTLE_SCAN_SECONDS, Math.max(0.5, durationSeconds - 0.3));
   const frames = await grayFrames(path, span + SETTLE_HOP_SECONDS, SETTLE_HOP_SECONDS);
-  if (frames.length < 3) return { settle_in_seconds: 0, diffs: [] };
+  if (frames.length < 3) return { settle_in_seconds: 0, diffs: [], steps: [] };
   const reference = frames[frames.length - 1]!;
   const diffs = frames.slice(0, -1).map((frame) => Number(meanAbsDiff(frame, reference).toFixed(2)));
-  return { settle_in_seconds: settleInPointFromDiffs(diffs), diffs };
+  const stride = Math.max(1, Math.round(SETTLE_STEP_SECONDS / SETTLE_HOP_SECONDS));
+  const steps: number[] = [];
+  const drift: number[] = [];
+  const head = frames[0]!;
+  for (let i = 0; i + stride < frames.length; i += 1) {
+    steps.push(Number(meanAbsDiff(frames[i]!, frames[i + stride]!).toFixed(2)));
+    drift.push(Number(meanAbsDiff(frames[i]!, head).toFixed(2)));
+  }
+  // Velocity + drift is the primary signal; distance-to-reference only when the scan is too short for it.
+  const settle = steps.length >= 2 ? settleInPointFromSteps(steps, drift) : settleInPointFromDiffs(diffs);
+  // A take that never settles inside the scan is a slow morph; the cap is the best we can cut.
+  return { settle_in_seconds: Math.min(settle, Math.max(0, durationSeconds - 1.5)), diffs, steps };
 }
 
 /**
@@ -282,6 +347,17 @@ export function padFromSync(input: {
   });
 }
 
+/**
+ * Slip (audio earlier) when the mouth measurably leads the voice. Zero inside
+ * the natural lip-part window and zero past the reject threshold (the score
+ * blocks those takes instead of pretending a slip could save them).
+ */
+export function slipFromSync(input: { voice: number | null; mouth: number | null }): number {
+  const lag = syncLagMs(input.voice, input.mouth);
+  if (lag == null || lag <= MOUTH_LEAD_SLIP_TRIGGER_MS || lag > MOUTH_LEAD_MAX_MS) return 0;
+  return Number(((lag - MOUTH_LEAD_RESIDUAL_MS) / 1000).toFixed(3));
+}
+
 export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysis> {
   const now = input.now ?? (() => new Date().toISOString());
   const probe = probeVideoBytes(input.video);
@@ -296,6 +372,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
     voice_onset_seconds: null,
     sync_lag_ms: null,
     viseme_pad_seconds: 0,
+    audio_slip_seconds: 0,
     internal_cut_count: 0,
     second_body: false,
     chest_skin_fraction: null,
@@ -315,6 +392,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
     const settle = await measureSettle(take, probe.duration_seconds);
     base.settle_in_seconds = settle.settle_in_seconds;
     base.settle_diffs = settle.diffs;
+    base.settle_steps = settle.steps;
 
     // Scene-change detection must start after the morph, or the settle itself counts as a cut.
     const cuts = await detectInternalCuts(input.video, 0.3, { skipSeconds: base.settle_in_seconds + 0.2 });
@@ -339,6 +417,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       base.voice_onset_seconds = voice;
       base.sync_lag_ms = syncLagMs(voice, mouth);
       base.viseme_pad_seconds = padFromSync({ voice, mouth, wanDialogue: input.wanDialogue ?? true });
+      base.audio_slip_seconds = slipFromSync({ voice, mouth });
 
       base.second_body = await inventedSecondBody(input.video, input.still ?? null);
 
@@ -398,7 +477,7 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     blockers.push("invented_people");
   }
 
-  const usable = analysis.duration_seconds - analysis.settle_in_seconds;
+  const usable = analysis.duration_seconds - analysis.settle_in_seconds - analysis.audio_slip_seconds;
   if (analysis.duration_seconds > 0 && usable < 1.5) blockers.push("settle_eats_take");
   if (analysis.settle_in_seconds >= I2V_SETTLE_MAX_SECONDS) {
     warnings.push("slow_settle");
@@ -417,18 +496,21 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     }
     if (analysis.sync_lag_ms != null) {
       const abs = Math.abs(analysis.sync_lag_ms);
-      if (abs > SYNC_SHIP_LIMIT_MS && analysis.viseme_pad_seconds === 0) {
-        // Mouth leads voice: nothing the mixer can do without cutting picture.
-        if (analysis.sync_lag_ms > 0) {
-          if (abs > 400) blockers.push("mouth_leads_voice");
-          else warnings.push("mouth_leads_voice");
-        }
+      if (analysis.sync_lag_ms > MOUTH_LEAD_MAX_MS) {
+        // Mouth opened far ahead of the voice: a slip would eat the take.
+        blockers.push("mouth_leads_voice");
+      } else if (analysis.sync_lag_ms > SYNC_SHIP_LIMIT_MS && analysis.audio_slip_seconds === 0) {
+        warnings.push("mouth_leads_voice");
       }
       score -= Math.min(25, abs / 20);
     }
     if (analysis.viseme_pad_seconds > 0) {
       warnings.push("voice_leads_mouth_padded");
       score -= Math.min(15, analysis.viseme_pad_seconds * 10);
+    }
+    if (analysis.audio_slip_seconds > 0) {
+      warnings.push("mouth_leads_voice_slipped");
+      score -= Math.min(15, analysis.audio_slip_seconds * 10);
     }
     if (analysis.mouth_open_seconds != null && analysis.mouth_open_seconds < analysis.settle_in_seconds) {
       // The mouth opened while the room was still morphing: the trimmed cut loses the first syllable.

@@ -9,7 +9,9 @@ import {
   pickBestTake,
   scoreTake,
   settleInPointFromDiffs,
+  settleInPointFromSteps,
   sheerOrBra,
+  slipFromSync,
   syncLagMs,
   type TakeAnalysis,
 } from "./take-analysis.ts";
@@ -26,6 +28,7 @@ function analysis(overrides: Partial<TakeAnalysis> = {}): TakeAnalysis {
     voice_onset_seconds: 1.22,
     sync_lag_ms: 20,
     viseme_pad_seconds: 0,
+    audio_slip_seconds: 0,
     internal_cut_count: 0,
     second_body: false,
     chest_skin_fraction: 0.05,
@@ -48,7 +51,7 @@ describe("settle detection", () => {
     const diffs = Array.from({ length: 40 }, (_, i) => (i < 30 ? 60 - i : 9));
     expect(settleInPointFromDiffs(diffs)).toBe(3);
     const slow = Array.from({ length: 40 }, () => 40);
-    expect(settleInPointFromDiffs(slow)).toBe(3);
+    expect(settleInPointFromDiffs(slow)).toBe(3.5);
     const quick = [50, 30, 13, 12, 11];
     expect(settleInPointFromDiffs(quick)).toBe(0.2);
   });
@@ -56,6 +59,21 @@ describe("settle detection", () => {
   it("ignores a single lucky frame in the middle of a morph", () => {
     const diffs = [50, 40, 12, 45, 44, 13, 12, 11];
     expect(settleInPointFromDiffs(diffs)).toBe(0.5);
+  });
+
+  it("settles on the first calm frame after the morph has happened", () => {
+    // v9 Mara shape: still held ~1s (calm, no drift), slide 1.3–3.0s, calm from 3.0s.
+    const steps = Array.from({ length: 36 }, (_, i) => (i < 13 ? 4 : i < 30 ? 18 : 13));
+    const drift = Array.from({ length: 36 }, (_, i) => (i < 13 ? 2 : i < 30 ? ((i - 13) / 17) * 60 : 60 + (i - 30) * 0.5));
+    expect(settleInPointFromSteps(steps, drift)).toBe(3);
+    // Seedance-style: never morphs.
+    expect(settleInPointFromSteps([5, 4, 4, 3], [0, 1, 1, 2])).toBe(0);
+    // Still sliding at the end of the scan.
+    expect(settleInPointFromSteps(Array.from({ length: 36 }, () => 30), Array.from({ length: 36 }, (_, i) => i * 2))).toBe(3.5);
+    // v9 Eli shape: hard cut at 0.3s, then a steady talking head.
+    expect(settleInPointFromSteps([49, 49, 49, 7, 7, 8, 7], [0, 0, 0, 50, 50, 51, 50])).toBe(0.3);
+    // A single calm step inside a slide does not count.
+    expect(settleInPointFromSteps([40, 38, 9, 37, 35, 8, 7, 6], [0, 20, 40, 45, 50, 60, 60, 60])).toBe(0.5);
   });
 });
 
@@ -70,6 +88,20 @@ describe("sync and pad", () => {
     const pad = padFromSync({ voice: 0.4, mouth: 1.6, wanDialogue: true });
     expect(pad).toBeGreaterThan(1);
     expect(pad).toBeLessThanOrEqual(1.5);
+  });
+
+  it("slips audio earlier when the mouth opens well before the voice, within limits", () => {
+    // Natural lip-part: leave it.
+    expect(slipFromSync({ voice: 3.6, mouth: 3.5 })).toBe(0);
+    // v9 Eli: mouth 3.54, voice 3.84 → 300ms lead → slip to a 60ms residual.
+    expect(slipFromSync({ voice: 3.84, mouth: 3.54 })).toBe(0.24);
+    // Too far ahead to repair: no slip, the score blocks it instead.
+    expect(slipFromSync({ voice: 4.5, mouth: 3.5 })).toBe(0);
+    const far = scoreTake(analysis({ mouth_open_seconds: 3.5, voice_onset_seconds: 4.5, sync_lag_ms: 1000 }), { dialogueCu: true, lockedTake: true });
+    expect(far.blockers).toContain("mouth_leads_voice");
+    const slipped = scoreTake(analysis({ mouth_open_seconds: 3.54, voice_onset_seconds: 3.84, sync_lag_ms: 300, audio_slip_seconds: 0.24 }), { dialogueCu: true, lockedTake: true });
+    expect(slipped.blockers).toEqual([]);
+    expect(slipped.warnings).toContain("mouth_leads_voice_slipped");
   });
 });
 
@@ -148,8 +180,10 @@ describe("analyzeTake on real lock takes", () => {
     });
     // v9 hand-tuned: settle 3.0, mouth 3.4, voice ≈ 3.38, no sheer, single body.
     expect(result.has_audio).toBe(true);
-    expect(result.settle_in_seconds).toBeGreaterThanOrEqual(1.5);
-    expect(result.settle_in_seconds).toBeLessThanOrEqual(3);
+    expect(result.settle_in_seconds).toBeGreaterThanOrEqual(2.5);
+    expect(result.settle_in_seconds).toBeLessThanOrEqual(3.5);
+    // She speaks at ~3.38; the cut must not start after her first syllable.
+    expect(result.settle_in_seconds).toBeLessThanOrEqual((result.mouth_open_seconds ?? 99));
     expect(result.voice_onset_seconds).not.toBeNull();
     expect(Math.abs((result.voice_onset_seconds ?? 0) - 3.38)).toBeLessThan(0.5);
     expect(result.sheer_or_bra).toBe(false);

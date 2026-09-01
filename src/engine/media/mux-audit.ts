@@ -25,7 +25,7 @@ export type MuxAuditLine = {
   lag_ms: number | null;
   limit_ms: number;
   pass: boolean;
-  /** Frame-diff between the shot's first frame and +0.35s: a settled open is small. */
+  /** Morph velocity at the open (first frame vs +0.3s): a settled open is small. */
   head_step: number | null;
   settled_open: boolean;
 };
@@ -55,8 +55,13 @@ export type MuxAuditInput = {
 export const MUX_SYNC_LIMIT_MS = 80;
 /** Lines whose mouth-open came from the motion fallback get the v9 Eli tolerance. */
 export const MUX_SYNC_SOFT_LIMIT_MS = 200;
-/** Gray mean-abs-diff between the first frame and +0.35s. Above this the room is still sliding. */
+/**
+ * Gray mean-abs-diff between a shot's first frame and the frame 0.3s later, the
+ * same morph-velocity measure the settle detector uses (`SETTLE_STEP_MAX`),
+ * with a little headroom for re-encode noise. Above this the room is still sliding.
+ */
 export const HEAD_STEP_MAX = 16;
+export const HEAD_STEP_WINDOW_SECONDS = 0.3;
 /** Frames darker than this mean luma (0-255) read as black. */
 export const BLACK_FRAME_LUMA = 16;
 
@@ -114,7 +119,8 @@ function pcmFromWav(pcm: Buffer): Int16Array {
 export function expectedDurationSeconds(manifest: RenderManifest): number {
   return manifest.shots.reduce((max, shot) => {
     const start = shot.picture_start_seconds ?? 0;
-    const length = Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds) + (shot.hold_tail_seconds ?? 0);
+    const slip = Math.max(0, shot.audio_slip_seconds ?? 0);
+    const length = Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds - slip) + (shot.hold_tail_seconds ?? 0);
     return Math.max(max, start + length);
   }, 0);
 }
@@ -124,11 +130,15 @@ export function projectOnsets(input: {
   pictureStart: number;
   inPoint: number;
   padSeconds: number;
+  /** Native audio advanced relative to picture (slip edit). */
+  slipSeconds?: number;
   voiceOnTake: number | null;
   mouthOnTake: number | null;
 }): { expectedVoice: number | null; mouthOnMux: number | null } {
   const expectedVoice =
-    input.voiceOnTake == null ? null : input.pictureStart + (input.voiceOnTake - input.inPoint) + input.padSeconds;
+    input.voiceOnTake == null
+      ? null
+      : input.pictureStart + (input.voiceOnTake - input.inPoint) + input.padSeconds - (input.slipSeconds ?? 0);
   const mouthOnMux = input.mouthOnTake == null ? null : input.pictureStart + (input.mouthOnTake - input.inPoint);
   return { expectedVoice, mouthOnMux };
 }
@@ -188,6 +198,7 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
         pictureStart,
         inPoint: shot.in_point_seconds,
         padSeconds: analysis.viseme_pad_seconds,
+        slipSeconds: shot.audio_slip_seconds ?? analysis.audio_slip_seconds ?? 0,
         voiceOnTake: analysis.voice_onset_seconds,
         mouthOnTake: analysis.mouth_open_seconds,
       });
@@ -206,7 +217,7 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       const passSync = lagMs != null && Math.abs(lagMs) <= limitMs;
 
       const open = await grayFrameAt(file, pictureStart + 0.05);
-      const later = await grayFrameAt(file, pictureStart + 0.4);
+      const later = await grayFrameAt(file, pictureStart + 0.05 + HEAD_STEP_WINDOW_SECONDS);
       const headStep = open && later ? Number(meanAbsDiff(open, later).toFixed(2)) : null;
       const settledOpen = headStep == null ? true : headStep <= HEAD_STEP_MAX;
 

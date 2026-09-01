@@ -73,6 +73,7 @@ export function buildRenderManifest(input: ManifestBuildInput): RenderManifest {
         picture_start_seconds: clip.picture_start_seconds,
         audio_start_seconds: clip.audio_start_seconds,
         hold_tail_seconds: clip.hold_tail_seconds,
+        audio_slip_seconds: clip.shot.shot_data.take_analysis?.audio_slip_seconds ?? 0,
         scene_index: clip.scene_index,
         scene_kind: clip.scene_kind,
         transition_in: clip.transition_in,
