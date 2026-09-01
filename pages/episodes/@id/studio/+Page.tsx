@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { usePageContext } from "vike-react/usePageContext";
-import { ArrowsClockwise, DownloadSimple } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, DownloadSimple, Scissors, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
 import { MediaPlayer, ShotThumb } from "@/components/drama/media-player.tsx";
@@ -32,6 +32,33 @@ export default function Page() {
     setBusy("download");
     try {
       await downloadMedia(episode.final_url, `${downloadBasename(episode.series_title, episode.episode_number)}.mp4`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const review = async (shotId: string, assetId: string, decision: "approve" | "reject") => {
+    if (!episode) return;
+    setBusy(`${decision}:${shotId}`);
+    try {
+      await studio.reviewTake(shotId, { series_id: episode.series_id, asset_id: assetId, decision });
+      setNotice(decision === "approve" ? "Take approved. Re-cut the episode to lock it into the final." : "Take rejected. Reshoot or re-cut to replace it.");
+      void reload();
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "Could not record the review.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const recut = async () => {
+    if (!episode) return;
+    setBusy("recut");
+    try {
+      const queued = await studio.recutEpisode(episode.id);
+      setNotice(queued.deduplicated ? "A re-cut is already queued." : "Re-cut queued from the current takes.");
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "Could not queue a re-cut.");
     } finally {
       setBusy(null);
     }
@@ -89,6 +116,11 @@ export default function Page() {
         {episode.final_url ? (
           <Button color="secondary" iconLeading={DownloadSimple} isDisabled={busy === "download"} onClick={() => void download()}>
             {busy === "download" ? "Downloading…" : CTA.downloadMp4}
+          </Button>
+        ) : null}
+        {readyCount > 0 ? (
+          <Button color="secondary" iconLeading={Scissors} isDisabled={busy === "recut"} onClick={() => void recut()}>
+            {busy === "recut" ? "Queuing…" : "Re-cut"}
           </Button>
         ) : null}
         <Button href={`/episodes/${id}`} color="secondary">
@@ -212,15 +244,39 @@ export default function Page() {
             value={String(shot?.shot_data.camera ?? "")}
           />
           {shot && (shot.status === "needs_review" || shot.status === "complete") ? (
-            <Button
-              color="secondary"
-              size="sm"
-              iconLeading={ArrowsClockwise}
-              isDisabled={busy === shot.id}
-              onClick={() => void reshoot(shot.id)}
-            >
-              {busy === shot.id ? "Queuing…" : shot.status === "needs_review" ? "Reshoot this take" : "Reshoot"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              {shot.selected_generation_id ? (
+                <>
+                  <Button
+                    color="primary"
+                    size="sm"
+                    iconLeading={CheckCircle}
+                    isDisabled={busy === `approve:${shot.id}`}
+                    onClick={() => void review(shot.id, shot.selected_generation_id!, "approve")}
+                  >
+                    Approve take
+                  </Button>
+                  <Button
+                    color="secondary"
+                    size="sm"
+                    iconLeading={XCircle}
+                    isDisabled={busy === `reject:${shot.id}`}
+                    onClick={() => void review(shot.id, shot.selected_generation_id!, "reject")}
+                  >
+                    Reject
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                color="secondary"
+                size="sm"
+                iconLeading={ArrowsClockwise}
+                isDisabled={busy === shot.id}
+                onClick={() => void reshoot(shot.id)}
+              >
+                {busy === shot.id ? "Queuing…" : "Reshoot"}
+              </Button>
+            </div>
           ) : null}
           {notice ? <p className="mt-3 text-xs text-tertiary">{notice}</p> : null}
         </aside>

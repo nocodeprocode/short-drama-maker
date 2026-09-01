@@ -28,6 +28,7 @@ export type EngineAction =
   | "generate_dialogue"
   | "generate_video"
   | "regenerate_shot"
+  | "review_take"
   | "render_episode"
   | "advance_production"
   | "tick"
@@ -264,9 +265,22 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
     case "regenerate_shot":
       result = await engine.regenerateShot({ owner_id, shot_id: String(payload.shot_id) });
       break;
-    case "render_episode":
-      result = await engine.renderEpisode({ owner_id, episode_id: String(payload.episode_id) });
+    case "review_take":
+      result = await engine.reviewTake({
+        owner_id,
+        shot_id: String(payload.shot_id),
+        asset_id: String(payload.asset_id),
+        decision: payload.decision === "reject" ? "reject" : "approve",
+        note: typeof payload.note === "string" ? payload.note : null,
+      });
       break;
+    case "render_episode": {
+      const deliverables: Array<"1:1" | "16:9"> = Array.isArray(payload.deliverables)
+        ? payload.deliverables.filter((row): row is "1:1" | "16:9" => row === "1:1" || row === "16:9")
+        : ["1:1", "16:9"];
+      result = await engine.renderEpisode({ owner_id, episode_id: String(payload.episode_id), deliverables });
+      break;
+    }
     case "advance_production":
       result = await advanceProduction(client, task);
       break;

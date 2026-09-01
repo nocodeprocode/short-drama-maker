@@ -775,6 +775,27 @@ Deno.serve(async (req) => {
         shot_id: path.split("/")[2],
       }, access.isAdmin, body.production_id);
     }
+    // Reviewer decision on a take. Approval pins it, rejection drops it; the
+    // episode is re-cut on request, not regenerated.
+    if (req.method === "POST" && /\/shots\/[^/]+\/review$/.test(path)) {
+      const body = await req.json().catch(() => ({}));
+      if (typeof body.asset_id !== "string" || !body.asset_id) return json({ error: "asset_id is required" }, 400);
+      if (body.decision !== "approve" && body.decision !== "reject") return json({ error: "decision must be approve or reject" }, 400);
+      return enqueue(supabase, user.id, body.series_id, "review_take", {
+        shot_id: path.split("/")[2],
+        asset_id: body.asset_id,
+        decision: body.decision,
+        note: typeof body.note === "string" ? body.note.slice(0, 500) : null,
+      }, access.isAdmin, body.production_id);
+    }
+    // Re-cut from the current takes without generating anything.
+    if (req.method === "POST" && /\/episodes\/[^/]+\/recut$/.test(path)) {
+      const body = await req.json().catch(() => ({}));
+      const episodeId = path.split("/")[2];
+      const { data: episode } = await supabase.from("episodes").select("id, series_id").eq("id", episodeId).maybeSingle();
+      if (!episode) return json({ error: "Not found" }, 404);
+      return enqueue(supabase, user.id, episode.series_id, "render_episode", { episode_id: episodeId, recut: true }, access.isAdmin, body.production_id);
+    }
 
     if (req.method === "GET" && path.startsWith("/jobs/")) {
       const id = path.split("/")[2];

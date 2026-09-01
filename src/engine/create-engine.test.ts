@@ -692,6 +692,32 @@ describe("engine phase 0", () => {
     expect(manifestShot?.in_point_seconds).toBe(0.4);
   });
 
+  it("lets a reviewer pin or drop a take and re-cuts without regenerating", async () => {
+    const { app, episode, shots } = await fundedSeries();
+    for (const shot of shots) await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    await app.tick();
+    const first = await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id, deliverables: [] });
+    expect(first.version).toBe(1);
+    expect(first.captions_asset_id).toBeTruthy();
+    expect(first.provenance_asset_id).toBeTruthy();
+
+    const target = app.store.shotsForEpisode(episode.id)[0]!;
+    const takeId = target.selected_generation_id!;
+    const rejected = await app.reviewTake({ owner_id: "user-1", shot_id: target.id, asset_id: takeId, decision: "reject", note: "stranger" });
+    expect(rejected.status).toBe("needs_review");
+    expect(rejected.selected_generation_id).toBeNull();
+    await expect(app.renderEpisode({ owner_id: "user-1", episode_id: episode.id })).rejects.toBeInstanceOf(RenderIncompleteError);
+
+    const approved = await app.reviewTake({ owner_id: "user-1", shot_id: target.id, asset_id: takeId, decision: "approve" });
+    expect(approved.status).toBe("complete");
+    expect(approved.selected_generation_id).toBe(takeId);
+    const second = await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id, deliverables: [] });
+    expect(second.version).toBe(2);
+    expect(second.checksum).toBe(first.checksum);
+    const finals = (await app.assets.listBySeries(episode.series_id)).filter((asset) => asset.kind === "episode_final");
+    expect(finals.map((asset) => asset.metadata.version).sort()).toEqual([1, 2]);
+  });
+
   it("refuses to ship an episode around an identity_reject take unless the caller allows a partial cut", async () => {
     const { app, episode, shots } = await fundedSeries();
     for (const shot of shots) {

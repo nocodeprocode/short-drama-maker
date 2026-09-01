@@ -2572,11 +2572,65 @@ export function createEngine(deps: EngineDeps = {}) {
     return (await assets.listBySeries(seriesId)).filter((asset) => !asset.deleted_at);
   }
 
+  /**
+   * A reviewer's decision on a take. Approval pins that take for the cut even
+   * if the score prefers another; rejection removes it from consideration. The
+   * cut itself is not regenerated — re-render the episode to apply the change.
+   */
+  async function reviewTake(input: {
+    owner_id: string;
+    shot_id: string;
+    asset_id: string;
+    decision: "approve" | "reject";
+    note?: string | null;
+  }) {
+    const { shot, series } = requireShot(input.shot_id, input.owner_id);
+    const live = store.shots.get(shot.id)!;
+    const known = (await liveAssetsForSeries(series.id)).some((asset) => asset.id === input.asset_id && asset.kind === "shot_video");
+    if (!known) throw new Error("Take not found on this series");
+    const reviews = (live.shot_data.take_reviews ?? []).filter((row) => row.asset_id !== input.asset_id);
+    reviews.push({
+      asset_id: input.asset_id,
+      decision: input.decision,
+      note: input.note?.trim() || null,
+      reviewed_at: iso(clock),
+      reviewer_id: input.owner_id,
+    });
+    const rejectedSelected = input.decision === "reject" && live.selected_generation_id === input.asset_id;
+    const next: Shot = {
+      ...live,
+      status: input.decision === "approve" ? "complete" : rejectedSelected ? "needs_review" : live.status,
+      selected_generation_id: input.decision === "approve" ? input.asset_id : rejectedSelected ? null : live.selected_generation_id,
+      shot_data: { ...live.shot_data, take_reviews: reviews, identity_reject: input.decision === "approve" ? false : live.shot_data.identity_reject },
+    };
+    // The approved take's own measurements drive the manifest for this shot.
+    if (input.decision === "approve") {
+      const ranked = await rankedTakesForShot(next, series.id);
+      const chosen = ranked.find((row) => row.assetId === input.asset_id);
+      if (chosen?.analysis) next.shot_data = { ...next.shot_data, take_analysis: chosen.analysis };
+    }
+    store.shots.set(next.id, next);
+    return next;
+  }
+
+  function reviewFor(shot: Shot, assetId: string): "approve" | "reject" | null {
+    return shot.shot_data.take_reviews?.find((row) => row.asset_id === assetId)?.decision ?? null;
+  }
+
   async function resolveTakeAssetId(shot: Shot, seriesId: string): Promise<string | null> {
+    // A reviewer's approval outranks the score; a rejection removes the take.
+    const approved = (shot.shot_data.take_reviews ?? []).filter((row) => row.decision === "approve").at(-1);
+    if (approved) {
+      const live = new Set((await liveAssetsForSeries(seriesId)).map((asset) => asset.id));
+      if (live.has(approved.asset_id)) return approved.asset_id;
+    }
     // Measured takes are ranked; the best blocker-free one wins even over a
     // previously selected take, and its analysis becomes the shot's so the
     // manifest trims by the settle of the take that actually plays.
-    const ranked = await rankedTakesForShot(shot, seriesId);
+    const rejected = new Set((shot.shot_data.take_reviews ?? []).filter((row) => row.decision === "reject").map((row) => row.asset_id));
+    const measured = await rankedTakesForShot(shot, seriesId);
+    const ranked = measured.filter((row) => !rejected.has(row.assetId));
+    if (measured.length && !ranked.length) return null;
     if (ranked.length) {
       const best = pickBestTake(ranked);
       if (best) {
@@ -2593,7 +2647,7 @@ export function createEngine(deps: EngineDeps = {}) {
       return null;
     }
     const listed = await liveAssetsForSeries(seriesId);
-    const live = new Set(listed.map((asset) => asset.id));
+    const live = new Set(listed.filter((asset) => !rejected.has(asset.id)).map((asset) => asset.id));
     if (shot.selected_generation_id && live.has(shot.selected_generation_id)) {
       return shot.selected_generation_id;
     }
@@ -2605,7 +2659,7 @@ export function createEngine(deps: EngineDeps = {}) {
       if (typeof assetId === "string" && live.has(assetId)) return assetId;
     }
     const fromFile = listed.find(
-      (asset) => asset.kind === "shot_video" && asset.metadata.shot_id === shot.id,
+      (asset) => asset.kind === "shot_video" && asset.metadata.shot_id === shot.id && !rejected.has(asset.id),
     );
     return fromFile?.id ?? null;
   }
@@ -2671,13 +2725,16 @@ export function createEngine(deps: EngineDeps = {}) {
       if (shot.selected_generation_id !== resolved) bindShotTake(shot, resolved);
       return resolved;
     }
+    // A rejected take stays rejected even if its file has to be fetched again.
+    const rejected = new Set((shot.shot_data.take_reviews ?? []).filter((row) => row.decision === "reject").map((row) => row.asset_id));
     const jobs = [...store.jobs.values()]
       .filter(
         (job) =>
           job.shot_id === shot.id &&
           job.job_type === "video" &&
           Boolean(job.upstream_job_id) &&
-          (job.status === "completed" || job.status === "needs_review"),
+          (job.status === "completed" || job.status === "needs_review") &&
+          !(typeof job.result_metadata.asset_id === "string" && rejected.has(job.result_metadata.asset_id)),
       )
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     for (const job of jobs) {
@@ -3148,6 +3205,7 @@ export function createEngine(deps: EngineDeps = {}) {
     reconcile,
     renderEpisode,
     regenerateShot,
+    reviewTake,
     gc,
     estimateEpisode,
     estimateSeries(episodeCount: SeasonSku, length?: EpisodeLength) {

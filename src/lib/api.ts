@@ -81,6 +81,10 @@ export const studio = {
       method: "POST",
       body: JSON.stringify({ series_id: seriesId }),
     }),
+  reviewTake: (shotId: string, body: { series_id: string; asset_id: string; decision: "approve" | "reject"; note?: string }) =>
+    api<{ task_id: string; status: string }>(`/shots/${shotId}/review`, { method: "POST", body: JSON.stringify(body) }),
+  recutEpisode: (episodeId: string) =>
+    api<{ task_id: string; status: string; deduplicated?: boolean }>(`/episodes/${episodeId}/recut`, { method: "POST", body: "{}" }),
   confirmTest: (id: string) => api<Production>(`/productions/${id}/confirm-test`, { method: "POST", body: "{}" }),
   episode: (id: string) => api<EpisodeDetail>(`/episodes/${id}`),
   character: (id: string) => api<Character & { series_title?: string }>(`/characters/${id}`),
@@ -367,6 +371,7 @@ export type EpisodeDetail = Episode & {
     scene_id: string;
     position: number;
     status: string;
+    selected_generation_id?: string | null;
     shot_data: Record<string, unknown>;
     video_url?: string | null;
     still_url?: string | null;
