@@ -10,7 +10,7 @@ import { configuredRender } from "../media/remote-render.ts";
 import { publicLog } from "../logging.ts";
 import { voiceSexRepair } from "../ai/voice-sex.ts";
 import { shotNeedsVideo } from "./queue-policy.ts";
-import { commitSeriesStore, loadSeriesStore } from "../store-postgres.ts";
+import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 
 export const VIDEO_CONCURRENCY = 3;
 
@@ -61,7 +61,28 @@ async function isAdmin(client: SupabaseClient, userId: string): Promise<boolean>
   return accessFromAppMetadata(data.user.app_metadata as Record<string, unknown>).isAdmin;
 }
 
+/** Lease granted by the claim RPC and renewed by the heartbeat. */
+export const TASK_LEASE_SECONDS = 5 * 60;
+export const TASK_HEARTBEAT_MS = 60_000;
+/** Attempts before a task is dead-lettered instead of re-queued. */
+export const TASK_MAX_ATTEMPTS = 6;
+
+let warnedLegacyClaim = false;
+
 async function claimTasks(client: SupabaseClient, limit: number): Promise<TaskRow[]> {
+  // FOR UPDATE SKIP LOCKED in the database: two runners can never claim the same row.
+  const { data, error } = await client.rpc("claim_engine_tasks", { p_limit: limit });
+  if (!error) return (data ?? []) as TaskRow[];
+  if (!isMissingFunction(error.message)) throw new Error(error.message);
+  if (!warnedLegacyClaim) {
+    warnedLegacyClaim = true;
+    console.warn(JSON.stringify(publicLog({ event: "engine_claim_legacy", reason: "claim_engine_tasks RPC missing; apply the runner_hardening migration" })));
+  }
+  return claimTasksLegacy(client, limit);
+}
+
+/** Select-then-update; racy under concurrency. Only used until the claim RPC exists. */
+async function claimTasksLegacy(client: SupabaseClient, limit: number): Promise<TaskRow[]> {
   const { data: due, error: dueError } = await client
     .from("engine_tasks")
     .select("*")
@@ -78,7 +99,7 @@ async function claimTasks(client: SupabaseClient, limit: number): Promise<TaskRo
       .update({
         status: "running",
         attempt: (row.attempt ?? 0) + 1,
-        lease_until: new Date(Date.now() + 3 * 60 * 1000).toISOString(),
+        lease_until: new Date(Date.now() + TASK_LEASE_SECONDS * 1000).toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq("id", row.id)
@@ -89,6 +110,51 @@ async function claimTasks(client: SupabaseClient, limit: number): Promise<TaskRo
     if (updated) claimed.push(updated as TaskRow);
   }
   return claimed;
+}
+
+/** Renews the lease while a task runs; returns a stop function. */
+function startHeartbeat(client: SupabaseClient, task: TaskRow): () => void {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        const { data, error } = await client.rpc("extend_engine_task_lease", { p_task_id: task.id, p_seconds: TASK_LEASE_SECONDS });
+        if (error && !isMissingFunction(error.message)) {
+          console.warn(JSON.stringify(publicLog({ event: "engine_heartbeat_failed", task_id: task.id, error: redactTaskError(error.message) })));
+        } else if (data === false) {
+          // Someone else owns the row now (lease expired and was reclaimed).
+          console.warn(JSON.stringify(publicLog({ event: "engine_lease_lost", task_id: task.id, action: task.action })));
+        }
+      } catch {
+        /* heartbeat is best-effort */
+      }
+    })();
+  }, TASK_HEARTBEAT_MS);
+  return () => clearInterval(timer);
+}
+
+type JobEvent = {
+  kind: string;
+  status?: string | null;
+  detail?: Record<string, unknown>;
+  generation_job_id?: string | null;
+};
+
+/** Best-effort operator trail; never fails the task. */
+async function recordEvent(client: SupabaseClient, task: TaskRow, event: JobEvent): Promise<void> {
+  try {
+    await client.from("job_events").insert({
+      owner_id: task.owner_id,
+      series_id: task.series_id,
+      production_id: task.production_id ?? null,
+      task_id: task.id,
+      generation_job_id: event.generation_job_id ?? null,
+      kind: event.kind,
+      status: event.status ?? null,
+      detail: { action: task.action, attempt: task.attempt, ...(event.detail ?? {}) },
+    });
+  } catch {
+    /* table missing or transient; the task outcome is still on engine_tasks */
+  }
 }
 
 async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown> {
@@ -265,6 +331,25 @@ function hydrateAssetStore(assets: AssetStore, rows: readonly unknown[]) {
   if (typeof hydratable.hydrate === "function") hydratable.hydrate(rows);
 }
 
+/** Small, safe summary of a dispatch result for the event trail. */
+function taskResultSummary(result: unknown): Record<string, unknown> {
+  if (!result || typeof result !== "object") return {};
+  const row = result as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  const job = row.job as Record<string, unknown> | undefined;
+  if (job && typeof job.id === "string") {
+    out.generation_job_id = job.id;
+    out.job_status = job.status;
+    if (typeof job.model === "string") out.model = job.model;
+    if (typeof job.actual_cost === "number") out.actual_cost = job.actual_cost;
+  }
+  if (Array.isArray(row.queued)) out.queued = row.queued;
+  if (typeof row.complete === "boolean") out.complete = row.complete;
+  if (typeof row.checksum === "string") out.checksum = row.checksum;
+  if (typeof row.skipped === "boolean") out.skipped = row.skipped;
+  return out;
+}
+
 function logTaskFailure(task: TaskRow, message: string) {
   console.warn(
     JSON.stringify(
@@ -365,9 +450,16 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
         }
         videoSlots.active += 1;
       }
+      const stopHeartbeat = startHeartbeat(client, task);
+      const startedAt = Date.now();
       try {
-        await dispatch(task, client);
+        const result = await dispatch(task, client);
         await writeTaskOutcome(client, task, { status: "done" });
+        await recordEvent(client, task, {
+          kind: "task_done",
+          status: "done",
+          detail: { duration_ms: Date.now() - startedAt, ...taskResultSummary(result) },
+        });
         if (task.action !== "advance_production") {
           if (task.production_id) {
             await client
@@ -393,6 +485,7 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
         logTaskFailure(task, message);
         if (task.action === "generate_cover") {
           await writeTaskOutcome(client, task, { status: "failed", message });
+          await recordEvent(client, task, { kind: "task_failed", status: "failed", detail: { failure_kind: kind, error: redactTaskError(message) } });
           if (task.production_id) {
             await markProduction(
               client,
@@ -403,12 +496,17 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
             );
             await queueAdvanceForSeries(client, task.series_id);
           }
-        } else if ((kind === "transient" || kind === "technical") && attempt < 6) {
+        } else if ((kind === "transient" || kind === "technical") && attempt < TASK_MAX_ATTEMPTS) {
           const delay = retryDelaySeconds(attempt);
           await writeTaskOutcome(client, task, {
             status: "queued",
             message,
             visible_at: new Date(Date.now() + delay * 1000).toISOString(),
+          });
+          await recordEvent(client, task, {
+            kind: "task_retry",
+            status: "queued",
+            detail: { failure_kind: kind, retry_in_seconds: delay, error: redactTaskError(message) },
           });
           if (task.production_id) {
             await markProduction(
@@ -421,7 +519,16 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
           }
         } else {
           const decision = failureDecision(kind);
-          await writeTaskOutcome(client, task, { status: "failed", message });
+          // Retries exhausted (or the failure is not retryable): dead-letter the
+          // task so operators can tell it from a task that will run again.
+          const exhausted = (kind === "transient" || kind === "technical") && attempt >= TASK_MAX_ATTEMPTS;
+          const status = exhausted ? "dead_lettered" : "failed";
+          await writeTaskOutcome(client, task, { status, message });
+          await recordEvent(client, task, {
+            kind: exhausted ? "task_dead_lettered" : "task_failed",
+            status,
+            detail: { failure_kind: kind, error: redactTaskError(message) },
+          });
           if (task.production_id) {
             await client
               .from("productions")
@@ -429,7 +536,7 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
                 status: "needs_user",
                 ui_phase: "needs_you",
                 intervention_type: decision.intervention_type,
-                intervention: { kind, message: sanitizeTaskError(message) },
+                intervention: { kind, message: sanitizeTaskError(message), dead_lettered: exhausted },
                 agent_decision: decision.agent_decision,
                 updated_at: new Date().toISOString(),
               })
@@ -437,6 +544,7 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
           }
         }
       } finally {
+        stopHeartbeat();
         if (isVideo) videoSlots.active -= 1;
       }
     }),

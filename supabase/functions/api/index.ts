@@ -495,7 +495,14 @@ Deno.serve(async (req) => {
           ...task,
           title: actionLabel(task.action),
           detail: activityDetail(task),
-          status_label: task.status === "done" ? "Done" : task.status === "failed" ? "Failed" : task.status === "running" ? "Working" : "Queued",
+          status_label:
+            task.status === "done"
+              ? "Done"
+              : task.status === "failed" || task.status === "dead_lettered"
+                ? "Failed"
+                : task.status === "running"
+                  ? "Working"
+                  : "Queued",
           subject: typeof (task.payload as Record<string, unknown> | null)?.character_id === "string"
             ? String((task.payload as Record<string, unknown>).character_id)
             : null,

@@ -32,6 +32,8 @@ export class MemoryStore {
   queue: QueueTask[] = [];
   stripeEvents = new Set<string>();
   dailySpend = 0;
+  /** Platform spend as loaded from the database; the commit writes only the delta. */
+  dailySpendBaseline = 0;
   dailyCap = 2000;
   priceSnapshotVersion = "2026-08-31.v1-720p";
 

@@ -84,6 +84,21 @@ export async function enqueue(
   if (!series) return json({ error: "Series not found" }, 404);
   if (series.owner_id !== ownerId && !isAdmin) return json({ error: "Forbidden" }, 403);
 
+  // Idempotent enqueue: a double-click or a retried request must not queue the
+  // same work twice while the first copy is still queued or running.
+  const fingerprint = JSON.stringify(payload ?? {});
+  const { data: active } = await supabase
+    .from("engine_tasks")
+    .select("id, status, payload")
+    .eq("series_id", series.id)
+    .eq("action", action)
+    .in("status", ["queued", "running"])
+    .limit(50);
+  const duplicate = (active ?? []).find((row) => JSON.stringify(row.payload ?? {}) === fingerprint);
+  if (duplicate) {
+    return json({ task_id: duplicate.id, status: duplicate.status, action, deduplicated: true }, 202);
+  }
+
   const { data, error } = await supabase
     .from("engine_tasks")
     .insert({

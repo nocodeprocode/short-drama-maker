@@ -304,6 +304,7 @@ export async function loadSeriesStore(
   const today = new Date().toISOString().slice(0, 10);
   store.dailyCap = Number(spend?.daily_cap ?? DEFAULT_DAILY_SPEND_CAP);
   store.dailySpend = spend && spend.spent_on === today ? Number(spend.daily_spent) : 0;
+  store.dailySpendBaseline = store.dailySpend;
   store.priceSnapshotVersion = PRICE_SNAPSHOT_VERSION;
 
   return { store, assets };
@@ -411,14 +412,31 @@ export async function commitSeriesStore(
     if (error) throw new Error(error.message);
   }
 
-  const { error: spendError } = await client.from("spend_controls").upsert({
-    id: "global",
-    daily_cap: store.dailyCap,
-    daily_spent: store.dailySpend,
-    spent_on: new Date().toISOString().slice(0, 10),
-    updated_at: new Date().toISOString(),
-  });
-  if (spendError) throw new Error(spendError.message);
+  // Platform spend is shared by every runner; write the delta atomically rather
+  // than this process's copy of the total, or concurrent commits lose spend.
+  const delta = Number((store.dailySpend - store.dailySpendBaseline).toFixed(4));
+  if (Math.abs(delta) > 1e-9) {
+    const { data: total, error: spendError } = await client.rpc("add_daily_spend", { p_delta: delta });
+    if (spendError) {
+      if (!isMissingFunction(spendError.message)) throw new Error(spendError.message);
+      // Migration not applied yet: fall back to the old upsert so a deploy is not blocked.
+      const { error: upsertError } = await client.from("spend_controls").upsert({
+        id: "global",
+        daily_cap: store.dailyCap,
+        daily_spent: store.dailySpend,
+        spent_on: new Date().toISOString().slice(0, 10),
+        updated_at: new Date().toISOString(),
+      });
+      if (upsertError) throw new Error(upsertError.message);
+    } else if (typeof total === "number") {
+      store.dailySpend = total;
+    }
+    store.dailySpendBaseline = store.dailySpend;
+  }
+}
+
+export function isMissingFunction(message: string | null | undefined): boolean {
+  return /could not find the function|function .* does not exist|PGRST202/i.test(message ?? "");
 }
 
 export function hydrateAssetStore(

@@ -78,6 +78,7 @@ export function phaseLabel(phase: string | null | undefined): string {
 }
 
 export function activityDetail(task: { status: string; error_code?: string | null }): string {
+  if (task.status === "dead_lettered") return `${task.error_code ?? "This step kept failing."} Retries are exhausted; resume the production to try again.`;
   if (task.status === "failed" || task.error_code) return String(task.error_code ?? "This step did not finish.");
   if (task.status === "done" || task.status === "completed") return "Done";
   if (task.status === "running") return "Working now";
