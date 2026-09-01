@@ -1,0 +1,24 @@
+project_id = "zdhbmvdprdyqzrmuxwiy"
+
+[api]
+enabled = true
+
+[db]
+major_version = 17
+
+[auth]
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+[functions.api]
+verify_jwt = false
+
+[functions.webhooks-openrouter]
+verify_jwt = false
+
+[functions.webhooks-stripe]
+verify_jwt = false

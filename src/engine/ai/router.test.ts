@@ -1,0 +1,122 @@
+import { describe, expect, it } from "vitest";
+import type { Shot, VideoRoute } from "../domain.ts";
+import { failoverRoute, router } from "./router.ts";
+
+function shot(partial: Partial<Shot["shot_data"]>): Shot {
+  return {
+    id: "sh",
+    scene_id: "sc",
+    position: 1,
+    selected_generation_id: null,
+    status: "audio_ready",
+    shot_data: {
+      type: "dialogue",
+      speaker: "sarah",
+      dialogue: "How long?",
+      emotion: "anger",
+      delivery: null,
+      pace: null,
+      camera: "close_up",
+      mouth_visibility_required: true,
+      duration_hint_seconds: 4,
+      duration_seconds: 4,
+      dialogue_audio_asset_id: "a",
+      dialogue_alignment_asset_id: "b",
+      hero: false,
+      ...partial,
+    },
+  };
+}
+
+describe("video router", () => {
+  it("hides model lists and picks by shot role", () => {
+    const dialogue = router.selectVideoRoute(shot({ type: "dialogue" }), "standard", "auto");
+    expect(dialogue.route.model).toBe("alibaba/wan-3.0");
+    expect(dialogue.reason).toMatch(/verified audio-conditioned dialogue/);
+
+    const reaction = router.selectVideoRoute(
+      shot({ type: "reaction", dialogue: null, speaker: null, duration_seconds: 4 }),
+      "standard",
+      "auto",
+    );
+    expect(reaction.route.model).toBe("bytedance/seedance-2.0-mini");
+
+    const hero = router.selectVideoRoute(
+      shot({
+        type: "hero",
+        hero: true,
+        dialogue: null,
+        speaker: null,
+        duration_seconds: 6,
+      }),
+      "standard",
+      "auto",
+    );
+    expect(hero.route.model).toBe("bytedance/seedance-2.5");
+
+    const longDialogue = router.selectVideoRoute(
+      shot({ type: "dialogue", duration_seconds: 20 }),
+      "standard",
+      "auto",
+    );
+    expect(longDialogue.route.model).toBe("alibaba/wan-3.0");
+    expect(longDialogue.route.max_duration_seconds).toBe(30);
+
+    const offscreen = router.selectVideoRoute(
+      shot({
+        type: "reaction",
+        audio_role: "offscreen",
+        function: "listener_hold",
+        dialogue: "Stay.",
+        speaker: "david",
+        duration_seconds: 5,
+      }),
+      "standard",
+      "auto",
+    );
+    expect(offscreen.route.model).toBe("bytedance/seedance-2.0-mini");
+    expect(offscreen.reason).toMatch(/offscreen|economy/i);
+
+    const prev = process.env.DRAMA_CU_MODEL;
+    process.env.DRAMA_CU_MODEL = "alibaba/wan-3.0";
+    try {
+      const silent = router.selectVideoRoute(
+        shot({
+          type: "reaction",
+          function: "reaction",
+          audio_role: "silent",
+          dialogue: null,
+          speaker: null,
+          duration_seconds: 4,
+        }),
+        "standard",
+        "auto",
+      );
+      expect(silent.route.model).toBe("bytedance/seedance-2.0-mini");
+    } finally {
+      if (prev === undefined) delete process.env.DRAMA_CU_MODEL;
+      else process.env.DRAMA_CU_MODEL = prev;
+    }
+  });
+
+  it("failovers Wan to Mini after Seedance 2.5 lost the identity bake-off", () => {
+    const wan: VideoRoute = {
+      model: "alibaba/wan-3.0",
+      provider: "openrouter",
+      role: "dialogue_default",
+      min_duration_seconds: 2,
+      max_duration_seconds: 30,
+      aspect_ratios: ["9:16"],
+      audio_conditioning_verified: true,
+      region_documented: false,
+      strict_privacy_allowed: false,
+    };
+    expect(failoverRoute(shot({}), wan).model).toBe("bytedance/seedance-2.0-mini");
+  });
+
+  it("does not expose an unprovable strict privacy route", () => {
+    expect(() => router.selectVideoRoute(shot({}), "strict" as never, "auto")).toThrow(
+      /STRICT privacy is not shipped/,
+    );
+  });
+});

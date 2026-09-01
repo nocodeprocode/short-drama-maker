@@ -1,0 +1,2703 @@
+import { createAiGateway, type AIGateway } from "./ai/index.ts";
+import { ContentBlockedError } from "./ai/moderation.ts";
+import { assertStandardOnly } from "./ai/privacy.ts";
+import { generationPrivacyLog } from "../legal/providers.ts";
+import {
+  DEFAULT_DAILY_SPEND_CAP,
+  DIALOGUE_DURATION_WINDOW,
+  QC_AUTOPILOT_DURATION_TOLERANCE_SECONDS,
+  RETRY_CAP,
+  SIGNED_URL_TTL_SECONDS,
+  TEXT_MODEL,
+  VIDEO_ROUTES,
+} from "./config/models.ts";
+import { decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
+import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
+import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
+import { dramaHooks } from "../drama-engine/index.ts";
+import { detectInternalCuts, lockedTakeRejected } from "../drama-engine/editorial/cut-detect.ts";
+import { defaultCraftForShot } from "../drama-engine/editorial/shot-budget.ts";
+import { allowsTwoShot, isObjectInsert } from "../drama-engine/types/editorial.ts";
+import type {
+  Actor,
+  ActorSource,
+  AlignmentTrack,
+  AppearanceProfile,
+  Character,
+  Episode,
+  GenerationJob,
+  LedgerEntry,
+  PrivacyProfile,
+  QualityProfile,
+  RenderManifest,
+  SeasonSku,
+  Series,
+  Shot,
+  StoryBible,
+  VisualReferenceKind,
+  VoiceCandidate,
+} from "./domain.ts";
+import { extractAudioMp3 } from "./media/extract-audio.ts";
+import { alignVoicePrompt } from "./ai/voice-sex.ts";
+import { dialogueMatchesTranscript, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
+import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
+import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
+import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
+import {
+  FACE_KIND_ORDER,
+  appearanceDescription,
+  lookPrompt,
+  looksFromBible,
+  preferredCuFace,
+  preferredFaceId,
+  seedStillForCu,
+  wardrobeForScene,
+} from "./pipeline/wardrobe.ts";
+import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
+import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
+import { inventedSecondBody } from "./media/second-body.ts";
+import { objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
+import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
+import { failoverRoute } from "./ai/router.ts";
+import {
+  orderIdentityRefs,
+  resolveIdentityRefPolicy,
+  shouldFailoverModel,
+  type IdentityRefPolicy,
+} from "./pipeline/identity-refs.ts";
+import { isActive, isTerminal, transitionJob } from "./jobs/state-machine.ts";
+import {
+  assertCanReserve,
+  DEFAULT_PRICE_SNAPSHOT_VERSION,
+  DuplicateStripeEventError,
+  hasLedgerPair,
+  hasStripeEvent,
+  projectBalance,
+  reservedForJob,
+} from "./ledger/budget.ts";
+import { chooseHeardLane } from "./pipeline/heard-audio.ts";
+import { blockingQcReasons, mechanicalQc } from "./media/qc.ts";
+import { probeVideoBytes } from "./media/probe.ts";
+import { renderEpisodeBytes, type RenderFn } from "./media/render.ts";
+import { createConfiguredAssetStore } from "./storage/create.ts";
+import { assetPath, extForMime } from "./storage/paths.ts";
+import { planRetention } from "./storage/retention.ts";
+import type { AssetStore } from "./storage/types.ts";
+import { MemoryStore } from "./store.ts";
+import { transcriptFromAlignment } from "./media/qc.ts";
+
+export type EngineDeps = {
+  store?: MemoryStore;
+  assets?: AssetStore;
+  ai?: AIGateway;
+  clock?: Clock;
+  ids?: IdFactory;
+  dailyCap?: number;
+  skipSeriesBudget?: boolean;
+  identityRefPolicy?: IdentityRefPolicy;
+  /** Override the mixer (tests, remote media worker). Defaults to the local ffmpeg path. */
+  render?: RenderFn;
+};
+
+export type StripeWebhookInput = {
+  event_id: string;
+  signature_valid: boolean;
+  type: string;
+  payment_status?: "paid" | "unpaid" | "no_payment_required";
+  series_id: string;
+  owner_id: string;
+  amount: number;
+};
+
+export type OpenRouterWebhookInput = {
+  callback_token: string;
+  upstream_job_id?: string;
+};
+
+/**
+ * Callback URL registered with OpenRouter. Returns null when no webhook base is
+ * configured; the runner's tick/reconcile sweep then polls instead. The shared
+ * secret rides in the URL because OpenRouter does not sign callbacks.
+ */
+function openRouterCallbackUrl(token: string): string | null {
+  const explicit = process.env.OPENROUTER_WEBHOOK_URL?.trim().replace(/\/$/, "");
+  const supabaseUrl = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL)?.trim().replace(/\/$/, "");
+  const base = explicit || (supabaseUrl ? `${supabaseUrl}/functions/v1/webhooks-openrouter` : null);
+  if (!base) return null;
+  const secret = process.env.OPENROUTER_WEBHOOK_SECRET?.trim();
+  const params = new URLSearchParams({ token });
+  if (secret) params.set("secret", secret);
+  return `${base}?${params.toString()}`;
+}
+
+export class RenderIncompleteError extends Error {
+  constructor(readonly missing: string[]) {
+    super(`Not every shot is complete: ${missing.join("; ")}`);
+    this.name = "RenderIncompleteError";
+  }
+}
+
+function emptyAppearance(): AppearanceProfile {
+  return { age_look: "", ethnicity_notes: "", hair: "", face: "", body: "", default_wardrobe: "" };
+}
+
+export function createEngine(deps: EngineDeps = {}) {
+  const store = deps.store ?? new MemoryStore();
+  const assets = deps.assets ?? createConfiguredAssetStore();
+  const ai = deps.ai ?? createAiGateway();
+  const identityRefPolicy = resolveIdentityRefPolicy(deps.identityRefPolicy);
+  const render = deps.render ?? renderEpisodeBytes;
+  const clock = deps.clock ?? systemClock();
+  const ids = deps.ids ?? cryptoIds();
+  store.dailyCap = deps.dailyCap ?? DEFAULT_DAILY_SPEND_CAP;
+  const skipSeriesBudget = deps.skipSeriesBudget === true;
+  const pendingVoices = new Map<string, VoiceCandidate[]>();
+
+  function requireSeries(seriesId: string, ownerId: string): Series {
+    const series = store.series.get(seriesId);
+    if (!series || series.owner_id !== ownerId || series.deleted_at) {
+      throw new Error("Series not found");
+    }
+    return series;
+  }
+
+  function requireCharacter(characterId: string, ownerId: string): Character {
+    const character = store.characters.get(characterId);
+    if (!character) throw new Error("Character not found");
+    requireSeries(character.series_id, ownerId);
+    return character;
+  }
+
+  function requireShot(shotId: string, ownerId: string): { shot: Shot; series: Series; episode: Episode } {
+    const shot = store.shots.get(shotId);
+    if (!shot) throw new Error("Shot not found");
+    const scene = store.scenes.get(shot.scene_id);
+    if (!scene) throw new Error("Scene not found");
+    const episode = store.episodes.get(scene.episode_id);
+    if (!episode) throw new Error("Episode not found");
+    const series = requireSeries(episode.series_id, ownerId);
+    return { shot, series, episode };
+  }
+
+  function writeLedger(entry: Omit<LedgerEntry, "id" | "created_at">): LedgerEntry {
+    const row: LedgerEntry = {
+      ...entry,
+      id: ids.id(),
+      created_at: iso(clock),
+    };
+    store.ledger.push(row);
+    return row;
+  }
+
+  async function putAsset(input: {
+    owner_id: string;
+    series_id: string | null;
+    actor_id?: string | null;
+    kind: Parameters<AssetStore["put"]>[0]["kind"];
+    bucket: Parameters<AssetStore["put"]>[0]["bucket"];
+    mime_type: string;
+    body: Uint8Array;
+    metadata?: Record<string, unknown>;
+  }) {
+    const id = ids.id();
+    const ext = extForMime(input.mime_type);
+    return assets.put({
+      id,
+      owner_id: input.owner_id,
+      series_id: input.series_id,
+      actor_id: input.actor_id ?? null,
+      kind: input.kind,
+      bucket: input.bucket,
+      storage_path: assetPath({
+        bucket: input.bucket,
+        seriesId: input.series_id,
+        kind: input.kind,
+        id,
+        ext,
+        ownerId: input.owner_id,
+        actorId: input.actor_id ?? undefined,
+      }),
+      mime_type: input.mime_type,
+      body: input.body,
+      checksum: await sha256Hex(input.body),
+      metadata: input.metadata ?? {},
+      created_at: iso(clock),
+    });
+  }
+
+  function faceRefsFor(character: Character): Partial<Record<VisualReferenceKind, string>> {
+    const actor = character.actor_id ? store.actors.get(character.actor_id) : undefined;
+    return { ...(actor?.visual_reference_asset_ids ?? {}), ...character.visual_reference_asset_ids };
+  }
+
+  function ensureActorForCharacter(character: Character, ownerId: string): Actor {
+    if (character.actor_id) {
+      const existing = store.actors.get(character.actor_id);
+      if (existing) return existing;
+    }
+    const actor: Actor = {
+      id: ids.id(),
+      owner_id: ownerId,
+      name: character.name,
+      source: "generated",
+      seed_asset_id: null,
+      appearance_profile: character.appearance_profile,
+      visual_reference_asset_ids: { ...character.visual_reference_asset_ids },
+      created_at: iso(clock),
+      updated_at: iso(clock),
+    };
+    store.actors.set(actor.id, actor);
+    store.characters.set(character.id, { ...character, actor_id: actor.id, updated_at: iso(clock) });
+    return actor;
+  }
+
+  function findJobByKey(key: string): GenerationJob | undefined {
+    return [...store.jobs.values()].find((job) => job.idempotency_key === key);
+  }
+
+  function createJob(input: Omit<GenerationJob, "id" | "created_at" | "updated_at" | "callback_token" | "callback_token_used" | "attempt" | "actual_cost" | "error_code" | "result_metadata"> & Partial<Pick<GenerationJob, "result_metadata" | "attempt">>): GenerationJob {
+    const existing = findJobByKey(input.idempotency_key);
+    if (existing) {
+      if (existing.status === "completed") return existing;
+      if (existing.job_type !== "video") {
+        const retried: GenerationJob = {
+          ...existing,
+          status: "queued",
+          attempt: existing.attempt + 1,
+          error_code: null,
+          updated_at: iso(clock),
+        };
+        store.jobs.set(retried.id, retried);
+        return retried;
+      }
+      return existing;
+    }
+    const job: GenerationJob = {
+      ...input,
+      id: ids.id(),
+      callback_token: ids.token(),
+      callback_token_used: false,
+      attempt: input.attempt ?? 1,
+      actual_cost: null,
+      error_code: null,
+      result_metadata: input.result_metadata ?? {},
+      created_at: iso(clock),
+      updated_at: iso(clock),
+    };
+    store.jobs.set(job.id, job);
+    store.queue.push({
+      id: ids.id(),
+      job_id: job.id,
+      kind: job.job_type === "video" ? "generate" : "generate",
+      created_at: iso(clock),
+      visible_at: iso(clock),
+    });
+    return job;
+  }
+
+  async function moderate(content: string, checkpoint: "story_input" | "character_create" | "shot_submit", seriesId: string | null, jobId: string | null) {
+    const verdict = await ai.moderation.check(content, checkpoint);
+    store.moderation.push({
+      id: ids.id(),
+      job_id: jobId,
+      series_id: seriesId,
+      checkpoint,
+      verdict: verdict.verdict,
+      category: verdict.category,
+      reason: verdict.reason,
+      created_at: iso(clock),
+    });
+    if (verdict.verdict === "block") {
+      throw new ContentBlockedError(verdict);
+    }
+    return verdict;
+  }
+
+  function reserve(job: GenerationJob) {
+    assertCanReserve(
+      store.ledger.filter((row) => row.series_id === job.series_id),
+      job.id,
+      job.estimated_cost,
+      store.dailySpend,
+      store.dailyCap,
+      { skipSeriesBudget },
+    );
+    writeLedger({
+      owner_id: job.owner_id,
+      series_id: job.series_id,
+      entry_type: "reserve",
+      amount: job.estimated_cost,
+      generation_job_id: job.id,
+      stripe_event_id: null,
+      price_snapshot_version: store.priceSnapshotVersion,
+    });
+    store.dailySpend += job.estimated_cost;
+  }
+
+  function settle(job: GenerationJob, actual: number) {
+    if (hasLedgerPair(store.ledger, job.id, "settle")) return;
+    const reserved = reservedForJob(store.ledger, job.id);
+    writeLedger({
+      owner_id: job.owner_id,
+      series_id: job.series_id,
+      entry_type: "settle",
+      amount: actual,
+      generation_job_id: job.id,
+      stripe_event_id: null,
+      price_snapshot_version: store.priceSnapshotVersion,
+    });
+    // Unwind the whole hold; the settle row above is the only debit that stays.
+    if (reserved > 1e-9) {
+      writeLedger({
+        owner_id: job.owner_id,
+        series_id: job.series_id,
+        entry_type: "release",
+        amount: reserved,
+        generation_job_id: job.id,
+        stripe_event_id: null,
+        price_snapshot_version: store.priceSnapshotVersion,
+      });
+    }
+    store.dailySpend += actual - reserved;
+  }
+
+  function characterBySpeaker(seriesId: string, speaker: string): Character {
+    const needle = speaker.trim().toLowerCase();
+    const match = store.charactersFor(seriesId).find((character) => {
+      return (
+        character.name.toLowerCase() === needle ||
+        character.name.toLowerCase().split(/\s+/)[0] === needle
+      );
+    });
+    if (!match) throw new Error(`No locked character named ${speaker}`);
+    return match;
+  }
+
+  async function createSeries(input: {
+    owner_id: string;
+    title: string;
+    description: string;
+    target_episode_count?: SeasonSku;
+    sku?: CatalogSku;
+  }) {
+    const series: Series = {
+      id: ids.id(),
+      owner_id: input.owner_id,
+      title: input.title,
+      description: input.description,
+      style_profile: { aspect: "9:16", episode_length: "60_90" },
+      story_bible: null,
+      target_episode_count: input.target_episode_count ?? null,
+      sku: input.sku != null ? String(input.sku) : input.target_episode_count ? String(input.target_episode_count) : null,
+      location_refs: {},
+      cover_asset_id: null,
+      status: "draft",
+      deleted_at: null,
+      created_at: iso(clock),
+    };
+    store.series.set(series.id, series);
+    return series;
+  }
+
+  async function analyze(input: { owner_id: string; series_id: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    await moderate(`${series.title}\n${series.description}`, "story_input", series.id, null);
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "story_analysis",
+      model: TEXT_MODEL,
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: `analyze:${series.id}`,
+      status: "queued",
+      request_metadata: {},
+      estimated_cost: ai.pricing.estimateLlm(),
+      expected_ready_at: addSeconds(clock, 5),
+    });
+    reserve(job);
+    const bible = await ai.llm.analyzeStory({
+      title: series.title,
+      idea: series.description,
+    });
+    if (bible.characters.length < 3 || bible.characters.length > 8) {
+      throw new Error("Story bible needs 3–8 named roles (Engine / Wall / Witness / Nuke)");
+    }
+    await moderate(
+      [
+        bible.title,
+        bible.logline,
+        ...bible.characters.map(
+          (character) =>
+            `${character.name}\n${character.description}\n${character.voice_design_prompt}`,
+        ),
+      ].join("\n"),
+      "story_input",
+      series.id,
+      job.id,
+    );
+    for (const draft of bible.characters) {
+      const character: Character = {
+        id: ids.id(),
+        series_id: series.id,
+        name: draft.name,
+        description: draft.description,
+        actor_id: null,
+        appearance_profile: draft.appearance,
+        visual_reference_asset_ids: {},
+        wardrobe_asset_ids: {},
+        voice_profile: {
+          design_prompt: alignVoicePrompt(draft.voice_design_prompt, `${draft.name}. ${draft.description}`),
+          elevenlabs_voice_id: null,
+          canonical_reference_asset_id: null,
+          accent: "american",
+          age_profile: draft.appearance.age_look,
+          speaking_style: "conversational",
+          default_energy: "calm",
+          voice_version: 0,
+          locked: false,
+        },
+        personality_profile: draft.personality,
+        relationships: draft.relationships,
+        default_wardrobe: draft.appearance.default_wardrobe,
+        locked: false,
+        created_at: iso(clock),
+        updated_at: iso(clock),
+      };
+      store.characters.set(character.id, character);
+    }
+    store.jobs.set(job.id, transitionJob(job, "submitting", iso(clock)));
+    const generating = transitionJob(store.jobs.get(job.id)!, "generating", iso(clock));
+    store.jobs.set(job.id, generating);
+    const ingesting = transitionJob(generating, "ingesting", iso(clock));
+    store.jobs.set(job.id, ingesting);
+    const qc = transitionJob(ingesting, "qc", iso(clock));
+    store.jobs.set(job.id, qc);
+    store.jobs.set(job.id, transitionJob(qc, "completed", iso(clock), { actual_cost: job.estimated_cost }));
+    settle(store.jobs.get(job.id)!, job.estimated_cost);
+    store.series.set(series.id, { ...series, status: "ready", story_bible: bible });
+    return { job: store.jobs.get(job.id)!, bible, characters: store.charactersFor(series.id) };
+  }
+
+  async function restoreAppearance(character: Character): Promise<Character | null> {
+    const refs = faceRefsFor(character);
+    if (Object.keys(refs).length > 0) {
+      if (Object.keys(character.visual_reference_asset_ids).length === 0) {
+        const next = { ...character, visual_reference_asset_ids: refs, updated_at: iso(clock) };
+        store.characters.set(character.id, next);
+        return next;
+      }
+      return character;
+    }
+    const existing = findJobByKey(`appearance:${character.id}`);
+    const saved = (existing?.result_metadata.refs ?? null) as Partial<Record<VisualReferenceKind, string>> | null;
+    if (!saved || Object.keys(saved).length === 0) return null;
+    const next = {
+      ...character,
+      visual_reference_asset_ids: saved,
+      updated_at: iso(clock),
+    };
+    store.characters.set(character.id, next);
+    return next;
+  }
+
+  async function generateAppearance(input: { owner_id: string; character_id: string }) {
+    let character = requireCharacter(input.character_id, input.owner_id);
+    const restored = await restoreAppearance(character);
+    if (restored) return restored;
+    if (character.locked) throw new Error("Character is locked");
+    await moderate(
+      `${character.name}\n${character.description}\n${character.voice_profile.design_prompt}`,
+      "character_create",
+      character.series_id,
+      null,
+    );
+    const actor = ensureActorForCharacter(character, input.owner_id);
+    character = requireCharacter(input.character_id, input.owner_id);
+    const job = createJob({
+      owner_id: input.owner_id,
+      series_id: character.series_id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/reference-pack",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: `appearance:${character.id}`,
+      status: "queued",
+      request_metadata: { character_id: character.id, actor_id: actor.id },
+      estimated_cost: ai.pricing.estimateImage() * FACE_KIND_ORDER.length,
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    if (job.status === "completed") {
+      return (await restoreAppearance(requireCharacter(input.character_id, input.owner_id))) ?? requireCharacter(input.character_id, input.owner_id);
+    }
+    if (job.status !== "queued" && job.status !== "failed") {
+      return character;
+    }
+    if (!reservedForJob(store.ledger, job.id)) reserve(job);
+    const description = appearanceDescription({
+      description: character.description,
+      ...character.appearance_profile,
+    });
+    const refs: Partial<Record<VisualReferenceKind, string>> = { ...actor.visual_reference_asset_ids };
+    for (const kind of FACE_KIND_ORDER) {
+      if (refs[kind]) continue;
+      const image = await ai.image.generateReference({
+        characterName: character.name,
+        description,
+        kind,
+      });
+      const asset = await putAsset({
+        owner_id: input.owner_id,
+        series_id: character.series_id,
+        actor_id: actor.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { character_id: character.id, actor_id: actor.id, kind },
+      });
+      refs[kind] = asset.id;
+    }
+    store.actors.set(actor.id, { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) });
+    const next = {
+      ...character,
+      actor_id: actor.id,
+      visual_reference_asset_ids: refs,
+      updated_at: iso(clock),
+    };
+    store.characters.set(character.id, next);
+    completeSyncJob(job, job.estimated_cost, { character_id: character.id, actor_id: actor.id, refs });
+    return next;
+  }
+
+  function createActor(input: {
+    owner_id: string;
+    name: string;
+    source?: ActorSource;
+    appearance_profile?: AppearanceProfile;
+    seed_asset_id?: string | null;
+  }): Actor {
+    const actor: Actor = {
+      id: ids.id(),
+      owner_id: input.owner_id,
+      name: input.name,
+      source: input.source ?? "generated",
+      seed_asset_id: input.seed_asset_id ?? null,
+      appearance_profile: input.appearance_profile ?? emptyAppearance(),
+      visual_reference_asset_ids: {},
+      created_at: iso(clock),
+      updated_at: iso(clock),
+    };
+    store.actors.set(actor.id, actor);
+    return actor;
+  }
+
+  async function generateActor(input: {
+    owner_id: string;
+    actor_id: string;
+    series_id: string;
+    seed_bytes?: Uint8Array;
+    seed_mime_type?: string;
+  }) {
+    let actor = store.actors.get(input.actor_id);
+    if (!actor || actor.owner_id !== input.owner_id) throw new Error("Actor not found");
+    requireSeries(input.series_id, input.owner_id);
+    if (input.seed_bytes && !actor.seed_asset_id) {
+      const seed = await putAsset({
+        owner_id: input.owner_id,
+        series_id: input.series_id,
+        actor_id: actor.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: input.seed_mime_type ?? "image/png",
+        body: input.seed_bytes,
+        metadata: { actor_id: actor.id, kind: "seed" },
+      });
+      actor = { ...actor, seed_asset_id: seed.id, source: "likeness", updated_at: iso(clock) };
+      store.actors.set(actor.id, actor);
+    }
+    if (Object.keys(actor.visual_reference_asset_ids).length > 0) return actor;
+    const existing = findJobByKey(`appearance:actor:${actor.id}`);
+    const saved = (existing?.result_metadata.refs ?? null) as Partial<Record<VisualReferenceKind, string>> | null;
+    if (saved && Object.keys(saved).length > 0) {
+      const next = { ...actor, visual_reference_asset_ids: saved, updated_at: iso(clock) };
+      store.actors.set(actor.id, next);
+      return next;
+    }
+    await moderate(
+      `${actor.name}\n${appearanceDescription(actor.appearance_profile)}`,
+      "character_create",
+      input.series_id,
+      null,
+    );
+    const job = createJob({
+      owner_id: input.owner_id,
+      series_id: input.series_id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/actor-pack",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: `appearance:actor:${actor.id}`,
+      status: "queued",
+      request_metadata: { actor_id: actor.id },
+      estimated_cost: ai.pricing.estimateImage() * FACE_KIND_ORDER.length,
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    if (job.status === "completed") {
+      const refs = (job.result_metadata.refs ?? saved ?? {}) as Partial<Record<VisualReferenceKind, string>>;
+      const next = { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) };
+      store.actors.set(actor.id, next);
+      return next;
+    }
+    if (job.status !== "queued" && job.status !== "failed") return actor;
+    if (!reservedForJob(store.ledger, job.id)) reserve(job);
+    const description = appearanceDescription({ description: actor.name, ...actor.appearance_profile });
+    const refs: Partial<Record<VisualReferenceKind, string>> = {};
+    const seed = actor.seed_asset_id ? await assets.get(actor.seed_asset_id) : null;
+    for (const kind of FACE_KIND_ORDER) {
+      const image = seed
+        ? await ai.image.generateReferenceFromSeed({
+            characterName: actor.name,
+            description,
+            kind,
+            seed_bytes: seed.body,
+            seed_mime_type: seed.asset.mime_type,
+          })
+        : await ai.image.generateReference({
+            characterName: actor.name,
+            description,
+            kind,
+          });
+      const asset = await putAsset({
+        owner_id: input.owner_id,
+        series_id: input.series_id,
+        actor_id: actor.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { actor_id: actor.id, kind },
+      });
+      refs[kind] = asset.id;
+    }
+    const next = { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) };
+    store.actors.set(actor.id, next);
+    for (const character of store.characters.values()) {
+      if (character.actor_id === actor.id && !character.locked) {
+        store.characters.set(character.id, {
+          ...character,
+          visual_reference_asset_ids: refs,
+          updated_at: iso(clock),
+        });
+      }
+    }
+    completeSyncJob(job, job.estimated_cost, { actor_id: actor.id, refs });
+    return next;
+  }
+
+  async function attachActor(input: { owner_id: string; character_id: string; actor_id: string }) {
+    const character = requireCharacter(input.character_id, input.owner_id);
+    if (character.locked) throw new Error("Character is locked");
+    const actor = store.actors.get(input.actor_id);
+    if (!actor || actor.owner_id !== input.owner_id) throw new Error("Actor not found");
+    const next = {
+      ...character,
+      actor_id: actor.id,
+      visual_reference_asset_ids: { ...actor.visual_reference_asset_ids },
+      appearance_profile:
+        actor.appearance_profile.hair || actor.appearance_profile.face
+          ? actor.appearance_profile
+          : character.appearance_profile,
+      updated_at: iso(clock),
+    };
+    store.characters.set(character.id, next);
+    return next;
+  }
+
+  async function generateWardrobe(input: { owner_id: string; character_id: string }) {
+    const character = requireCharacter(input.character_id, input.owner_id);
+    const series = requireSeries(character.series_id, input.owner_id);
+    const looks = looksFromBible({
+      locations: series.story_bible?.locations,
+      default_wardrobe: character.default_wardrobe || character.appearance_profile.default_wardrobe,
+    });
+    const faceId = preferredFaceId(faceRefsFor(character));
+    if (!faceId) throw new Error("Character stills are required before wardrobe");
+    const seed = await assets.get(faceId);
+    if (!seed) throw new Error("Face still missing");
+    const wardrobe = { ...character.wardrobe_asset_ids };
+    const description = appearanceDescription({
+      description: character.description,
+      ...character.appearance_profile,
+    });
+    for (const look of looks) {
+      if (wardrobe[look]) continue;
+      const key = `wardrobe:${character.id}:${look}`;
+      const existing = findJobByKey(key);
+      if (existing?.status === "completed" && typeof existing.result_metadata.asset_id === "string") {
+        wardrobe[look] = String(existing.result_metadata.asset_id);
+        continue;
+      }
+      const job = createJob({
+        owner_id: input.owner_id,
+        series_id: character.series_id,
+        episode_id: null,
+        scene_id: null,
+        shot_id: null,
+        job_type: "image",
+        model: "image/wardrobe",
+        provider: "openrouter",
+        upstream_job_id: null,
+        idempotency_key: key,
+        status: "queued",
+        request_metadata: { character_id: character.id, look },
+        estimated_cost: ai.pricing.estimateImage(),
+        expected_ready_at: addSeconds(clock, 30),
+      });
+      if (job.status === "completed" && typeof job.result_metadata.asset_id === "string") {
+        wardrobe[look] = String(job.result_metadata.asset_id);
+        continue;
+      }
+      if (job.status !== "queued" && job.status !== "failed") continue;
+      if (!reservedForJob(store.ledger, job.id)) reserve(job);
+      const image = await ai.image.generateReferenceFromSeed({
+        characterName: character.name,
+        description: `${description}. ${lookPrompt(look, character.default_wardrobe)}`,
+        kind: look,
+        seed_bytes: seed.body,
+        seed_mime_type: seed.asset.mime_type,
+      });
+      const asset = await putAsset({
+        owner_id: input.owner_id,
+        series_id: character.series_id,
+        actor_id: character.actor_id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { character_id: character.id, kind: `look:${look}`, look },
+      });
+      wardrobe[look] = asset.id;
+      completeSyncJob(job, job.estimated_cost, { character_id: character.id, look, asset_id: asset.id });
+    }
+    const next = { ...character, wardrobe_asset_ids: wardrobe, updated_at: iso(clock) };
+    store.characters.set(character.id, next);
+    return next;
+  }
+
+  async function loadPendingCandidates(character: Character): Promise<VoiceCandidate[]> {
+    const cached = pendingVoices.get(character.id);
+    if (cached && cached.length > 0) return cached;
+    const pending = character.voice_profile.pending_previews ?? [];
+    const loaded: VoiceCandidate[] = [];
+    for (const preview of pending) {
+      let stored: Awaited<ReturnType<typeof assets.get>> = null;
+      try {
+        stored = await assets.get(preview.asset_id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Media store GET failed";
+        throw new Error(`${message} for voice_preview ${preview.asset_id}`);
+      }
+      if (!stored) {
+        throw new Error(`Media store GET failed HTTP 404 for voice_preview ${preview.asset_id}`);
+      }
+      loaded.push({
+        preview_id: preview.preview_id,
+        elevenlabs_voice_id: preview.elevenlabs_voice_id,
+        preview_label: preview.preview_label,
+        preview_audio_bytes: stored.body,
+        preview_mime_type: preview.mime_type,
+      });
+    }
+    if (loaded.length) pendingVoices.set(character.id, loaded);
+    return loaded;
+  }
+
+  async function persistVoiceCandidates(character: Character, candidates: VoiceCandidate[]) {
+    const pending = [];
+    for (const candidate of candidates) {
+      const asset = await putAsset({
+        owner_id: store.series.get(character.series_id)!.owner_id,
+        series_id: character.series_id,
+        kind: "voice_preview",
+        bucket: "private-character",
+        mime_type: candidate.preview_mime_type,
+        body: candidate.preview_audio_bytes,
+        metadata: { character_id: character.id, preview_id: candidate.preview_id },
+      });
+      pending.push({
+        preview_id: candidate.preview_id,
+        elevenlabs_voice_id: candidate.elevenlabs_voice_id,
+        preview_label: candidate.preview_label,
+        asset_id: asset.id,
+        mime_type: candidate.preview_mime_type,
+      });
+    }
+    const latest = store.characters.get(character.id)!;
+    store.characters.set(character.id, {
+      ...latest,
+      voice_profile: {
+        ...latest.voice_profile,
+        pending_previews: pending,
+      },
+      updated_at: iso(clock),
+    });
+    pendingVoices.set(character.id, candidates);
+    return pending;
+  }
+
+  function completedVoiceJob(characterId: string) {
+    return [...store.jobs.values()]
+      .filter(
+        (job) =>
+          job.job_type === "voice_design" &&
+          job.status === "completed" &&
+          String(job.request_metadata.character_id ?? "") === characterId,
+      )
+      .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
+  }
+
+  function pendingFromJob(job: NonNullable<ReturnType<typeof completedVoiceJob>>) {
+    const ids = job.result_metadata.preview_ids;
+    const assetIds = job.result_metadata.preview_asset_ids;
+    if (!Array.isArray(ids) || !Array.isArray(assetIds)) return [];
+    return ids
+      .map((previewId, index) => {
+        const assetId = assetIds[index];
+        if (typeof previewId !== "string" || typeof assetId !== "string" || !assetId) return null;
+        return {
+          preview_id: previewId,
+          elevenlabs_voice_id: previewId,
+          preview_label: String.fromCharCode(65 + index),
+          asset_id: assetId,
+          mime_type: "audio/mpeg",
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  }
+
+  async function pendingFromAssets(characterId: string, seriesId: string) {
+    const listed = await assets.listBySeries(seriesId);
+    return listed
+      .filter(
+        (asset) =>
+          asset.kind === "voice_preview" &&
+          !asset.deleted_at &&
+          String(asset.metadata.character_id ?? "") === characterId,
+      )
+      .sort((left, right) => left.created_at.localeCompare(right.created_at))
+      .map((asset, index) => {
+        const previewId = String(asset.metadata.preview_id ?? asset.id);
+        return {
+          preview_id: previewId,
+          elevenlabs_voice_id: String(asset.metadata.elevenlabs_voice_id ?? previewId),
+          preview_label: String.fromCharCode(65 + index),
+          asset_id: asset.id,
+          mime_type: asset.mime_type || "audio/mpeg",
+        };
+      });
+  }
+
+  async function restorePending(character: Character) {
+    const finished = completedVoiceJob(character.id);
+    let pending = finished ? pendingFromJob(finished) : [];
+    if (!pending.length) pending = await pendingFromAssets(character.id, character.series_id);
+    return writePending(character, pending);
+  }
+
+  function writePending(
+    character: Character,
+    pending: ReturnType<typeof pendingFromJob>,
+  ) {
+    if (!pending.length) return character;
+    const next = {
+      ...character,
+      voice_profile: { ...character.voice_profile, pending_previews: pending },
+      updated_at: iso(clock),
+    };
+    store.characters.set(character.id, next);
+    return next;
+  }
+
+  function isExpiredVoiceSave(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      /HTTP (400|404|410|422)/i.test(message) &&
+      /elevenlabs|text-to-voice|generated_voice|expired|invalid|no longer/i.test(message)
+    );
+  }
+
+  async function existingVoiceReference(character: Character) {
+    const listed = await assets.listBySeries(character.series_id);
+    return (
+      listed.find((asset) => {
+        const voiceId = asset.metadata.elevenlabs_voice_id;
+        return (
+          asset.kind === "voice_reference" &&
+          !asset.deleted_at &&
+          String(asset.metadata.character_id ?? "") === character.id &&
+          typeof voiceId === "string" &&
+          Boolean(voiceId)
+        );
+      }) ?? null
+    );
+  }
+
+  function applyLockedVoice(character: Character, voiceId: string, referenceId: string) {
+    const latest = store.characters.get(character.id)!;
+    const locked: Character = {
+      ...latest,
+      locked: true,
+      voice_profile: {
+        ...latest.voice_profile,
+        elevenlabs_voice_id: voiceId,
+        canonical_reference_asset_id: referenceId,
+        voice_version: latest.voice_profile.voice_version || 1,
+        locked: true,
+      },
+      updated_at: iso(clock),
+    };
+    store.characters.set(locked.id, locked);
+    pendingVoices.delete(character.id);
+    return locked;
+  }
+
+  async function runVoiceDesign(
+    input: { owner_id: string; character_id: string },
+    idempotencyKey: string,
+  ) {
+    const ready = requireCharacter(input.character_id, input.owner_id);
+    await moderate(ready.voice_profile.design_prompt, "character_create", ready.series_id, null);
+    const job = createJob({
+      owner_id: input.owner_id,
+      series_id: ready.series_id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "voice_design",
+      model: "elevenlabs/voice-design",
+      provider: "elevenlabs",
+      upstream_job_id: null,
+      idempotency_key: idempotencyKey,
+      status: "queued",
+      request_metadata: { character_id: ready.id },
+      estimated_cost: ai.pricing.estimateVoiceDesign(),
+      expected_ready_at: addSeconds(clock, 20),
+    });
+    if (job.status === "completed") {
+      writePending(ready, pendingFromJob(job));
+      const again = await loadPendingCandidates(requireCharacter(input.character_id, input.owner_id));
+      if (!again.length) {
+        throw new Error("Voice design already finished. Previews could not be loaded. Not calling Voice Design again.");
+      }
+      return { character: requireCharacter(input.character_id, input.owner_id), candidates: again, job };
+    }
+    if (!reservedForJob(store.ledger, job.id)) reserve(job);
+    const candidates = await ai.speech.designVoice(ready.voice_profile.design_prompt);
+    await persistVoiceCandidates(ready, candidates);
+    const persisted = store.characters.get(ready.id)!;
+    if ((persisted.voice_profile.pending_previews ?? []).length === 0) {
+      throw new Error("Voice design finished but pending_previews were not persisted.");
+    }
+    completeSyncJob(job, job.estimated_cost, {
+      character_id: ready.id,
+      preview_ids: candidates.map((candidate) => candidate.preview_id),
+      preview_asset_ids: persisted.voice_profile.pending_previews?.map((item) => item.asset_id) ?? [],
+    });
+    return { character: persisted, candidates, job: store.jobs.get(job.id)! };
+  }
+
+  async function designVoice(input: { owner_id: string; character_id: string }) {
+    const character = requireCharacter(input.character_id, input.owner_id);
+    if (character.voice_profile.elevenlabs_voice_id && character.voice_profile.locked) {
+      return { character, candidates: pendingVoices.get(character.id) ?? [], job: null };
+    }
+    if (character.locked) throw new Error("Character is locked");
+    const aligned = alignVoicePrompt(
+      character.voice_profile.design_prompt,
+      `${character.name}. ${character.description}`,
+    );
+    if (aligned !== character.voice_profile.design_prompt) {
+      store.characters.set(character.id, {
+        ...character,
+        voice_profile: { ...character.voice_profile, design_prompt: aligned },
+      });
+    }
+    await restorePending(store.characters.get(character.id)!);
+    const current = store.characters.get(character.id)!;
+    const existingCandidates = await loadPendingCandidates(current);
+    if (existingCandidates.length > 0) {
+      return {
+        character: current,
+        candidates: existingCandidates,
+        job:
+          completedVoiceJob(current.id) ??
+          findJobByKey(`voice-design:${current.id}:${current.voice_profile.voice_version}`) ??
+          null,
+      };
+    }
+    if (completedVoiceJob(current.id)) {
+      throw new Error("Voice design already finished. Previews could not be loaded. Not calling Voice Design again.");
+    }
+    const version =
+      aligned === character.voice_profile.design_prompt
+        ? current.voice_profile.voice_version
+        : current.voice_profile.voice_version + 1;
+    if (version !== current.voice_profile.voice_version) {
+      store.characters.set(current.id, {
+        ...current,
+        voice_profile: { ...current.voice_profile, voice_version: version },
+      });
+    }
+    const ready = store.characters.get(current.id)!;
+    return runVoiceDesign(input, `voice-design:${ready.id}:${ready.voice_profile.voice_version}`);
+  }
+
+  async function redesignVoiceOnce(input: { owner_id: string; character_id: string }) {
+    const character = requireCharacter(input.character_id, input.owner_id);
+    const key = `voice-design:${character.id}:${character.voice_profile.voice_version}:redesign-1`;
+    const existing = findJobByKey(key);
+    if (existing?.status === "completed") {
+      writePending(character, pendingFromJob(existing));
+      const loaded = await loadPendingCandidates(store.characters.get(character.id)!);
+      if (!loaded.length) {
+        throw new Error("Voice redesign already finished. Previews could not be loaded. Not calling Voice Design again.");
+      }
+      return loaded;
+    }
+    if (existing && isActive(existing.status)) {
+      throw new Error("Voice redesign is already in progress.");
+    }
+    const designed = await runVoiceDesign(input, key);
+    return designed.candidates;
+  }
+
+  async function lockCharacter(input: {
+    owner_id: string;
+    character_id: string;
+    voice_candidate_id?: string;
+  }) {
+    const character = requireCharacter(input.character_id, input.owner_id);
+    if (character.locked && character.voice_profile.elevenlabs_voice_id) return character;
+    if (Object.keys(faceRefsFor(character)).length === 0) {
+      await generateAppearance(input);
+    }
+    const reference = await existingVoiceReference(store.characters.get(character.id)!);
+    if (reference && typeof reference.metadata.elevenlabs_voice_id === "string") {
+      return applyLockedVoice(
+        store.characters.get(character.id)!,
+        reference.metadata.elevenlabs_voice_id,
+        reference.id,
+      );
+    }
+    await restorePending(store.characters.get(character.id)!);
+    let candidates = await loadPendingCandidates(store.characters.get(character.id)!);
+    if (!candidates.length) {
+      candidates = (await designVoice(input)).candidates;
+    }
+    const chosen = input.voice_candidate_id
+      ? candidates.find((candidate) => candidate.preview_id === input.voice_candidate_id)
+      : candidates[0];
+    if (!chosen) {
+      throw new Error("Unknown voice candidate. Call designVoice first and pick a preview.");
+    }
+    let identity: { elevenlabs_voice_id: string };
+    try {
+      identity = await ai.speech.saveVoice(chosen, {
+        name: character.name,
+        description: store.characters.get(character.id)!.voice_profile.design_prompt,
+      });
+    } catch (error) {
+      if (!isExpiredVoiceSave(error)) throw error;
+      const redesigned = await redesignVoiceOnce(input);
+      const next = input.voice_candidate_id
+        ? redesigned.find((candidate) => candidate.preview_id === input.voice_candidate_id)
+        : redesigned[0];
+      if (!next) throw error;
+      identity = await ai.speech.saveVoice(next, {
+        name: character.name,
+        description: store.characters.get(character.id)!.voice_profile.design_prompt,
+      });
+      chosen.preview_audio_bytes = next.preview_audio_bytes;
+      chosen.preview_mime_type = next.preview_mime_type;
+    }
+    const saved = await putAsset({
+      owner_id: input.owner_id,
+      series_id: character.series_id,
+      kind: "voice_reference",
+      bucket: "private-character",
+      mime_type: chosen.preview_mime_type,
+      body: chosen.preview_audio_bytes,
+      metadata: { character_id: character.id, elevenlabs_voice_id: identity.elevenlabs_voice_id },
+    });
+    return applyLockedVoice(store.characters.get(character.id)!, identity.elevenlabs_voice_id, saved.id);
+  }
+
+  async function lockLocations(input: { owner_id: string; series_id: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const locations = series.story_bible?.locations ?? [];
+    if (locations.length === 0) return series;
+    const refs = { ...series.location_refs };
+    const missing = locations.filter((location) => !refs[location]);
+    if (missing.length === 0) return series;
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/location-pack",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: `locations:${series.id}:${missing.join(",")}`,
+      status: "queued",
+      request_metadata: { locations: missing },
+      estimated_cost: ai.pricing.estimateImage() * missing.length,
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    reserve(job);
+    for (const location of missing) {
+      const image = await ai.image.generateReference({
+        characterName: location,
+        description: `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person.`,
+        kind: "location",
+      });
+      const asset = await putAsset({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { location },
+      });
+      refs[location] = asset.id;
+    }
+    const next = { ...series, location_refs: refs };
+    store.series.set(series.id, next);
+    completeSyncJob(job, job.estimated_cost, { location_refs: refs });
+    return next;
+  }
+
+  async function createEpisode(input: {
+    owner_id: string;
+    series_id: string;
+    episode_number: number;
+    title: string;
+  }) {
+    requireSeries(input.series_id, input.owner_id);
+    const episode: Episode = {
+      id: ids.id(),
+      series_id: input.series_id,
+      episode_number: input.episode_number,
+      title: input.title,
+      script: "",
+      status: "draft",
+      render_manifest: null,
+      created_at: iso(clock),
+      updated_at: iso(clock),
+    };
+    store.episodes.set(episode.id, episode);
+    return episode;
+  }
+
+  async function planEpisode(input: {
+    owner_id: string;
+    episode_id: string;
+    bible?: StoryBible;
+    episode_length?: EpisodeLength;
+  }) {
+    const episode = store.episodes.get(input.episode_id);
+    if (!episode) throw new Error("Episode not found");
+    const series = requireSeries(episode.series_id, input.owner_id);
+    const bible = input.bible ?? series.story_bible;
+    if (!bible) {
+      throw new Error("Series has no stored story bible. Run analyze before planEpisode.");
+    }
+    const length = input.episode_length ?? episodeLengthFromProfile(series.style_profile);
+    if (series.style_profile.episode_length !== length) {
+      store.series.set(series.id, {
+        ...series,
+        style_profile: { ...series.style_profile, episode_length: length },
+      });
+    }
+    const cast = store.charactersFor(series.id);
+    if (cast.length === 0 || cast.some((character) => !character.locked || !character.voice_profile.elevenlabs_voice_id)) {
+      throw new Error("Lock every character face and voice before planEpisode.");
+    }
+    const planned = isLongFormLength(length)
+      ? await planLongFormEpisode({
+          bible,
+          episodeNumber: episode.episode_number,
+          title: episode.title,
+          outlineEpisode: ai.llm.outlineEpisode
+            ? (payload) => ai.llm.outlineEpisode!({ ...payload, episode_length: length })
+            : undefined,
+          writeEpisodeBlocks: ai.llm.writeEpisodeBlocks
+            ? (payload) => ai.llm.writeEpisodeBlocks!({ ...payload, episode_length: length })
+            : undefined,
+        })
+      : await ai.llm.planShots({
+          plan: await ai.llm.writeEpisode({ bible, episodeNumber: episode.episode_number, episode_length: length }),
+          bible,
+          episode_length: length,
+        });
+    const namedCast = cast.map((character) => character.name);
+    const ledger = ledgerForEpisode(episode.episode_number);
+    const plan = dramaHooks.assertEpisodePlan({
+      plan: dramaHooks.repairEpisodePlan({
+        plan: planned,
+        bible,
+        length,
+        namedCast,
+        episodeNumber: episode.episode_number,
+        ...ledger,
+      }),
+      bible,
+      length,
+      namedCast,
+      episodeNumber: episode.episode_number,
+      ...ledger,
+    });
+    const flat = plan.scenes.flatMap((scene) => scene.shots);
+    for (const [sceneIndex, scenePlan] of plan.scenes.entries()) {
+      const location = pinLocationToBible(scenePlan.location, bible.locations ?? []) ?? scenePlan.location;
+      const scene = {
+        id: ids.id(),
+        episode_id: episode.id,
+        position: sceneIndex + 1,
+        location,
+        scene_data: {
+          location,
+          time: scenePlan.time,
+          characters: scenePlan.characters,
+          kind: scenePlan.kind,
+          block_index: scenePlan.block_index,
+        },
+        status: "planned" as const,
+      };
+      store.scenes.set(scene.id, scene);
+      for (const [shotIndex, shotPlan] of scenePlan.shots.entries()) {
+        if (shotPlan.speaker) {
+          characterBySpeaker(series.id, shotPlan.speaker);
+        }
+        const globalIndex = flat.indexOf(shotPlan);
+        const craft = defaultCraftForShot(shotPlan, globalIndex >= 0 ? globalIndex : shotIndex, flat.length);
+        const lookCharacter = shotPlan.speaker_on_camera ?? shotPlan.speaker;
+        const lookId = lookCharacter
+          ? wardrobeForScene(characterBySpeaker(series.id, lookCharacter).wardrobe_asset_ids, location)
+          : null;
+        const shot: Shot = {
+          id: ids.id(),
+          scene_id: scene.id,
+          position: shotIndex + 1,
+          selected_generation_id: null,
+          status: "planned",
+          shot_data: {
+            type: shotPlan.type,
+            speaker: shotPlan.speaker,
+            dialogue: shotPlan.dialogue,
+            emotion: shotPlan.emotion,
+            delivery: shotPlan.delivery,
+            pace: shotPlan.pace,
+            camera: dramaHooks.sanitizeCamera(shotPlan.camera),
+            mouth_visibility_required: shotPlan.mouth_visibility_required,
+            duration_hint_seconds: shotPlan.duration_hint_seconds,
+            duration_seconds: null,
+            dialogue_audio_asset_id: null,
+            dialogue_alignment_asset_id: null,
+            hero: Boolean(shotPlan.hero),
+            edit_mode: craft.edit_mode,
+            audio_role: craft.audio_role,
+            speaker_on_camera: shotPlan.speaker_on_camera ?? (craft.audio_role === "offscreen" ? null : shotPlan.speaker),
+            speakers_off_camera: shotPlan.speakers_off_camera ?? [],
+            eyeline: craft.eyeline,
+            function: craft.function,
+            block_index: scenePlan.block_index ?? shotPlan.block_index,
+            look_id: lookId,
+            silence_license: shotPlan.silence_license ?? null,
+            recap: Boolean(shotPlan.recap),
+            camera_move: shotPlan.camera_move ?? null,
+            comic_sting: Boolean(shotPlan.comic_sting),
+            sfx: shotPlan.sfx ?? null,
+          },
+        };
+        store.shots.set(shot.id, shot);
+      }
+    }
+    const next = {
+      ...episode,
+      script: plan.cliffhanger,
+      episode_outline: plan.outline ?? null,
+      status: "planned" as const,
+      updated_at: iso(clock),
+    };
+    store.episodes.set(episode.id, next);
+    return { episode: next, scenes: store.scenesFor(episode.id), shots: store.shotsForEpisode(episode.id) };
+  }
+
+  async function generateDialogue(input: { owner_id: string; shot_id: string }) {
+    const { shot, series, episode } = requireShot(input.shot_id, input.owner_id);
+    const talker =
+      shot.shot_data.audio_role === "offscreen"
+        ? (shot.shot_data.speakers_off_camera?.[0] ?? shot.shot_data.speaker)
+        : shot.shot_data.speaker;
+    if (!shot.shot_data.dialogue || !talker) {
+      throw new Error("Shot has no dialogue");
+    }
+    const character = characterBySpeaker(series.id, talker);
+    if (!character.locked || !character.voice_profile.elevenlabs_voice_id) {
+      throw new Error("Character voice is not locked");
+    }
+    await moderate(shot.shot_data.dialogue, "shot_submit", series.id, null);
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: episode.id,
+      scene_id: shot.scene_id,
+      shot_id: shot.id,
+      job_type: "dialogue_tts",
+      model: "elevenlabs/tts",
+      provider: "elevenlabs",
+      upstream_job_id: null,
+      idempotency_key: `tts:${shot.id}:${character.voice_profile.voice_version}`,
+      status: "queued",
+      request_metadata: { speaker: character.id },
+      estimated_cost: ai.pricing.estimateDialogue(),
+      expected_ready_at: addSeconds(clock, 10),
+    });
+    reserve(job);
+    const synthesized = await ai.speech.synthesize(
+      {
+        elevenlabs_voice_id: character.voice_profile.elevenlabs_voice_id,
+        canonical_reference_asset_id:
+          character.voice_profile.canonical_reference_asset_id ?? "",
+        voice_version: character.voice_profile.voice_version,
+      },
+      {
+        speaker: character.name,
+        text: shot.shot_data.dialogue,
+        emotion: shot.shot_data.emotion,
+        delivery: shot.shot_data.delivery,
+        pace: shot.shot_data.pace,
+        scene_id: shot.scene_id,
+      },
+    );
+    const audio = await putAsset({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      kind: "dialogue_audio",
+      bucket: "private-generation",
+      mime_type: synthesized.audio.mime_type,
+      body: synthesized.audio.bytes,
+      metadata: {
+        shot_id: shot.id,
+        generation_job_id: job.id,
+        duration_seconds: synthesized.audio.duration_seconds,
+      },
+    });
+    const alignment = await putAsset({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      kind: "dialogue_alignment",
+      bucket: "private-generation",
+      mime_type: "application/json",
+      body: encodeJson(synthesized.alignment.json),
+      metadata: { shot_id: shot.id, generation_job_id: job.id },
+    });
+    const duration = dramaHooks.allocateDurations({
+      wavSeconds: synthesized.audio.duration_seconds,
+      route: DIALOGUE_DURATION_WINDOW,
+      audioRole: shot.shot_data.audio_role,
+      length: episodeLengthFromProfile(series.style_profile),
+    });
+    store.shots.set(shot.id, {
+      ...shot,
+      status: "audio_ready",
+      shot_data: {
+        ...shot.shot_data,
+        dialogue_audio_asset_id: audio.id,
+        dialogue_alignment_asset_id: alignment.id,
+        duration_seconds: duration.duration_seconds,
+        needs_reaction_pad: duration.needs_reaction_pad,
+        silence_license: duration.needs_reaction_pad ? "post_nuke" : shot.shot_data.silence_license,
+      },
+    });
+    completeSyncJob(job, job.estimated_cost, {
+      audio_asset_id: audio.id,
+      alignment_asset_id: alignment.id,
+      needs_reaction_pad: duration.needs_reaction_pad,
+    });
+    return { job: store.jobs.get(job.id)!, shot: store.shots.get(shot.id)!, duration };
+  }
+
+  function completeSyncJob(job: GenerationJob, actual: number, result: Record<string, unknown>) {
+    let current = store.jobs.get(job.id)!;
+    current = transitionJob(current, "submitting", iso(clock));
+    current = transitionJob(current, "generating", iso(clock));
+    current = transitionJob(current, "ingesting", iso(clock));
+    current = transitionJob(current, "qc", iso(clock));
+    current = transitionJob(current, "completed", iso(clock), {
+      actual_cost: actual,
+      result_metadata: result,
+    });
+    store.jobs.set(job.id, current);
+    settle(current, actual);
+  }
+
+  async function generateVideo(input: {
+    owner_id: string;
+    shot_id: string;
+    quality?: QualityProfile;
+    privacy?: PrivacyProfile;
+    forceModel?: string;
+  }) {
+    const { shot, series, episode } = requireShot(input.shot_id, input.owner_id);
+    const quality = input.quality ?? "auto";
+    const privacy: PrivacyProfile = input.privacy ?? "standard";
+    assertStandardOnly(privacy);
+
+    if (shot.shot_data.dialogue && !shot.shot_data.dialogue_audio_asset_id) {
+      await generateDialogue({ owner_id: input.owner_id, shot_id: shot.id });
+    }
+    const live = store.shots.get(shot.id)!;
+    const scene = store.scenes.get(live.scene_id);
+    const location = scene?.location || scene?.scene_data.location;
+    const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
+    const partner =
+      live.shot_data.audio_role === "offscreen"
+        ? live.shot_data.speakers_off_camera?.[0] ?? live.shot_data.speaker
+        : scene?.scene_data.characters.find((name) => name !== pictured) ?? null;
+    const prompt = dramaHooks.buildVideoPrompt({
+      location,
+      shot: live,
+      partner,
+      peopleCount: allowsTwoShot(live.shot_data.function) ? 2 : 1,
+    });
+    await moderate(
+      `${prompt}\n${live.shot_data.dialogue ?? ""}`,
+      "shot_submit",
+      series.id,
+      null,
+    );
+
+    const fromWav = live.shot_data.duration_seconds;
+    const hint = live.shot_data.duration_hint_seconds;
+    const silentReaction =
+      live.shot_data.audio_role === "silent" &&
+      (live.shot_data.function === "reaction" || live.shot_data.function === "listener_hold");
+    const provisional = silentReaction
+      ? Math.min(3, fromWav ?? hint)
+      : Math.max(fromWav ?? 0, hint);
+    const padded = Math.max(provisional, VIDEO_ROUTES.economy_default.min_duration_seconds);
+    const current: Shot = {
+      ...live,
+      shot_data: { ...live.shot_data, duration_seconds: padded },
+    };
+    store.shots.set(current.id, current);
+
+    const forcedModel = input.forceModel ?? process.env.DRAMA_VIDEO_MODEL?.trim();
+    const decision = forcedModel
+      ? {
+          route: Object.values(VIDEO_ROUTES).find((row) => row.model === forcedModel) ?? {
+            ...VIDEO_ROUTES.dialogue_default,
+            model: forcedModel,
+          },
+          reason: "forced model",
+        }
+      : ai.router.selectVideoRoute(current, privacy, quality);
+    const duration = current.shot_data.duration_seconds ?? padded;
+
+    const estimated = ai.pricing.estimateVideo(decision.route.model, duration);
+    const active = [...store.jobs.values()].find(
+      (row) => row.shot_id === current.id && row.job_type === "video" && isActive(row.status),
+    );
+    store.shots.set(current.id, { ...store.shots.get(current.id)!, status: "generating" });
+    if (active) {
+      if (!active.upstream_job_id && active.status === "queued") {
+        await submitVideoJob(active);
+      }
+      return { job: store.jobs.get(active.id)!, route: decision };
+    }
+
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: episode.id,
+      scene_id: current.scene_id,
+      shot_id: current.id,
+      job_type: "video",
+      model: decision.route.model,
+      provider: decision.route.provider,
+      upstream_job_id: null,
+      idempotency_key: `video:${current.id}:${jobAttemptKey(current.id)}`,
+      status: "queued",
+      request_metadata: {
+        reason: decision.reason,
+        prompt,
+        quality,
+        privacy,
+        ...generationPrivacyLog({ model: decision.route.model, privacy_profile: privacy }),
+      },
+      estimated_cost: estimated,
+      expected_ready_at: addSeconds(clock, 15),
+    });
+    reserve(job);
+    await submitVideoJob(job);
+    return { job: store.jobs.get(job.id)!, route: decision };
+  }
+
+  function jobAttemptKey(shotId: string): number {
+    return (
+      [...store.jobs.values()].filter((job) => job.shot_id === shotId && job.job_type === "video" && isTerminal(job.status))
+        .length + 1
+    );
+  }
+
+  function recordJobError(job: GenerationJob, message: string): GenerationJob {
+    const detail = redactTaskError(message);
+    const patch = {
+      error_code: detail.slice(0, 180),
+      result_metadata: { ...job.result_metadata, submit_error: detail },
+    };
+    const next = job.status === "failed" || job.status === "cancelled"
+      ? { ...job, ...patch, updated_at: iso(clock) }
+      : transitionJob(job, "failed", iso(clock), patch);
+    store.jobs.set(next.id, next);
+    const reserved = reservedForJob(store.ledger, next.id);
+    if (next.status === "failed" && reserved > 0) {
+      writeLedger({
+        owner_id: next.owner_id,
+        series_id: next.series_id,
+        entry_type: "release",
+        amount: reserved,
+        generation_job_id: next.id,
+        stripe_event_id: null,
+        price_snapshot_version: store.priceSnapshotVersion,
+      });
+    }
+    return next;
+  }
+
+  async function signedOrSkip(assetId: string): Promise<string | null> {
+    try {
+      return await assets.getSignedUrl(assetId, SIGNED_URL_TTL_SECONDS);
+    } catch {
+      return null;
+    }
+  }
+
+  async function cacheCuOnCharacter(character: Character, assetId: string): Promise<void> {
+    const nextRefs = { ...character.visual_reference_asset_ids, cu: assetId };
+    store.characters.set(character.id, {
+      ...character,
+      visual_reference_asset_ids: nextRefs,
+      updated_at: iso(clock),
+    });
+    if (character.actor_id) {
+      const actor = store.actors.get(character.actor_id);
+      if (actor) {
+        store.actors.set(actor.id, {
+          ...actor,
+          visual_reference_asset_ids: { ...actor.visual_reference_asset_ids, cu: assetId },
+          updated_at: iso(clock),
+        });
+      }
+    }
+  }
+
+  async function ensureCuStill(character: Character): Promise<{ id: string; kind: string } | null> {
+    const raw = faceRefsFor(character);
+    if (raw.cu) {
+      const cached = await assets.get(raw.cu).catch(() => null);
+      if (cached) {
+        return { id: raw.cu, kind: "cu" };
+      }
+    }
+    const refs = { ...raw, cu: undefined };
+    const face = preferredCuFace(refs);
+    const seed = seedStillForCu(refs);
+    if (face && face.kind !== "front") return face;
+    if (!seed) return face;
+    const seedAsset = await assets.get(seed.id).catch(() => null);
+    const treatAsBody = seed.kind === "full_body" || !face;
+    if (treatAsBody && seedAsset) {
+      const cropped = await cropStillToCu(seedAsset.body, "full_body");
+      if (cropped && cropped.byteLength > 2_000) {
+        const series = store.series.get(character.series_id);
+        const asset = await putAsset({
+          owner_id: series?.owner_id ?? character.series_id,
+          series_id: character.series_id,
+          actor_id: character.actor_id,
+          kind: "character_reference",
+          bucket: "private-character",
+          mime_type: "image/png",
+          body: cropped,
+          metadata: { kind: "cu", source_kind: seed.kind, character_id: character.id, crop_version: CU_CROP_VERSION },
+        });
+        await cacheCuOnCharacter(store.characters.get(character.id) ?? character, asset.id);
+        return { id: asset.id, kind: "cu" };
+      }
+      try {
+        const image = await ai.image.generateReferenceFromSeed({
+          characterName: character.name,
+          description: appearanceDescription({
+            description: character.description,
+            ...character.appearance_profile,
+          }),
+          kind: "cu",
+          seed_bytes: seedAsset.body,
+          seed_mime_type: seedAsset.asset.mime_type,
+        });
+        const series = store.series.get(character.series_id);
+        const asset = await putAsset({
+          owner_id: series?.owner_id ?? character.series_id,
+          series_id: character.series_id,
+          actor_id: character.actor_id,
+          kind: "character_reference",
+          bucket: "private-character",
+          mime_type: image.mime_type,
+          body: image.bytes,
+          metadata: { kind: "cu", source_kind: seed.kind, character_id: character.id, crop_version: CU_CROP_VERSION },
+        });
+        await cacheCuOnCharacter(store.characters.get(character.id) ?? character, asset.id);
+        return { id: asset.id, kind: "cu" };
+      } catch {
+        /* fall through to any face still */
+      }
+    }
+    return face ?? (seed.kind !== "full_body" ? seed : null);
+  }
+
+  async function ensureInsertPlate(shot: Shot, seriesId: string): Promise<string | null> {
+    const cached = shot.shot_data.insert_plate_id;
+    if (cached) {
+      const existing = await signedOrSkip(cached);
+      if (existing) return existing;
+    }
+    const series = store.series.get(seriesId);
+    if (!series) return null;
+    const kind = shot.shot_data.function === "phone_ui" ? "phone_ui" : "object_insert";
+    const image = await ai.image.generateReference({
+      characterName: "evidence",
+      description: objectPlateCamera(shot.shot_data.function, shot.shot_data.camera, {
+        dialogue: shot.shot_data.dialogue,
+      }),
+      kind,
+    });
+    const asset = await putAsset({
+      owner_id: series.owner_id,
+      series_id: seriesId,
+      kind: "character_reference",
+      bucket: "private-character",
+      mime_type: image.mime_type,
+      body: image.bytes,
+      metadata: { kind, shot_id: shot.id },
+    });
+    store.shots.set(shot.id, {
+      ...store.shots.get(shot.id)!,
+      shot_data: { ...store.shots.get(shot.id)!.shot_data, insert_plate_id: asset.id },
+    });
+    return signedOrSkip(asset.id);
+  }
+
+  async function visualRefsForShot(
+    shot: Shot,
+    seriesId: string,
+    locationOnly: boolean,
+  ): Promise<{
+    urls: string[];
+    first_frame_kind: ReturnType<typeof firstFrameKind>;
+    first_frame_asset_id: string | null;
+  }> {
+    const objectInsert = isObjectInsert(shot.shot_data);
+    if (objectInsert) {
+      const plate = await ensureInsertPlate(shot, seriesId);
+      const plateId = store.shots.get(shot.id)?.shot_data.insert_plate_id ?? null;
+      return { urls: plate ? [plate] : [], first_frame_kind: "object", first_frame_asset_id: plateId };
+    }
+    if (locationOnly) return { urls: [], first_frame_kind: "face", first_frame_asset_id: null };
+    const scene = store.scenes.get(shot.scene_id);
+    const seriesForLoc = store.series.get(seriesId);
+    const locIdEarly = locationRefForScene(seriesForLoc?.location_refs ?? {}, scene?.location);
+    if (
+      (allowsTwoShot(shot.shot_data.function) || shot.shot_data.type === "establishing") &&
+      !shot.shot_data.dialogue
+    ) {
+      const groupId = shot.shot_data.group_still_asset_id ?? null;
+      if (shot.shot_data.function === "stacked_two" && !groupId) {
+        return { urls: [], first_frame_kind: "face", first_frame_asset_id: null };
+      }
+      if (groupId) {
+        const groupUrl = await signedOrSkip(groupId);
+        return {
+          urls: groupUrl ? [groupUrl] : [],
+          first_frame_kind: "wardrobe",
+          first_frame_asset_id: groupId,
+        };
+      }
+      const locUrl = locIdEarly ? await signedOrSkip(locIdEarly) : null;
+      return {
+        urls: locUrl ? [locUrl] : [],
+        first_frame_kind: "wardrobe",
+        first_frame_asset_id: locIdEarly,
+      };
+    }
+    const pictured =
+      shot.shot_data.speaker_on_camera ??
+      (shot.shot_data.audio_role === "offscreen" || shot.shot_data.function === "listener_hold"
+        ? scene?.scene_data.characters.find((name) => name !== shot.shot_data.speaker) ?? null
+        : shot.shot_data.speaker);
+    if (!pictured) return { urls: [], first_frame_kind: "face", first_frame_asset_id: null };
+    const character = characterBySpeaker(seriesId, pictured);
+    const cu = await ensureCuStill(character);
+    const faceOnly = identityRefPolicy === "face_only" || shot.shot_data.function === "button_cu";
+    const lookId = faceOnly
+      ? null
+      : shot.shot_data.look_id ?? wardrobeForScene(character.wardrobe_asset_ids, scene?.location);
+    const faceUrl = cu ? await signedOrSkip(cu.id) : null;
+    const lookUrl = lookId && lookId !== cu?.id ? await signedOrSkip(lookId) : null;
+    const ordered = orderIdentityRefs({
+      policy: faceOnly ? "face_only" : identityRefPolicy,
+      face: faceUrl && cu ? { url: faceUrl, kind: cu.kind } : null,
+      wardrobe: lookUrl && lookId ? { url: lookUrl, kind: "default_wardrobe" } : null,
+    });
+    const series = store.series.get(seriesId);
+    const locId = locationRefForScene(series?.location_refs ?? {}, scene?.location);
+    const locUrl = locId ? await signedOrSkip(locId) : null;
+    const wide = allowsTwoShot(shot.shot_data.function) || shot.shot_data.type === "establishing";
+    const firstAsset =
+      wide && locId
+        ? locId
+        : !faceOnly && identityRefPolicy === "wardrobe_first" && lookId && lookUrl
+          ? lookId
+          : cu?.id ?? lookId ?? null;
+    const urls = wide
+      ? [locUrl, ...ordered.urls].filter((url): url is string => Boolean(url))
+      : ordered.urls;
+    return {
+      urls,
+      first_frame_kind: wide && locUrl ? "wardrobe" : ordered.first_frame_kind,
+      first_frame_asset_id: firstAsset,
+    };
+  }
+
+  async function submitVideoJob(job: GenerationJob) {
+    if (job.status !== "queued") return job;
+    try {
+      const shot = store.shots.get(job.shot_id ?? "");
+      if (!shot) throw new Error("Shot missing for video submit");
+      const refs = await visualRefsForShot(shot, job.series_id, false);
+      let visual_reference_urls = refs.urls;
+      let frameKind = refs.first_frame_kind;
+      const frameQc = firstFrameQc({
+        shotFunction: shot.shot_data.function ?? shot.shot_data.type,
+        firstFrameKind: frameKind,
+        objectInsert: isObjectInsert(shot.shot_data),
+        policy: identityRefPolicy,
+      });
+      const offscreen =
+        shot.shot_data.audio_role === "offscreen" || shot.shot_data.function === "listener_hold";
+      const audio_reference_url =
+        !offscreen && shot.shot_data.dialogue_audio_asset_id
+          ? await signedOrSkip(shot.shot_data.dialogue_audio_asset_id)
+          : null;
+      let current = transitionJob(job, "submitting", iso(clock));
+      current = {
+        ...current,
+        request_metadata: {
+          ...current.request_metadata,
+          first_frame_kind: frameKind,
+          first_frame_qc: frameQc.ok ? "ok" : frameQc.reason,
+          first_frame_asset_id: refs.first_frame_asset_id,
+          identity_ref_policy:
+            identityRefPolicy === "face_only" || shot.shot_data.function === "button_cu"
+              ? "face_only"
+              : identityRefPolicy,
+          extra_ref_count: Math.max(0, visual_reference_urls.length - 1),
+          cu_crop_version: CU_CROP_VERSION,
+          pictured_name:
+            shot.shot_data.speaker_on_camera ??
+            (isObjectInsert(shot.shot_data) ? null : shot.shot_data.speaker),
+        },
+      };
+      store.jobs.set(job.id, current);
+      store.shots.set(shot.id, {
+        ...store.shots.get(shot.id)!,
+        shot_data: {
+          ...store.shots.get(shot.id)!.shot_data,
+          first_frame_asset_id: refs.first_frame_asset_id,
+        },
+      });
+      const payload = {
+        shot,
+        prompt: String(job.request_metadata.prompt ?? ""),
+        visual_reference_urls,
+        audio_reference_url,
+        duration_seconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
+        model: job.model ?? VIDEO_ROUTES.economy_default.model,
+        privacy_profile: "standard" as const,
+        callback_url: openRouterCallbackUrl(job.callback_token),
+      };
+      let submitted;
+      try {
+        submitted = await ai.video.submit(payload);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isInputImagePrivacyFailure(message) || visual_reference_urls.length === 0) {
+          throw error;
+        }
+        const retry = visual_reference_urls.length > 1
+          ? await visualRefsForShot(shot, job.series_id, true)
+          : { urls: [] as string[], first_frame_kind: frameKind };
+        visual_reference_urls = retry.urls;
+        frameKind = retry.first_frame_kind;
+        submitted = await ai.video.submit({ ...payload, visual_reference_urls });
+      }
+      const existing = store.jobByUpstream(submitted.provider, submitted.upstream_job_id);
+      if (existing && existing.id !== job.id) {
+        throw new Error("Duplicate upstream job");
+      }
+      current = transitionJob(current, "generating", iso(clock), {
+        provider: submitted.provider,
+        model: submitted.model,
+        upstream_job_id: submitted.upstream_job_id,
+        expected_ready_at: addSeconds(clock, 15),
+      });
+      store.jobs.set(job.id, current);
+      return current;
+    } catch (error) {
+      const latest = store.jobs.get(job.id) ?? job;
+      recordJobError(latest, error instanceof Error ? error.message : "video_submit_failed");
+      throw error;
+    }
+  }
+
+  async function ingestVideoJob(job: GenerationJob) {
+    if (!job.upstream_job_id) throw new Error("Job has no upstream id");
+    const status = await ai.video.getStatus(job);
+    if (status.status !== "completed") {
+      if (status.status === "failed" || status.status === "cancelled" || status.status === "expired") {
+        const failed = transitionJob(job, "failed", iso(clock), {
+          error_code: status.error ?? status.status,
+        });
+        store.jobs.set(job.id, failed);
+        const reserved = reservedForJob(store.ledger, job.id);
+        if (reserved > 0) {
+          writeLedger({
+            owner_id: job.owner_id,
+            series_id: job.series_id,
+            entry_type: "release",
+            amount: reserved,
+            generation_job_id: job.id,
+            stripe_event_id: null,
+            price_snapshot_version: store.priceSnapshotVersion,
+          });
+        }
+        return failed;
+      }
+      return job;
+    }
+
+    let current = job.status === "generating"
+      ? transitionJob(job, "ingesting", iso(clock))
+      : job;
+    store.jobs.set(job.id, current);
+    const shot = store.shots.get(job.shot_id ?? "");
+    if (!shot) throw new Error("Shot missing for ingest");
+    const reused = await existingTakeForJob(current);
+    if (reused) {
+      if (current.result_metadata.asset_id !== reused.id) {
+        current = { ...current, result_metadata: { ...current.result_metadata, asset_id: reused.id }, updated_at: iso(clock) };
+        store.jobs.set(current.id, current);
+      }
+      if (current.status === "generating" || current.status === "ingesting") {
+        current = current.status === "generating" ? transitionJob(current, "ingesting", iso(clock)) : current;
+        store.jobs.set(current.id, current);
+        current = transitionJob(current, "qc", iso(clock));
+        store.jobs.set(current.id, current);
+        const qc = (current.result_metadata.qc as { pass?: boolean; reasons?: string[] } | undefined) ?? {
+          pass: true,
+          reasons: [],
+        };
+        const nextStatus = Array.isArray(qc.reasons) && blockingQcReasons(qc.reasons).length > 0
+          ? "needs_review"
+          : qc.pass === false
+            ? "needs_review"
+            : "completed";
+        current = transitionJob(current, nextStatus, iso(clock), {
+          result_metadata: { ...current.result_metadata, asset_id: reused.id, qc },
+        });
+        store.jobs.set(current.id, current);
+      }
+      bindShotTake(
+        shot,
+        reused.id,
+        current.status === "needs_review" ? "needs_review" : current.status === "completed" ? "complete" : shot.status,
+      );
+      return current;
+    }
+    const downloaded = await ai.video.download(job);
+    const scene = store.scenes.get(shot.scene_id);
+    const episode = scene ? store.episodes.get(scene.episode_id) : undefined;
+    const episodeShots = scene ? store.shotsForEpisode(scene.episode_id) : [shot];
+    const shotPosition = episodeShots.findIndex((row) => row.id === shot.id) + 1;
+    const asset = await putAsset({
+      owner_id: job.owner_id,
+      series_id: job.series_id,
+      kind: "shot_video",
+      bucket: "private-generation",
+      mime_type: downloaded.mime_type,
+      body: downloaded.bytes,
+      metadata: {
+        shot_id: shot.id,
+        generation_job_id: job.id,
+        duration_seconds: shot.shot_data.duration_seconds,
+        output_url: status.output_url,
+        downloaded_via: "openrouter_content",
+        episode_number: episode?.episode_number ?? null,
+        shot_position: shotPosition > 0 ? shotPosition : shot.position,
+        speaker: shot.shot_data.speaker,
+      },
+    });
+
+    current = transitionJob(store.jobs.get(job.id)!, "qc", iso(clock));
+    store.jobs.set(job.id, current);
+    const alignment = shot.shot_data.dialogue_alignment_asset_id
+      ? decodeJson<AlignmentTrack>((await assets.get(shot.shot_data.dialogue_alignment_asset_id))!.body)
+      : null;
+    let qc = mechanicalQc({
+      probe: probeVideoBytes(downloaded.bytes),
+      expectedDuration: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
+      requireAudio:
+        Boolean(shot.shot_data.dialogue) &&
+        shot.shot_data.audio_role !== "offscreen" &&
+        !isObjectInsert(shot.shot_data),
+      expectedDialogue: shot.shot_data.dialogue,
+      outputTranscript: alignment ? transcriptFromAlignment(alignment) : null,
+      durationToleranceSeconds: QC_AUTOPILOT_DURATION_TOLERANCE_SECONDS,
+    });
+    const frameHint = current.request_metadata.first_frame_qc;
+    if (typeof frameHint === "string" && frameHint !== "ok") {
+      qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, frameHint])] };
+    }
+    const stillId = current.request_metadata.first_frame_asset_id;
+    if (typeof stillId === "string" && !isObjectInsert(shot.shot_data)) {
+      const still = await assets.get(stillId).catch(() => null);
+      if (still) {
+        const stillRgb = await meanRgb(still.body, "image");
+        const frameRgb = await meanRgb(downloaded.bytes, "video");
+        if (stillRgb && frameRgb) {
+          const distance = Math.round(
+            Math.sqrt(
+              (stillRgb[0] - frameRgb[0]) ** 2 +
+                (stillRgb[1] - frameRgb[1]) ** 2 +
+                (stillRgb[2] - frameRgb[2]) ** 2,
+            ),
+          );
+          current = {
+            ...current,
+            request_metadata: {
+              ...current.request_metadata,
+              identity_rgb_distance: distance,
+            },
+          };
+          store.jobs.set(current.id, current);
+          if (identityDrifted(stillRgb, frameRgb, 140)) {
+            qc = { pass: false, reasons: [...new Set([...qc.reasons, "identity_drift"])] };
+          }
+          const emptyRoom =
+            (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
+            !shot.shot_data.dialogue &&
+            !shot.shot_data.group_still_asset_id;
+          if (emptyRoom && identityDrifted(stillRgb, frameRgb, 70)) {
+            qc = { pass: false, reasons: [...new Set([...qc.reasons, "invented_people"])] };
+          }
+        }
+        const dialogueCu =
+          Boolean(shot.shot_data.dialogue) &&
+          shot.shot_data.audio_role !== "offscreen" &&
+          !isObjectInsert(shot.shot_data);
+        if (dialogueCu && (await inventedSecondBody(downloaded.bytes, still.body))) {
+          qc = { pass: false, reasons: [...new Set([...qc.reasons, "invented_people"])] };
+        }
+      }
+    }
+    const audioConditioned = Boolean(
+      shot.shot_data.dialogue &&
+        shot.shot_data.audio_role !== "offscreen" &&
+        shot.shot_data.audio_role !== "silent" &&
+        shot.shot_data.dialogue_audio_asset_id,
+    );
+    if (ai.stt && shouldSampleDialogueStt(shot, episodeShots)) {
+      try {
+        const audio = await extractAudioMp3(downloaded.bytes);
+        const spoken = await ai.stt.transcribe({ bytes: audio, format: "mp3" });
+        const nativeOk = dialogueMatchesTranscript(shot.shot_data.dialogue ?? "", spoken.text);
+        const lane = await chooseHeardLane({
+          dialogue: shot.shot_data.dialogue,
+          audioRole: shot.shot_data.audio_role,
+          hasNativeAudio: true,
+          nativeTranscript: spoken.text,
+          audioConditioned,
+        });
+        store.shots.set(shot.id, {
+          ...store.shots.get(shot.id)!,
+          shot_data: {
+            ...store.shots.get(shot.id)!.shot_data,
+            heard_audio: lane,
+          },
+        });
+        if (audioConditioned && !nativeOk) {
+          /* Keep native. Do not mux a different TTS over lips timed to this take. */
+        }
+      } catch {
+        if (audioConditioned) {
+          store.shots.set(shot.id, {
+            ...store.shots.get(shot.id)!,
+            shot_data: { ...store.shots.get(shot.id)!.shot_data, heard_audio: "native" },
+          });
+        }
+      }
+    } else if (audioConditioned) {
+      store.shots.set(shot.id, {
+        ...store.shots.get(shot.id)!,
+        shot_data: { ...store.shots.get(shot.id)!.shot_data, heard_audio: "native" },
+      });
+    }
+    try {
+      const cuts = await detectInternalCuts(downloaded.bytes);
+      store.shots.set(shot.id, {
+        ...store.shots.get(shot.id)!,
+        shot_data: { ...store.shots.get(shot.id)!.shot_data, internal_cut_count: cuts.internal_cut_count },
+      });
+      if (lockedTakeRejected(shot.shot_data.edit_mode, cuts.internal_cut_count)) {
+        qc = { pass: false, reasons: [...new Set([...qc.reasons, "internal_cut"])] };
+      }
+    } catch {
+      // cut_detect is best-effort when ffmpeg is present
+    }
+
+    const dropTake =
+      qc.reasons.includes("invented_people") ||
+      qc.reasons.includes("modest_dress") ||
+      (qc.reasons.includes("identity_drift") &&
+        (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
+        !shot.shot_data.dialogue);
+    if (dropTake) {
+      const live = store.shots.get(shot.id)!;
+      store.shots.set(live.id, {
+        ...live,
+        selected_generation_id: null,
+        shot_data: { ...live.shot_data, identity_reject: true },
+      });
+    }
+
+    if (blockingQcReasons(qc.reasons).length > 0 || !qc.pass) {
+      current = transitionJob(current, "needs_review", iso(clock), {
+        result_metadata: { asset_id: asset.id, qc },
+        actual_cost: status.actual_cost,
+      });
+      store.jobs.set(job.id, current);
+      if (!dropTake) bindShotTake(store.shots.get(shot.id)!, asset.id, "needs_review");
+      settle(current, status.actual_cost ?? job.estimated_cost);
+      return current;
+    }
+
+    current = transitionJob(current, "completed", iso(clock), {
+      result_metadata: { asset_id: asset.id, qc },
+      actual_cost: status.actual_cost ?? job.estimated_cost,
+    });
+    store.jobs.set(job.id, current);
+    bindShotTake(store.shots.get(shot.id)!, asset.id, "complete");
+    settle(current, status.actual_cost ?? job.estimated_cost);
+    return current;
+  }
+
+  function markCallbackUsed(job: GenerationJob) {
+    store.jobs.set(job.id, { ...job, callback_token_used: true, updated_at: iso(clock) });
+  }
+
+  async function handleOpenRouterWebhook(input: OpenRouterWebhookInput) {
+    const job = store.jobByCallbackToken(input.callback_token);
+    if (!job || job.callback_token_used) {
+      throw new Error("Invalid callback token");
+    }
+    if (!isActive(job.status) && job.status !== "ingesting") {
+      return job;
+    }
+    if (job.status === "queued") {
+      await submitVideoJob(job);
+    }
+    const latest = store.jobs.get(job.id)!;
+    if (!latest.upstream_job_id) {
+      return latest;
+    }
+    const ingested = await ingestVideoJob(latest);
+    if (
+      ingested.status === "completed" ||
+      ingested.status === "needs_review" ||
+      ingested.status === "failed" ||
+      ingested.status === "cancelled"
+    ) {
+      markCallbackUsed(ingested);
+    }
+    return store.jobs.get(ingested.id)!;
+  }
+
+  async function handleStripeWebhook(input: StripeWebhookInput) {
+    if (!input.signature_valid) {
+      throw new Error("Invalid Stripe signature");
+    }
+    if (hasStripeEvent(store.ledger, input.event_id) || store.stripeEvents.has(input.event_id)) {
+      throw new DuplicateStripeEventError(input.event_id);
+    }
+    if (input.type === "charge.refunded" || input.type === "refund.created") {
+      store.stripeEvents.add(input.event_id);
+      requireSeries(input.series_id, input.owner_id);
+      const unused = projectBalance(store.ledger.filter((row) => row.series_id === input.series_id));
+      const debit = Math.min(Math.max(input.amount, 0), Math.max(unused, 0));
+      if (debit <= 1e-9) {
+        return { ignored: true, reason: "no_unused_budget" };
+      }
+      const entry = writeLedger({
+        owner_id: input.owner_id,
+        series_id: input.series_id,
+        entry_type: "adjustment",
+        amount: -debit,
+        generation_job_id: null,
+        stripe_event_id: input.event_id,
+        price_snapshot_version: store.priceSnapshotVersion || DEFAULT_PRICE_SNAPSHOT_VERSION,
+      });
+      return { entry };
+    }
+    if (
+      input.type !== "checkout.session.completed" &&
+      input.type !== "checkout.session.async_payment_succeeded"
+    ) {
+      return { ignored: true };
+    }
+    if (input.payment_status === "unpaid") {
+      return { ignored: true };
+    }
+    store.stripeEvents.add(input.event_id);
+    requireSeries(input.series_id, input.owner_id);
+    const entry = writeLedger({
+      owner_id: input.owner_id,
+      series_id: input.series_id,
+      entry_type: "purchase",
+      amount: input.amount,
+      generation_job_id: null,
+      stripe_event_id: input.event_id,
+      price_snapshot_version: store.priceSnapshotVersion || DEFAULT_PRICE_SNAPSHOT_VERSION,
+    });
+    return { entry };
+  }
+
+  async function applyAdjustment(input: {
+    owner_id: string;
+    series_id: string;
+    amount: number;
+    reason?: string;
+  }) {
+    requireSeries(input.series_id, input.owner_id);
+    return writeLedger({
+      owner_id: input.owner_id,
+      series_id: input.series_id,
+      entry_type: "adjustment",
+      amount: input.amount,
+      generation_job_id: null,
+      stripe_event_id: null,
+      price_snapshot_version: store.priceSnapshotVersion || DEFAULT_PRICE_SNAPSHOT_VERSION,
+    });
+  }
+
+  async function tick() {
+    const now = clock.now().getTime();
+    const due = store.queue.filter((task) => Date.parse(task.visible_at) <= now);
+    for (const task of due) {
+      const job = store.jobs.get(task.job_id);
+      if (!job) {
+        store.queue = store.queue.filter((row) => row.id !== task.id);
+        continue;
+      }
+      if (job.job_type === "video") {
+        try {
+          if (job.status === "queued") {
+            await submitVideoJob(job);
+          }
+          const latest = store.jobs.get(job.id)!;
+          if (!latest.upstream_job_id) {
+            store.queue = store.queue.filter((row) => row.id !== task.id);
+            continue;
+          }
+          if (latest.status === "generating" || latest.status === "submitting") {
+            const after = await ingestVideoJob(latest);
+            if (after.status === "generating" || after.status === "submitting") {
+              task.visible_at = addSeconds(clock, 15);
+              continue;
+            }
+          }
+        } catch {
+          store.queue = store.queue.filter((row) => row.id !== task.id);
+          continue;
+        }
+      }
+      store.queue = store.queue.filter((row) => row.id !== task.id);
+    }
+  }
+
+  async function reconcile() {
+    const now = clock.now().getTime();
+    const recovered: GenerationJob[] = [];
+    for (const job of store.jobs.values()) {
+      if (!isActive(job.status)) continue;
+      if (job.job_type === "video") {
+        try {
+          if (!job.upstream_job_id && job.status === "queued") {
+            await submitVideoJob(job);
+          }
+          const latest = store.jobs.get(job.id)!;
+          if (!latest.upstream_job_id) {
+            recovered.push(latest);
+            continue;
+          }
+          if (Date.parse(latest.expected_ready_at) > now) continue;
+          recovered.push(await ingestVideoJob(latest));
+        } catch {
+          recovered.push(store.jobs.get(job.id) ?? job);
+        }
+      } else if (Date.parse(job.expected_ready_at) > now) {
+        continue;
+      } else if (job.status === "queued" || job.status === "submitting" || job.status === "generating") {
+        const failed = transitionJob(store.jobs.get(job.id)!, "failed", iso(clock), {
+          error_code: "reconcile_timeout",
+        });
+        store.jobs.set(job.id, failed);
+        recovered.push(failed);
+      }
+    }
+    return recovered;
+  }
+
+  async function liveAssetsForSeries(seriesId: string) {
+    return (await assets.listBySeries(seriesId)).filter((asset) => !asset.deleted_at);
+  }
+
+  async function resolveTakeAssetId(shot: Shot, seriesId: string): Promise<string | null> {
+    const listed = await liveAssetsForSeries(seriesId);
+    const live = new Set(listed.map((asset) => asset.id));
+    if (shot.selected_generation_id && live.has(shot.selected_generation_id)) {
+      return shot.selected_generation_id;
+    }
+    const jobs = [...store.jobs.values()]
+      .filter((job) => job.shot_id === shot.id && job.job_type === "video")
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    for (const job of jobs) {
+      const assetId = job.result_metadata.asset_id;
+      if (typeof assetId === "string" && live.has(assetId)) return assetId;
+    }
+    const fromFile = listed.find(
+      (asset) => asset.kind === "shot_video" && asset.metadata.shot_id === shot.id,
+    );
+    return fromFile?.id ?? null;
+  }
+
+  async function existingTakeForJob(job: GenerationJob) {
+    const listed = await liveAssetsForSeries(job.series_id);
+    const fromJob = listed.find((asset) => asset.id === job.result_metadata.asset_id);
+    if (fromJob) return fromJob;
+    return (
+      listed.find(
+        (asset) => asset.kind === "shot_video" && asset.metadata.generation_job_id === job.id,
+      ) ?? null
+    );
+  }
+
+  function bindShotTake(shot: Shot, assetId: string, status: Shot["status"] = shot.status) {
+    store.shots.set(shot.id, {
+      ...store.shots.get(shot.id)!,
+      status,
+      selected_generation_id: assetId,
+    });
+  }
+
+  async function redownloadTake(job: GenerationJob, shot: Shot): Promise<string | null> {
+    try {
+      const downloaded = await ai.video.download(job);
+      const scene = store.scenes.get(shot.scene_id);
+      const episode = scene ? store.episodes.get(scene.episode_id) : undefined;
+      const episodeShots = scene ? store.shotsForEpisode(scene.episode_id) : [shot];
+      const shotPosition = episodeShots.findIndex((row) => row.id === shot.id) + 1;
+      const asset = await putAsset({
+        owner_id: job.owner_id,
+        series_id: job.series_id,
+        kind: "shot_video",
+        bucket: "private-generation",
+        mime_type: downloaded.mime_type,
+        body: downloaded.bytes,
+        metadata: {
+          shot_id: shot.id,
+          generation_job_id: job.id,
+          duration_seconds: shot.shot_data.duration_seconds,
+          downloaded_via: "openrouter_content",
+          episode_number: episode?.episode_number ?? null,
+          shot_position: shotPosition > 0 ? shotPosition : shot.position,
+          speaker: shot.shot_data.speaker,
+        },
+      });
+      store.jobs.set(job.id, {
+        ...job,
+        result_metadata: { ...job.result_metadata, asset_id: asset.id },
+        updated_at: iso(clock),
+      });
+      bindShotTake(shot, asset.id);
+      return asset.id;
+    } catch {
+      return null;
+    }
+  }
+
+  async function recoverTakeAssetId(shot: Shot, seriesId: string): Promise<string | null> {
+    const resolved = await resolveTakeAssetId(shot, seriesId);
+    if (resolved) {
+      if (shot.selected_generation_id !== resolved) bindShotTake(shot, resolved);
+      return resolved;
+    }
+    const jobs = [...store.jobs.values()]
+      .filter(
+        (job) =>
+          job.shot_id === shot.id &&
+          job.job_type === "video" &&
+          Boolean(job.upstream_job_id) &&
+          (job.status === "completed" || job.status === "needs_review"),
+      )
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    for (const job of jobs) {
+      const assetId = await redownloadTake(job, shot);
+      if (assetId) return assetId;
+    }
+    return null;
+  }
+
+  async function renderEpisode(input: {
+    owner_id: string;
+    episode_id: string;
+    shot_ids?: string[];
+    block_indexes?: number[];
+    /**
+     * Live scripts may cut around rejected or missing takes. The product path
+     * never does: a paying user gets every planned shot or a hard failure.
+     */
+    allow_partial?: boolean;
+  }) {
+    const episode = store.episodes.get(input.episode_id);
+    if (!episode) throw new Error("Episode not found");
+    requireSeries(episode.series_id, input.owner_id);
+    const wantedShots = input.shot_ids ? new Set(input.shot_ids) : null;
+    const wantedBlocks = input.block_indexes ? new Set(input.block_indexes) : null;
+    const shots = store.shotsForEpisode(episode.id).filter((shot) => {
+      if (wantedShots && !wantedShots.has(shot.id)) return false;
+      if (wantedBlocks && !wantedBlocks.has(shot.shot_data.block_index ?? -1)) return false;
+      return true;
+    });
+    if (!shots.length) throw new Error("No shots in render slice");
+    const takes: Array<{ shot: Shot; assetId: string }> = [];
+    const missing: string[] = [];
+    for (const shot of shots) {
+      if (shot.shot_data.identity_reject) {
+        missing.push(`${shot.id} (identity_reject, no replacement take)`);
+        continue;
+      }
+      const assetId = await recoverTakeAssetId(shot, episode.series_id);
+      if (!assetId) {
+        missing.push(`${shot.id} (no playable take)`);
+        continue;
+      }
+      takes.push({ shot, assetId });
+    }
+    if (missing.length && !input.allow_partial) {
+      throw new RenderIncompleteError(missing);
+    }
+    if (!takes.length) {
+      throw new RenderIncompleteError(missing.length ? missing : ["no takes"]);
+    }
+    const playable = takes.map((row) => row.shot);
+    const assetByShot = new Map(takes.map((row) => [row.shot.id, row.assetId]));
+    const shotBodies: Uint8Array[] = [];
+    const takeDuration = new Map<string, number>();
+    for (const shot of playable) {
+      const row = await assets.get(assetByShot.get(shot.id)!);
+      if (!row) throw new Error(`Missing shot asset ${assetByShot.get(shot.id)}`);
+      shotBodies.push(row.body);
+      const probed = probeVideoBytes(row.body).duration_seconds;
+      if (probed > 0) takeDuration.set(shot.id, probed);
+    }
+    const manifest = dramaHooks.buildRenderManifest({
+      episode_id: episode.id,
+      shots: playable,
+      assetIdFor: (shot) => assetByShot.get(shot.id)!,
+      durationFor: (shot) => {
+        const licensedSilence =
+          !shot.shot_data.dialogue &&
+          (shot.shot_data.silence_license === "post_nuke" || shot.shot_data.silence_license === "post_slap");
+        if (licensedSilence) {
+          return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+        }
+        return takeDuration.get(shot.id) ?? shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+      },
+    });
+    const alignments: Array<AlignmentTrack | null> = [];
+    const ttsBodies: Array<Uint8Array | null> = [];
+    const nativeAudio: Array<Uint8Array | null> = [];
+    const heardLanes: Array<"native" | "tts" | "silent"> = [];
+    for (const [index, shot] of playable.entries()) {
+      const captionId = shot.shot_data.dialogue_alignment_asset_id;
+      if (captionId) {
+        const row = await assets.get(captionId);
+        if (!row) throw new Error(`Missing caption asset ${captionId}`);
+        alignments.push(decodeJson<AlignmentTrack>(row.body));
+      } else {
+        alignments.push(null);
+      }
+      if (shot.shot_data.dialogue_audio_asset_id) {
+        const audio = await assets.get(shot.shot_data.dialogue_audio_asset_id);
+        ttsBodies.push(audio?.body ?? null);
+      } else {
+        ttsBodies.push(null);
+      }
+      let native: Uint8Array | null = null;
+      if (shot.shot_data.heard_audio === "native") {
+        try {
+          native = await extractAudioMp3(shotBodies[index]!);
+        } catch {
+          native = null;
+        }
+      }
+      nativeAudio.push(native);
+      const audioConditioned = Boolean(
+        shot.shot_data.dialogue &&
+          shot.shot_data.dialogue_audio_asset_id &&
+          shot.shot_data.audio_role !== "offscreen" &&
+          shot.shot_data.audio_role !== "silent",
+      );
+      heardLanes.push(
+        shot.shot_data.audio_role === "silent" || !shot.shot_data.dialogue
+          ? "silent"
+          : native
+            ? "native"
+            : audioConditioned
+              ? "silent"
+              : "tts",
+      );
+    }
+    const rendered = await render({
+      manifest,
+      shotBodies,
+      alignments,
+      ttsBodies,
+      nativeAudio,
+      heardLanes,
+    });
+    const finalAsset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: episode.series_id,
+      kind: "episode_final",
+      bucket: "private-final",
+      mime_type: "video/mp4",
+      body: rendered.body,
+      metadata: { episode_id: episode.id, checksum: rendered.checksum },
+    });
+    for (const row of takes) {
+      store.shots.set(row.shot.id, {
+        ...row.shot,
+        status: "complete",
+        selected_generation_id: row.assetId,
+      });
+    }
+    const next = {
+      ...episode,
+      render_manifest: manifest,
+      status: "complete" as const,
+      updated_at: iso(clock),
+    };
+    store.episodes.set(episode.id, next);
+    return {
+      episode: next,
+      asset: finalAsset,
+      checksum: rendered.checksum,
+      vtt: rendered.vtt,
+      container: rendered.container,
+    };
+  }
+
+  async function generateSeriesCover(input: { owner_id: string; series_id: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    if (series.cover_asset_id) return series;
+    const existing = findJobByKey(`cover:${series.id}`);
+    const savedId = existing?.result_metadata.cover_asset_id;
+    if (typeof savedId === "string" && savedId) {
+      store.series.set(series.id, { ...series, cover_asset_id: savedId });
+      return store.series.get(series.id)!;
+    }
+    const job = createJob({
+      owner_id: input.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/series-cover",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: `cover:${series.id}`,
+      status: "queued",
+      request_metadata: { series_id: series.id },
+      estimated_cost: ai.pricing.estimateImage(),
+      expected_ready_at: addSeconds(clock, 25),
+    });
+    if (job.status === "completed") {
+      const coverId = job.result_metadata.cover_asset_id;
+      if (typeof coverId === "string") {
+        store.series.set(series.id, { ...series, cover_asset_id: coverId });
+      }
+      return store.series.get(series.id)!;
+    }
+    if (!reservedForJob(store.ledger, job.id)) reserve(job);
+    const lead = store.charactersFor(series.id)[0];
+    const logline = series.story_bible?.logline ?? series.description;
+    const image = await (ai.image.generateCover
+      ? ai.image.generateCover({ title: series.title, logline, characterHint: lead?.description })
+      : ai.image.generateReference({
+          characterName: series.title,
+          description: `${logline} ${lead?.description ?? ""}`.trim(),
+          kind: "dramatic vertical series key art, no title text, cinematic lighting",
+        }));
+    const asset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: series.id,
+      kind: "series_cover",
+      bucket: "private-generation",
+      mime_type: image.mime_type,
+      body: image.bytes,
+      metadata: { series_id: series.id, title: series.title },
+    });
+    store.series.set(series.id, { ...series, cover_asset_id: asset.id });
+    completeSyncJob(job, job.estimated_cost, { cover_asset_id: asset.id });
+    return store.series.get(series.id)!;
+  }
+
+  async function regenerateShot(input: { owner_id: string; shot_id: string }) {
+    const { shot } = requireShot(input.shot_id, input.owner_id);
+    const prior = [...store.jobs.values()]
+      .filter((job) => job.shot_id === shot.id && job.job_type === "video")
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+    if (prior.length >= RETRY_CAP) {
+      throw new Error("Retry cap reached for this shot");
+    }
+    const last = prior.find((job) => job.model);
+    const lastModel = last?.model;
+    const lastReasons = ((last?.result_metadata.qc as { reasons?: string[] } | undefined)?.reasons ?? []) as string[];
+    const failover =
+      lastModel && shouldFailoverModel(lastModel, lastReasons)
+        ? failoverRoute(shot, { ...VIDEO_ROUTES.dialogue_default, model: lastModel })
+        : lastModel
+          ? { model: lastModel }
+          : null;
+    store.shots.set(shot.id, {
+      ...shot,
+      status: shot.shot_data.dialogue_audio_asset_id ? "audio_ready" : "planned",
+    });
+    return generateVideo({ ...input, forceModel: failover?.model });
+  }
+
+  async function gc() {
+    const actions = planRetention({
+      now: clock.now(),
+      series: [...store.series.values()],
+      assets: "snapshot" in assets && typeof assets.snapshot === "function"
+        ? assets.snapshot()
+        : (await Promise.all(
+            [...store.series.keys()].map((seriesId) => assets.listBySeries(seriesId)),
+          )).flat(),
+      jobs: [...store.jobs.values()],
+      selectedAssetIds: store.selectedAssetIds(),
+    });
+    for (const action of actions) {
+      await assets.delete(action.asset_id, iso(clock));
+    }
+    return actions;
+  }
+
+  function estimateEpisode(episodeId: string, quality: QualityProfile = "auto") {
+    const shots = store.shotsForEpisode(episodeId);
+    const costs = shots.map((shot) => {
+      const decision = ai.router.selectVideoRoute(shot, "standard", quality);
+      const duration =
+        shot.shot_data.duration_seconds ??
+        Math.max(decision.route.min_duration_seconds, shot.shot_data.duration_hint_seconds);
+      const video = ai.pricing.estimateVideo(decision.route.model, duration);
+      const audio = shot.shot_data.dialogue ? ai.pricing.estimateDialogue() : 0;
+      return video + audio;
+    });
+    const min = costs.reduce((sum, value) => sum + value, 0);
+    return {
+      shots: shots.length,
+      scenes: store.scenesFor(store.episodes.get(episodeId)!.id).length,
+      estimated_min: min,
+      estimated_max: min * 1.35,
+    };
+  }
+
+  return {
+    store,
+    assets,
+    createSeries,
+    analyze,
+    generateAppearance,
+    createActor,
+    generateActor,
+    attachActor,
+    generateWardrobe,
+    designVoice,
+    lockCharacter,
+    lockLocations,
+    generateSeriesCover,
+    createEpisode,
+    planEpisode,
+    generateDialogue,
+    generateVideo,
+    submitVideoJob,
+    ingestVideoJob,
+    handleOpenRouterWebhook,
+    handleStripeWebhook,
+    applyAdjustment,
+    tick,
+    reconcile,
+    renderEpisode,
+    regenerateShot,
+    gc,
+    estimateEpisode,
+    estimateSeries(episodeCount: SeasonSku, length?: EpisodeLength) {
+      return estimateSeriesCost({ episode_count: episodeCount, length });
+    },
+    balance(seriesId: string) {
+      return projectBalance(store.ledger.filter((row) => row.series_id === seriesId));
+    },
+    getJob(jobId: string) {
+      return store.jobs.get(jobId) ?? null;
+    },
+  };
+}
+
+export type Engine = ReturnType<typeof createEngine>;

@@ -1,0 +1,81 @@
+import { sha256Hex, stableStringify } from "../crypto.ts";
+import type { AlignmentTrack, RenderManifest } from "../domain.ts";
+import { captionsAlongTimeline, captionsFromAlignment, cuesToVtt } from "../pipeline/captions.ts";
+import { assembleEpisodeMp4 } from "./ffmpeg-mix.ts";
+
+export type RenderInput = {
+  manifest: RenderManifest;
+  shotBodies: Uint8Array[];
+  alignments: Array<AlignmentTrack | null | undefined>;
+  ttsBodies?: Array<Uint8Array | null>;
+  nativeAudio?: Array<Uint8Array | null>;
+  heardLanes?: Array<"native" | "tts" | "silent" | null>;
+};
+
+export type RenderOutput = {
+  body: Uint8Array;
+  checksum: string;
+  vtt: string;
+  container: "mp4";
+};
+
+export type RenderFn = (input: RenderInput) => Promise<RenderOutput>;
+
+/**
+ * Thrown when the mixer cannot produce a playable MP4. Callers must treat this
+ * as a hard failure: no episode may be marked complete without real picture.
+ */
+export class RenderFailedError extends Error {
+  constructor(readonly reason: string) {
+    super(`Render failed: ${reason}`);
+    this.name = "RenderFailedError";
+  }
+}
+
+export function buildEpisodeVtt(input: Pick<RenderInput, "manifest" | "alignments">): string {
+  const shotDurations = input.manifest.shots.map((shot) =>
+    Math.max(0, shot.out_point_seconds - shot.in_point_seconds),
+  );
+  const aligned =
+    input.alignments.length === input.manifest.shots.length
+      ? captionsAlongTimeline({
+          shotDurations,
+          alignments: input.alignments,
+          pictureStarts: input.manifest.shots.map((shot) => shot.picture_start_seconds),
+          speakers: input.manifest.shots.map((shot) => shot.speaker),
+        })
+      : input.alignments.flatMap((track) => (track ? captionsFromAlignment(track) : []));
+  return cuesToVtt(aligned);
+}
+
+function isMp4(body: Uint8Array): boolean {
+  return body.byteLength > 32 && body[4] === 0x66 && body[5] === 0x74 && body[6] === 0x79 && body[7] === 0x70;
+}
+
+export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutput> {
+  if (input.shotBodies.length === 0) throw new RenderFailedError("no shots");
+  if (input.shotBodies.length !== input.manifest.shots.length) {
+    throw new RenderFailedError(
+      `manifest has ${input.manifest.shots.length} shots but ${input.shotBodies.length} bodies were supplied`,
+    );
+  }
+  const vtt = buildEpisodeVtt(input);
+  const mixed = await assembleEpisodeMp4({
+    manifest: input.manifest,
+    shotBodies: input.shotBodies,
+    ttsBodies: input.ttsBodies,
+    nativeAudio: input.nativeAudio,
+    heardLanes: input.heardLanes,
+    vtt,
+  });
+  if (!mixed || !isMp4(mixed)) {
+    throw new RenderFailedError(
+      mixed ? "mixer returned bytes that are not an MP4" : "ffmpeg unavailable or every take was rejected by the mixer",
+    );
+  }
+  return { body: mixed, checksum: await sha256Hex(mixed), vtt, container: "mp4" };
+}
+
+export function manifestFingerprint(manifest: RenderManifest): string {
+  return stableStringify(manifest);
+}

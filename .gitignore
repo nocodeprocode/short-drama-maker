@@ -1,6 +1,16 @@
 # Nested GitHub clone used only as a remote working copy
 /short-drama-maker/
 
+# Live provider artifacts (large media, not source)
+/assets/**
+!/assets/README.md
+# Small cached ElevenLabs beds/stings/SFX are fixtures the mixer depends on.
+!/assets/music/
+!/assets/music/**
+# Machine-readable lock/bake/ship reports document the quality bar; the MP4s do not ship.
+!/assets/*-report.json
+!/assets/*-audit.json
+
 # MacOS
 .DS_Store
 

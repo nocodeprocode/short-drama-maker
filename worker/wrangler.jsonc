@@ -1,0 +1,28 @@
+{
+  "name": "short-drama-media-worker",
+  "main": "src/container.ts",
+  "compatibility_date": "2026-08-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "containers": [
+    {
+      "class_name": "MediaWorker",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 2
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MEDIA_WORKER",
+        "class_name": "MediaWorker"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MediaWorker"]
+    }
+  ]
+}

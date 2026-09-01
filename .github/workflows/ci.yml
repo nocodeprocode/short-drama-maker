@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main, staging, "feat/**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # ffmpeg + Pillow let the media tests exercise the real mixer instead of skipping.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg python3-pil fonts-dejavu-core
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test -- --reporter=dot
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_ci
