@@ -266,20 +266,30 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   });
   reports.push(qc("MUTE_FAIL", muteOk || shots.length === 0, muteOk ? "visual spike" : "speech-only", "mute-readable spike", "block"));
 
-  const namedInScenes = input.plan.scenes.some((scene) => scene.characters.length >= 2);
   const hasWide = shots.some((shot) => isWideCoverage(shot));
-  const hasTwo = shots.some((shot) => allowsTwoShot(shot.function) || shot.function === "stacked_two");
   const hasInsert = shots.some((shot, index) => isObjectInsert({ ...shot, function: inferFunction(shot, index, shots.length) }));
   const ecuOnly = shots.filter((shot) => shot.dialogue && shot.audio_role !== "offscreen").every((shot) =>
     /\b(tight single|extreme close|ecu|neck)\b/i.test(shot.camera),
   );
+  // Two-shots are not required coverage: without a locked group still they
+  // invent people. They stay legal only when the plan explicitly asks for one.
+  const twoShots = shots.filter((shot) => shot.function === "stacked_two");
   reports.push(
     qc(
       "COVERAGE_MIX",
-      shots.length === 0 || (hasWide && (!namedInScenes || hasTwo) && hasInsert && !ecuOnly),
-      `${hasWide ? "wide" : "no-wide"}/${hasTwo ? "two" : "no-two"}/${hasInsert ? "insert" : "no-insert"}${ecuOnly ? "/ecu-only" : ""}`,
-      "≥1 establishing/wide, ≥1 silent two-shot when 2+ people, ≥1 insert, not 100% ECU faces",
+      shots.length === 0 || (hasWide && hasInsert && !ecuOnly),
+      `${hasWide ? "wide" : "no-wide"}/${hasInsert ? "insert" : "no-insert"}${ecuOnly ? "/ecu-only" : ""}`,
+      "≥1 empty establishing/wide, ≥1 insert, not 100% ECU faces",
       "block",
+    ),
+  );
+  reports.push(
+    qc(
+      "TWO_SHOT_RISK",
+      twoShots.length === 0,
+      twoShots.length ? `${twoShots.length} two-shot(s)` : "none",
+      "two-shots only from a locked group still",
+      "warn",
     ),
   );
   const hasComic = shots.some(

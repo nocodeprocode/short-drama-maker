@@ -15,7 +15,6 @@ import { decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
 import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
-import { detectInternalCuts, lockedTakeRejected } from "../drama-engine/editorial/cut-detect.ts";
 import { defaultCraftForShot } from "../drama-engine/editorial/shot-budget.ts";
 import { allowsTwoShot, isObjectInsert } from "../drama-engine/types/editorial.ts";
 import type {
@@ -39,7 +38,7 @@ import type {
 } from "./domain.ts";
 import { extractAudioMp3 } from "./media/extract-audio.ts";
 import { alignVoicePrompt } from "./ai/voice-sex.ts";
-import { dialogueMatchesTranscript, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
+import { shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
 import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
 import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
 import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
@@ -55,7 +54,8 @@ import {
 } from "./pipeline/wardrobe.ts";
 import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
 import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
-import { inventedSecondBody } from "./media/second-body.ts";
+import { analyzeTake, scoreTake } from "./pipeline/take-analysis.ts";
+import { wordErrorRate } from "./media/qc.ts";
 import { objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
 import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
 import { failoverRoute } from "./ai/router.ts";
@@ -78,7 +78,8 @@ import {
 import { chooseHeardLane } from "./pipeline/heard-audio.ts";
 import { blockingQcReasons, mechanicalQc } from "./media/qc.ts";
 import { probeVideoBytes } from "./media/probe.ts";
-import { renderEpisodeBytes, type RenderFn } from "./media/render.ts";
+import { RenderFailedError, renderEpisodeBytes, type RenderFn } from "./media/render.ts";
+import { auditMux, type MuxAuditFn } from "./media/mux-audit.ts";
 import { createConfiguredAssetStore } from "./storage/create.ts";
 import { assetPath, extForMime } from "./storage/paths.ts";
 import { planRetention } from "./storage/retention.ts";
@@ -97,6 +98,8 @@ export type EngineDeps = {
   identityRefPolicy?: IdentityRefPolicy;
   /** Override the mixer (tests, remote media worker). Defaults to the local ffmpeg path. */
   render?: RenderFn;
+  /** Override the post-mux audit gate (tests). Defaults to the ffmpeg frame audit. */
+  audit?: MuxAuditFn;
 };
 
 export type StripeWebhookInput = {
@@ -147,6 +150,7 @@ export function createEngine(deps: EngineDeps = {}) {
   const ai = deps.ai ?? createAiGateway();
   const identityRefPolicy = resolveIdentityRefPolicy(deps.identityRefPolicy);
   const render = deps.render ?? renderEpisodeBytes;
+  const audit = deps.audit ?? auditMux;
   const clock = deps.clock ?? systemClock();
   const ids = deps.ids ?? cryptoIds();
   store.dailyCap = deps.dailyCap ?? DEFAULT_DAILY_SPEND_CAP;
@@ -371,6 +375,24 @@ export function createEngine(deps: EngineDeps = {}) {
     });
     if (!match) throw new Error(`No locked character named ${speaker}`);
     return match;
+  }
+
+  /**
+   * Modesty baseline for the pictured character: the locked CU still, which was
+   * generated under the modest-dress rules. Null when the shot has no face.
+   */
+  async function modestStillForShot(shot: Shot): Promise<string | null> {
+    const name = shot.shot_data.speaker_on_camera ?? shot.shot_data.speaker;
+    if (!name) return null;
+    const scene = store.scenes.get(shot.scene_id);
+    const episode = scene ? store.episodes.get(scene.episode_id) : undefined;
+    if (!episode) return null;
+    try {
+      const character = characterBySpeaker(episode.series_id, name);
+      return character.visual_reference_asset_ids.cu ?? preferredFaceId(character.visual_reference_asset_ids) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async function createSeries(input: {
@@ -2024,26 +2046,59 @@ export function createEngine(deps: EngineDeps = {}) {
             qc = { pass: false, reasons: [...new Set([...qc.reasons, "invented_people"])] };
           }
         }
-        const dialogueCu =
-          Boolean(shot.shot_data.dialogue) &&
-          shot.shot_data.audio_role !== "offscreen" &&
-          !isObjectInsert(shot.shot_data);
-        if (dialogueCu && (await inventedSecondBody(downloaded.bytes, still.body))) {
-          qc = { pass: false, reasons: [...new Set([...qc.reasons, "invented_people"])] };
-        }
       }
     }
+    const dialogueCu =
+      Boolean(shot.shot_data.dialogue) &&
+      shot.shot_data.audio_role !== "offscreen" &&
+      shot.shot_data.audio_role !== "silent" &&
+      !isObjectInsert(shot.shot_data);
     const audioConditioned = Boolean(
       shot.shot_data.dialogue &&
         shot.shot_data.audio_role !== "offscreen" &&
         shot.shot_data.audio_role !== "silent" &&
         shot.shot_data.dialogue_audio_asset_id,
     );
+
+    // One measurement pass per take: settle, mouth/voice sync, second body,
+    // modesty, and internal cuts (counted after the settle so the I2V morph
+    // is not mistaken for a cut). Persisted so the mixer and audits reuse it.
+    const stillBody = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
+    const modestId = shot.shot_data.modest_still_asset_id ?? (await modestStillForShot(shot));
+    const modestBody = modestId ? (await assets.get(modestId).catch(() => null))?.body ?? null : null;
+    const analysis = await analyzeTake({
+      video: downloaded.bytes,
+      still: stillBody,
+      modestStill: modestBody,
+      dialogueCu,
+      wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
+    });
+    const verdict = scoreTake(analysis, {
+      dialogueCu,
+      lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
+      expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
+    });
+    store.shots.set(shot.id, {
+      ...store.shots.get(shot.id)!,
+      shot_data: {
+        ...store.shots.get(shot.id)!.shot_data,
+        take_analysis: analysis,
+        internal_cut_count: analysis.internal_cut_count,
+      },
+    });
+    current = {
+      ...current,
+      request_metadata: { ...current.request_metadata, take_score: verdict.score, take_warnings: verdict.warnings },
+    };
+    store.jobs.set(current.id, current);
+    if (verdict.blockers.length) {
+      qc = { pass: false, reasons: [...new Set([...qc.reasons, ...verdict.blockers])] };
+    }
+
     if (ai.stt && shouldSampleDialogueStt(shot, episodeShots)) {
       try {
         const audio = await extractAudioMp3(downloaded.bytes);
         const spoken = await ai.stt.transcribe({ bytes: audio, format: "mp3" });
-        const nativeOk = dialogueMatchesTranscript(shot.shot_data.dialogue ?? "", spoken.text);
         const lane = await chooseHeardLane({
           dialogue: shot.shot_data.dialogue,
           audioRole: shot.shot_data.audio_role,
@@ -2058,10 +2113,20 @@ export function createEngine(deps: EngineDeps = {}) {
             heard_audio: lane,
           },
         });
-        if (audioConditioned && !nativeOk) {
-          /* Keep native. Do not mux a different TTS over lips timed to this take. */
+        // Native stays even when the transcript drifts (never mux TTS over lips timed
+        // to this take), but the drift is now a real QC reason instead of a comment.
+        if (shot.shot_data.dialogue) {
+          const wer = wordErrorRate(shot.shot_data.dialogue, spoken.text);
+          current = {
+            ...current,
+            request_metadata: { ...current.request_metadata, native_transcript: spoken.text, native_wer: Number(wer.toFixed(3)) },
+          };
+          store.jobs.set(current.id, current);
+          if (wer > 0.25) qc = { pass: false, reasons: [...new Set([...qc.reasons, "transcript_wer"])] };
+          else if (wer > 0.15) qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "transcript_wer_warn"])] };
         }
       } catch {
+        qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "stt_sample_failed"])] };
         if (audioConditioned) {
           store.shots.set(shot.id, {
             ...store.shots.get(shot.id)!,
@@ -2075,22 +2140,15 @@ export function createEngine(deps: EngineDeps = {}) {
         shot_data: { ...store.shots.get(shot.id)!.shot_data, heard_audio: "native" },
       });
     }
-    try {
-      const cuts = await detectInternalCuts(downloaded.bytes);
-      store.shots.set(shot.id, {
-        ...store.shots.get(shot.id)!,
-        shot_data: { ...store.shots.get(shot.id)!.shot_data, internal_cut_count: cuts.internal_cut_count },
-      });
-      if (lockedTakeRejected(shot.shot_data.edit_mode, cuts.internal_cut_count)) {
-        qc = { pass: false, reasons: [...new Set([...qc.reasons, "internal_cut"])] };
-      }
-    } catch {
-      // cut_detect is best-effort when ffmpeg is present
-    }
 
+    // Takes that can never ship, regardless of review: a stranger, an extra body,
+    // sheer wardrobe, a mouth that opens inside the morph, or a mute dialogue CU.
     const dropTake =
       qc.reasons.includes("invented_people") ||
       qc.reasons.includes("modest_dress") ||
+      qc.reasons.includes("speaks_before_settle") ||
+      qc.reasons.includes("native_audio_missing") ||
+      qc.reasons.includes("mouth_leads_voice") ||
       (qc.reasons.includes("identity_drift") &&
         (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
         !shot.shot_data.dialogue);
@@ -2443,10 +2501,16 @@ export function createEngine(deps: EngineDeps = {}) {
       const probed = probeVideoBytes(row.body).duration_seconds;
       if (probed > 0) takeDuration.set(shot.id, probed);
     }
+    const series = store.series.get(episode.series_id);
     const manifest = dramaHooks.buildRenderManifest({
       episode_id: episode.id,
       shots: playable,
       assetIdFor: (shot) => assetByShot.get(shot.id)!,
+      genre: series ? dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`) : null,
+      sceneFor: (shot) => {
+        const scene = store.scenes.get(shot.scene_id);
+        return scene ? { location: scene.location || scene.scene_data.location, time: scene.scene_data.time } : null;
+      },
       durationFor: (shot) => {
         const licensedSilence =
           !shot.shot_data.dialogue &&
@@ -2454,7 +2518,12 @@ export function createEngine(deps: EngineDeps = {}) {
         if (licensedSilence) {
           return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
         }
-        return takeDuration.get(shot.id) ?? shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+        const take = takeDuration.get(shot.id);
+        // The settle trim removes the I2V morph from the head of the take, so the
+        // playable picture is what remains after it.
+        const settle = shot.shot_data.take_analysis?.settle_in_seconds ?? 0;
+        if (take != null) return Math.max(0.4, take - settle);
+        return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
       },
     });
     const alignments: Array<AlignmentTrack | null> = [];
@@ -2501,6 +2570,9 @@ export function createEngine(deps: EngineDeps = {}) {
               : "tts",
       );
     }
+    // Measured at ingest: pad only where the voice really led the mouth, and hand
+    // the mixer the probed onsets so it never re-guesses them from a Wan default.
+    const analyses = playable.map((shot) => shot.shot_data.take_analysis ?? null);
     const rendered = await render({
       manifest,
       shotBodies,
@@ -2508,7 +2580,34 @@ export function createEngine(deps: EngineDeps = {}) {
       ttsBodies,
       nativeAudio,
       heardLanes,
+      visemePadSeconds: analyses.map((row) => (row ? row.viseme_pad_seconds : null)),
+      visemeMouthOpenSeconds: analyses.map((row) => row?.mouth_open_seconds ?? null),
+      visemeVoiceOnsetSeconds: analyses.map((row) => row?.voice_onset_seconds ?? null),
     });
+
+    // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
+    // to call final. The audit JSON is stored either way so reviewers can see
+    // why a cut passed or was refused.
+    const muxAudit = await audit({ body: rendered.body, manifest, analyses, heardLanes });
+    const auditAsset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: episode.series_id,
+      kind: "episode_audit",
+      bucket: "private-final",
+      mime_type: "application/json",
+      body: encodeJson(muxAudit),
+      metadata: { episode_id: episode.id, ship: muxAudit.ship, reasons: muxAudit.reasons, checksum: rendered.checksum },
+    });
+    if (!muxAudit.ship) {
+      store.episodes.set(episode.id, {
+        ...episode,
+        render_manifest: manifest,
+        status: "needs_review",
+        updated_at: iso(clock),
+      });
+      throw new RenderFailedError(`mux audit refused the cut (${muxAudit.reasons.join(", ")}); audit ${auditAsset.id}`);
+    }
+
     const finalAsset = await putAsset({
       owner_id: input.owner_id,
       series_id: episode.series_id,
@@ -2516,7 +2615,7 @@ export function createEngine(deps: EngineDeps = {}) {
       bucket: "private-final",
       mime_type: "video/mp4",
       body: rendered.body,
-      metadata: { episode_id: episode.id, checksum: rendered.checksum },
+      metadata: { episode_id: episode.id, checksum: rendered.checksum, audit_asset_id: auditAsset.id },
     });
     for (const row of takes) {
       store.shots.set(row.shot.id, {

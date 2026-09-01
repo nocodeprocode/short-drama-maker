@@ -16,7 +16,16 @@ export function ffmpegAvailable(): Promise<boolean> {
   });
 }
 
-export async function detectInternalCuts(bytes: Uint8Array, threshold = 0.3): Promise<CutDetectResult> {
+/**
+ * Counts hard scene changes inside a single take. Pass `skipSeconds` (the
+ * measured I2V settle) so the still→scene morph at the head is not counted;
+ * that morph is the source of the Wan `internal_cut` false positives.
+ */
+export async function detectInternalCuts(
+  bytes: Uint8Array,
+  threshold = 0.3,
+  options: { skipSeconds?: number } = {},
+): Promise<CutDetectResult> {
   if (bytes.byteLength < 8_192) return { internal_cut_count: 0, method: "unavailable" };
   const has = await ffmpegAvailable();
   if (!has) return { internal_cut_count: 0, method: "unavailable" };
@@ -24,10 +33,20 @@ export async function detectInternalCuts(bytes: Uint8Array, threshold = 0.3): Pr
   const input = join(dir, "shot.mp4");
   try {
     await writeFile(input, bytes);
+    const skip = Math.max(0, options.skipSeconds ?? 0);
     const raw = await new Promise<string>((resolve, reject) => {
       const child = spawn(
         "ffmpeg",
-        ["-i", input, "-filter:v", `select='gt(scene,${threshold})',showinfo`, "-f", "null", "-"],
+        [
+          ...(skip > 0 ? ["-ss", skip.toFixed(2)] : []),
+          "-i",
+          input,
+          "-filter:v",
+          `select='gt(scene,${threshold})',showinfo`,
+          "-f",
+          "null",
+          "-",
+        ],
         { stdio: ["ignore", "ignore", "pipe"] },
       );
       let stderr = "";

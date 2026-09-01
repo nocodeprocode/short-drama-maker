@@ -60,6 +60,7 @@ export type AssetKind =
   | "dialogue_alignment"
   | "shot_video"
   | "episode_final"
+  | "episode_audit"
   | "music"
   | "sfx";
 
@@ -258,6 +259,10 @@ export type ShotData = {
   first_frame_asset_id?: string | null;
   identity_reject?: boolean;
   group_still_asset_id?: string | null;
+  /** Measured at ingest for the selected take; drives settle trim, pad, and QC. */
+  take_analysis?: import("./pipeline/take-analysis.ts").TakeAnalysis | null;
+  /** Reference still used for the modesty gate (per character, modest wardrobe). */
+  modest_still_asset_id?: string | null;
 };
 
 export type Shot = {

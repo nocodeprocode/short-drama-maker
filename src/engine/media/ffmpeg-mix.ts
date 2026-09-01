@@ -336,16 +336,24 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     const shots = input.manifest.shots.map((shot) => ({ ...shot }));
     const originalStarts = shots.map((shot) => shot.picture_start_seconds ?? 0);
     const visemePads: number[] = [];
+    // True when the pad was measured upstream (take analysis). Then the manifest
+    // in-point is a settle trim that applies to picture AND native audio, and the
+    // pad is a delay on top. False when the legacy auto-align path chose a
+    // mouth-based picture trim that must not also skip the audio.
+    const measuredPad: boolean[] = [];
     for (const [index, shot] of shots.entries()) {
       const lane = input.heardLanes?.[index] ?? shot.heard_audio ?? (shot.audio_role === "silent" ? "silent" : "tts");
       if (lane !== "native") {
         visemePads[index] = 0;
+        measuredPad[index] = true;
         continue;
       }
       if (input.visemePadSeconds?.[index] != null) {
         visemePads[index] = Math.max(0, input.visemePadSeconds[index]!);
+        measuredPad[index] = true;
         continue;
       }
+      measuredPad[index] = false;
       const wanDialogue =
         input.visemeWanDialogue?.[index] ?? (shot.audio_role !== "offscreen" && shot.audio_role !== "silent");
       const audio = input.shotBodies[index] ?? input.nativeAudio?.[index];
@@ -454,10 +462,11 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
       if (!body) continue;
       const skip = heardFileSkipSeconds({
         lane,
-        // Viseme pad already delayed the untrimmed take. A settle in-point
-        // (pad 0) must skip native audio by the same seconds as picture.
+        // Settle in-point trims picture and native audio by the same seconds; a
+        // measured pad is then a delay on top. Only the legacy auto-align trim
+        // (unmeasured pad) leaves the native track unskipped.
         inPointSeconds:
-          lane === "native" && (visemePads[index] ?? 0) > 0.02 ? 0 : shot.in_point_seconds,
+          lane === "native" && !measuredPad[index] && (visemePads[index] ?? 0) > 0.02 ? 0 : shot.in_point_seconds,
         leadingSilenceSeconds: 0,
       });
       const delay = heardDelaySeconds({

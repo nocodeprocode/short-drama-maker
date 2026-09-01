@@ -11,7 +11,7 @@ import {
 } from "../craft/prompt-fragments.ts";
 import { inferGenre, playbookFor, punishAllowed } from "../craft/genre-playbooks.ts";
 import { sanitizeCamera } from "../editorial/camera-sanitize.ts";
-import { buildRenderManifest } from "../editorial/manifest-builder.ts";
+import { buildRenderManifest, type ManifestBuildInput } from "../editorial/manifest-builder.ts";
 import { assertDramaPlan, repairEpisodePlan, validateEpisodePlan, type ValidatePlanInput } from "../lint/index.ts";
 import { allocateShotDuration } from "../pacing/duration-allocator.ts";
 import { buildSeasonCraft, enrichEpisodeStructure, recapAllowed, recapBudgetSeconds } from "../plans/index.ts";
@@ -38,12 +38,8 @@ export type DramaEngineHooks = {
     audioRole?: AudioRole | null;
     length?: EpisodeLength;
   }): ReturnType<typeof allocateShotDuration>;
-  buildRenderManifest(input: {
-    episode_id: string;
-    shots: Shot[];
-    assetIdFor: (shot: Shot) => string;
-    durationFor?: (shot: Shot) => number | null | undefined;
-  }): RenderManifest;
+  buildRenderManifest(input: ManifestBuildInput): RenderManifest;
+  inferGenre: typeof inferGenre;
   sanitizeCamera: typeof sanitizeCamera;
   lengthBudget(length?: EpisodeLength): (typeof LENGTH_BUDGETS)[EpisodeLength];
   writeEpisodeUserPrompt(input: {
@@ -119,6 +115,7 @@ Do not write a 90-minute movie and slice it.`;
     },
 
     buildRenderManifest,
+    inferGenre,
 
     sanitizeCamera,
 

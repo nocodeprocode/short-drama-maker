@@ -4,6 +4,7 @@ import { createAiGateway, type AIGateway } from "./ai/index.ts";
 import { DuplicateStripeEventError } from "./ledger/budget.ts";
 import { createEngine, RenderIncompleteError } from "./create-engine.ts";
 import { RenderFailedError } from "./media/render.ts";
+import type { MuxAuditFn } from "./media/mux-audit.ts";
 import { buildEpisodeVtt, renderEpisodeBytes, type RenderFn } from "./media/render.ts";
 import { concatBytes, decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
 import type { AlignmentTrack, EpisodePlan, StoryBible, VoiceCandidate } from "./domain.ts";
@@ -344,8 +345,39 @@ const fakeRender: RenderFn = async (input) => {
   return { body, checksum: await sha256Hex(body), vtt, container: "mp4" };
 };
 
-function engine() {
-  return createEngine({ dailyCap: 1000, ai: testGateway(), assets: new MemoryAssetStore(), render: fakeRender });
+const passingAudit: MuxAuditFn = async (input) => ({
+  version: 1,
+  ship: true,
+  reasons: [],
+  duration_seconds: 0,
+  expected_duration_seconds: 0,
+  has_audio: true,
+  black_frames: 0,
+  lines: input.manifest.shots.map((shot) => ({
+    shot_id: shot.shot_id,
+    speaker: shot.speaker ?? null,
+    picture_start_s: shot.picture_start_seconds ?? 0,
+    expected_voice_s: 0,
+    voice_onset_s: null,
+    mouth_open_s: null,
+    lag_ms: 0,
+    limit_ms: 80,
+    pass: true,
+    head_step: 0,
+    settled_open: true,
+  })),
+  measured_at: "t",
+});
+
+function engine(overrides: Partial<Parameters<typeof createEngine>[0]> = {}) {
+  return createEngine({
+    dailyCap: 1000,
+    ai: testGateway(),
+    assets: new MemoryAssetStore(),
+    render: fakeRender,
+    audit: passingAudit,
+    ...overrides,
+  });
 }
 
 async function fundedSeries() {
@@ -589,11 +621,51 @@ describe("engine phase 0", () => {
     expect(rendered.episode.render_manifest?.shots.some((row) => row.shot_id === stranger.id)).toBe(false);
   });
 
+  it("refuses the final when the mux audit fails, and keeps the audit for review", async () => {
+    const refusing = engine({
+      audit: async (input) => ({
+        ...(await passingAudit(input)),
+        ship: false,
+        reasons: ["sync:shot-x", "room_morph:shot-x"],
+      }),
+    });
+    const series = await refusing.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await refusing.handleStripeWebhook({
+      event_id: "evt_1",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const analyzed = await refusing.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of analyzed.characters) {
+      await refusing.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    }
+    const episode = await refusing.createEpisode({ owner_id: "user-1", series_id: series.id, episode_number: 1, title: "x" });
+    const planned = await refusing.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    for (const shot of planned.shots) {
+      await refusing.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    }
+    await refusing.tick();
+    await expect(refusing.renderEpisode({ owner_id: "user-1", episode_id: episode.id })).rejects.toThrow(/mux audit refused/);
+    expect(refusing.store.episodes.get(episode.id)?.status).toBe("needs_review");
+    const kinds = (await refusing.assets.listBySeries(series.id)).map((asset) => asset.kind);
+    expect(kinds).toContain("episode_audit");
+    expect(kinds).not.toContain("episode_final");
+  });
+
   it("never marks an episode complete when the mixer fails", async () => {
     const failing = createEngine({
       dailyCap: 1000,
       ai: testGateway(),
       assets: new MemoryAssetStore(),
+      audit: passingAudit,
       render: async () => {
         throw new RenderFailedError("ffmpeg exploded");
       },

@@ -332,10 +332,19 @@ function injectCoverage(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudg
   const hasWide = out.some(
     (shot) => shot.function === "establishing" || shot.type === "establishing" || /\bestablishing wide\b/i.test(shot.camera),
   );
-  const hasTwo = out.some((shot) => shot.function === "stacked_two");
   const hasComic = out.some((shot) => shot.comic_sting || shot.sfx === "comic" || shot.sfx === "glass" || shot.sfx === "stunned");
   const location = plan.scenes[0]?.location ?? "night interior";
   const insertAt = Math.min(out.length - 1, 1);
+  // Two-shots are never injected: without a locked group still every video model
+  // invents a second person. Coverage variety comes from the empty wide + insert.
+  for (const shot of out) {
+    if (shot.function === "stacked_two") {
+      shot.function = "establishing";
+      shot.camera = `establishing wide of ${location}, same key light, empty room, no people`;
+      shot.speaker = null;
+      shot.speaker_on_camera = null;
+    }
+  }
   if (!hasWide) {
     const wide: PlanShot = {
       type: "establishing",
@@ -357,36 +366,6 @@ function injectCoverage(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudg
     else {
       const silent = out.find((shot, index) => index > 0 && index < out.length - 1 && !shot.dialogue);
       if (silent) Object.assign(silent, wide);
-    }
-  }
-  if (!hasTwo && named.length >= 2) {
-    const two: PlanShot = {
-      type: "establishing",
-      speaker: null,
-      dialogue: null,
-      emotion: null,
-      delivery: null,
-      pace: null,
-      camera: `silent two-shot of ${named[0]} and ${named[1]} in ${location}, faces small, mouths closed`,
-      mouth_visibility_required: false,
-      duration_hint_seconds: 3.5,
-      function: "stacked_two",
-      audio_role: "silent",
-      edit_mode: "locked_take",
-      eyeline: "lens_forbidden",
-      camera_move: "slow pull",
-    };
-    if (out.length < budget.max_shots) out.splice(Math.min(out.length - 1, 2), 0, two);
-    else {
-      const silent = out.find(
-        (shot, index) =>
-          index > 0 &&
-          index < out.length - 1 &&
-          !shot.dialogue &&
-          shot.function !== "establishing" &&
-          shot.function !== "insert_evidence",
-      );
-      if (silent) Object.assign(silent, two);
     }
   }
   if (!hasComic) {

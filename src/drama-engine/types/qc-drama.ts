@@ -34,6 +34,9 @@ export type DramaQcId =
   | "MID_REPRICE"
   | "REPEAT_BEAT"
   | "COVERAGE_MIX"
+  | "TWO_SHOT_RISK"
+  | "CONTINUITY_JUMP"
+  | "LIGHT_JUMP"
   | "COMIC_STING";
 
 export type QcReport = {

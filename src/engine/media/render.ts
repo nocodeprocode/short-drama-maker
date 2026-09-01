@@ -10,6 +10,10 @@ export type RenderInput = {
   ttsBodies?: Array<Uint8Array | null>;
   nativeAudio?: Array<Uint8Array | null>;
   heardLanes?: Array<"native" | "tts" | "silent" | null>;
+  /** Per-shot measured values from take analysis; null lets the mixer probe. */
+  visemePadSeconds?: Array<number | null | undefined>;
+  visemeMouthOpenSeconds?: Array<number | null | undefined>;
+  visemeVoiceOnsetSeconds?: Array<number | null | undefined>;
 };
 
 export type RenderOutput = {
@@ -66,6 +70,9 @@ export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutp
     ttsBodies: input.ttsBodies,
     nativeAudio: input.nativeAudio,
     heardLanes: input.heardLanes,
+    visemePadSeconds: input.visemePadSeconds,
+    visemeMouthOpenSeconds: input.visemeMouthOpenSeconds,
+    visemeVoiceOnsetSeconds: input.visemeVoiceOnsetSeconds,
     vtt,
   });
   if (!mixed || !isMp4(mixed)) {
