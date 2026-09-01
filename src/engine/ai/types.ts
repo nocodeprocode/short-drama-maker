@@ -139,6 +139,7 @@ export interface PricingEngine {
   estimateImage(): number;
   estimateLlm(): number;
   estimateVoiceDesign(): number;
+  estimateVision(): number;
 }
 
 export type AlignmentSource = AlignmentTrack;

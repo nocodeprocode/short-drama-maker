@@ -55,6 +55,7 @@ import {
 import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
 import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
 import { analyzeTake, pickBestTake, scoreTake, type TakeAnalysis, type TakeVerdict } from "./pipeline/take-analysis.ts";
+import { runIdentityStage } from "./pipeline/identity-check.ts";
 import { wordErrorRate } from "./media/qc.ts";
 import { objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
 import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
@@ -2020,7 +2021,10 @@ export function createEngine(deps: EngineDeps = {}) {
       qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, frameHint])] };
     }
     const stillId = current.request_metadata.first_frame_asset_id;
-    if (typeof stillId === "string" && !isObjectInsert(shot.shot_data)) {
+    // Mean-RGB drift is the fallback identity check for deployments without a
+    // vision judge; with one, the face judgement below owns identity_drift and
+    // invented_people so a lighting change is no longer read as a new person.
+    if (typeof stillId === "string" && !isObjectInsert(shot.shot_data) && !ai.vision) {
       const still = await assets.get(stillId).catch(() => null);
       if (still) {
         const stillRgb = await meanRgb(still.body, "image");
@@ -2072,17 +2076,65 @@ export function createEngine(deps: EngineDeps = {}) {
     const stillBody = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
     const modestId = shot.shot_data.modest_still_asset_id ?? (await modestStillForShot(shot));
     const modestBody = modestId ? (await assets.get(modestId).catch(() => null))?.body ?? null : null;
-    const analysis = await measureTake({
+    let analysis = await measureTake({
       video: downloaded.bytes,
       still: stillBody,
       modestStill: modestBody,
       dialogueCu,
       wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
     });
+
+    // Identity stage: how many people are in frame, and is it the locked cast
+    // member. Empty wides expect 0 faces and need no reference; singles expect 1
+    // against the CU still; object inserts are never judged.
+    const emptyWide =
+      (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
+      !shot.shot_data.dialogue &&
+      !shot.shot_data.group_still_asset_id;
+    const expectedFaces = isObjectInsert(shot.shot_data)
+      ? null
+      : emptyWide
+        ? 0
+        : allowsTwoShot(shot.shot_data.function) && shot.shot_data.group_still_asset_id
+          ? 2
+          : 1;
+    let identityCost = 0;
+    if (ai.vision && expectedFaces != null) {
+      const pictured = shot.shot_data.speaker_on_camera ?? shot.shot_data.speaker;
+      let description: string | null = null;
+      if (pictured && expectedFaces === 1) {
+        try {
+          description = appearanceDescription(characterBySpeaker(job.series_id, pictured));
+        } catch {
+          description = null;
+        }
+      }
+      const identity = await runIdentityStage({
+        video: downloaded.bytes,
+        reference: expectedFaces === 1 ? stillBody : null,
+        analysis,
+        expectedFaces,
+        description,
+        vision: ai.vision,
+      });
+      analysis = identity.analysis;
+      if (identity.judgement) identityCost = ai.pricing.estimateVision();
+      current = {
+        ...current,
+        request_metadata: {
+          ...current.request_metadata,
+          identity_judgement: identity.judgement,
+          identity_skipped: identity.skipped,
+        },
+      };
+      store.jobs.set(current.id, current);
+    }
+
     const verdict = scoreTake(analysis, {
       dialogueCu,
       lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
       expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
+      expectedFaces,
     });
     store.shots.set(shot.id, {
       ...store.shots.get(shot.id)!,
@@ -2155,9 +2207,12 @@ export function createEngine(deps: EngineDeps = {}) {
       qc.reasons.includes("speaks_before_settle") ||
       qc.reasons.includes("native_audio_missing") ||
       qc.reasons.includes("mouth_leads_voice") ||
+      // A judged stranger is dropped outright; only the RGB fallback's drift is
+      // soft enough to leave for review on a face shot.
       (qc.reasons.includes("identity_drift") &&
-        (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
-        !shot.shot_data.dialogue);
+        (analysis.face_similarity != null ||
+          ((shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
+            !shot.shot_data.dialogue)));
     if (dropTake) {
       const live = store.shots.get(shot.id)!;
       store.shots.set(live.id, {
@@ -2178,21 +2233,24 @@ export function createEngine(deps: EngineDeps = {}) {
       take_warnings: verdict.warnings,
     };
 
+    // The identity judgement is part of what this take cost.
+    const actualCost = (status.actual_cost ?? job.estimated_cost) + identityCost;
+
     if (blockingQcReasons(qc.reasons).length > 0 || !qc.pass) {
       current = transitionJob(current, "needs_review", iso(clock), {
         result_metadata: takeRecord,
-        actual_cost: status.actual_cost,
+        actual_cost: actualCost,
       });
       store.jobs.set(job.id, current);
       if (!dropTake) bindShotTake(store.shots.get(shot.id)!, asset.id, "needs_review");
-      settle(current, status.actual_cost ?? job.estimated_cost);
+      settle(current, actualCost);
       if (dropTake) await autoRegenerateAfterDrop(current, shot);
       return current;
     }
 
     current = transitionJob(current, "completed", iso(clock), {
       result_metadata: takeRecord,
-      actual_cost: status.actual_cost ?? job.estimated_cost,
+      actual_cost: actualCost,
     });
     store.jobs.set(job.id, current);
     const accepted = store.shots.get(shot.id)!;
@@ -2202,7 +2260,7 @@ export function createEngine(deps: EngineDeps = {}) {
       selected_generation_id: asset.id,
       shot_data: { ...accepted.shot_data, identity_reject: false },
     });
-    settle(current, status.actual_cost ?? job.estimated_cost);
+    settle(current, actualCost);
     return current;
   }
 

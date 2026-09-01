@@ -2,6 +2,7 @@ import { createElevenLabsVoice } from "./elevenlabs.ts";
 import { createOpenRouterImages } from "./images.ts";
 import { createOpenRouterLlm } from "./llm.ts";
 import { createOpenRouterVideo } from "./video.ts";
+import { createOpenRouterVision, type VisionEngine } from "./vision.ts";
 import { transcribeAudio } from "./stt.ts";
 import { moderation } from "./moderation.ts";
 import { pricing } from "./pricing.ts";
@@ -19,6 +20,8 @@ export type AIGateway = {
   speech: VoiceEngine;
   video: VideoEngine;
   stt?: SttEngine;
+  /** Identity judge for takes. Absent → the RGB fallback runs and face fields stay null. */
+  vision?: VisionEngine;
   router: typeof router;
   privacy: typeof privacy;
   moderation: typeof moderation;
@@ -26,7 +29,7 @@ export type AIGateway = {
 };
 
 export function createAiGateway(
-  overrides: Partial<Pick<AIGateway, "llm" | "image" | "speech" | "video" | "stt">> = {},
+  overrides: Partial<Pick<AIGateway, "llm" | "image" | "speech" | "video" | "stt" | "vision">> = {},
 ): AIGateway {
   return {
     llm: overrides.llm ?? createOpenRouterLlm(),
@@ -34,6 +37,7 @@ export function createAiGateway(
     speech: overrides.speech ?? createElevenLabsVoice(),
     video: overrides.video ?? createOpenRouterVideo(),
     stt: overrides.stt ?? { transcribe: transcribeAudio },
+    vision: "vision" in overrides ? overrides.vision : createOpenRouterVision(),
     router,
     privacy,
     moderation,

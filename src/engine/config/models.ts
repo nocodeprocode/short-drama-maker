@@ -21,6 +21,10 @@ export const LLM_PRICE = 0.01;
 export const VOICE_DESIGN_PRICE = 0.12;
 
 export const TEXT_MODEL = "anthropic/claude-sonnet-4.6";
+/** Identity judge: same ZDR-capable family as the writer so one privacy posture covers both. */
+export const VISION_MODEL = "anthropic/claude-sonnet-4.6";
+/** Per identity judgement (reference + 3 frames). */
+export const VISION_PRICE = 0.02;
 export const IMAGE_MODEL = "bytedance-seed/seedream-4.5";
 export const TTS_MODEL = "eleven_multilingual_v2";
 export const VOICE_DESIGN_MODEL = "eleven_ttv_v3";

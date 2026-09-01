@@ -374,6 +374,8 @@ export type TakeScoreContext = {
   lockedTake: boolean;
   expectedDurationSeconds?: number | null;
   faceSimilarityFloor?: number;
+  /** People the plan put in frame; a measured face_count that differs is a blocker. */
+  expectedFaces?: number | null;
 };
 
 /** Cosine similarity below this reads as a different person. Tuned for ArcFace-style embeddings. */
@@ -391,7 +393,10 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
   if (analysis.face_similarity != null && analysis.face_similarity < (context.faceSimilarityFloor ?? FACE_SIMILARITY_FLOOR)) {
     blockers.push("identity_drift");
   }
-  if (context.dialogueCu && analysis.face_count != null && analysis.face_count !== 1) blockers.push("invented_people");
+  const expectedFaces = context.expectedFaces ?? (context.dialogueCu ? 1 : null);
+  if (expectedFaces != null && analysis.face_count != null && analysis.face_count !== expectedFaces) {
+    blockers.push("invented_people");
+  }
 
   const usable = analysis.duration_seconds - analysis.settle_in_seconds;
   if (analysis.duration_seconds > 0 && usable < 1.5) blockers.push("settle_eats_take");

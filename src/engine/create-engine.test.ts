@@ -246,6 +246,12 @@ function testGateway(): AIGateway {
   const jobs = new Map<string, { status: "pending" | "completed"; duration: number }>();
   let voices = 0;
   return createAiGateway({
+    // Synthetic takes have no decodable frames; the stage skips before any judge call.
+    vision: {
+      async judgeIdentity() {
+        return { same_person: 0.95, face_count: 1, notes: "test", model: "test" };
+      },
+    },
     llm: {
       async analyzeStory() {
         return TEST_BIBLE;

@@ -3,6 +3,7 @@ import {
   IMAGE_PRICE,
   LLM_PRICE,
   MODEL_PRICES_PER_SECOND,
+  VISION_PRICE,
   VOICE_DESIGN_PRICE,
 } from "../config/models.ts";
 import type { PricingEngine } from "./types.ts";
@@ -26,6 +27,9 @@ export const pricing: PricingEngine = {
   },
   estimateVoiceDesign() {
     return VOICE_DESIGN_PRICE;
+  },
+  estimateVision() {
+    return VISION_PRICE;
   },
 };
 
