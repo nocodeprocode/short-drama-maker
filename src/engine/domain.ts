@@ -474,6 +474,8 @@ export type ShotPlanScene = {
     camera_move?: string | null;
     comic_sting?: boolean;
     sfx?: string | null;
+    /** Index of the planned scene this shot came from; repair uses it to keep location/time when regrouping. */
+    origin_scene?: number;
   }>;
 };
 

@@ -407,16 +407,27 @@ export async function planLongFormEpisode(input: {
     outline: EpisodeOutline;
     blocks: EpisodeOutlineBlock[];
   }) => Promise<ShotPlanScene[]>;
+  /** How many times a failed writer call is retried before the episode fails. */
+  retries?: number;
 }): Promise<EpisodePlan> {
+  const retries = input.retries ?? 1;
+
+  // Without a writer this is the synthetic planner (tests, fixtures). With one,
+  // a failure is a failure: the kitchen template must never ship as a paying
+  // user's 15-minute episode.
   let outline: EpisodeOutline;
-  try {
-    outline = input.outlineEpisode
-      ? await input.outlineEpisode({ bible: input.bible, episodeNumber: input.episodeNumber })
-      : synthesizeLongOutline({ bible: input.bible });
-  } catch {
-    outline = synthesizeLongOutline({ bible: input.bible });
-  }
-  if (outline.blocks.length < LONG_BLOCK_COUNT.min || outline.blocks.length > LONG_BLOCK_COUNT.max) {
+  if (input.outlineEpisode) {
+    outline = await withRetries(retries, "outline", () =>
+      input.outlineEpisode!({ bible: input.bible, episodeNumber: input.episodeNumber }),
+    );
+    outline = normalizeOutline(outline);
+    if (outline.blocks.length < LONG_BLOCK_COUNT.min || outline.blocks.length > LONG_BLOCK_COUNT.max) {
+      throw new LongFormPlanningError(
+        "outline",
+        `${outline.blocks.length} blocks; a 15-minute episode needs ${LONG_BLOCK_COUNT.min}–${LONG_BLOCK_COUNT.max}`,
+      );
+    }
+  } else {
     outline = synthesizeLongOutline({ bible: input.bible });
   }
   if (!outline.blocks.some((block) => block.reprice)) {
@@ -427,37 +438,42 @@ export async function planLongFormEpisode(input: {
       blocks: outline.blocks.map((block, index) => ({ ...block, reprice: index === mid })),
     };
   }
+
   const scenes: ShotPlanScene[] = [];
   for (const batch of chunkBlocks(outline.blocks, 3)) {
-    try {
-      const planned = input.writeEpisodeBlocks
-        ? await input.writeEpisodeBlocks({ bible: input.bible, outline, blocks: batch })
-        : batch.map((block) =>
-            synthesizeBlockShots({
-              block,
-              bible: input.bible,
-              lastBlock: block.index === outline.blocks.length - 1,
-            }),
-          );
-      if (!planned.length) throw new Error("empty block batch");
-      scenes.push(...planned.map((scene, index) => ({
-        ...scene,
-        block_index: scene.block_index ?? batch[index]?.index,
-        shots: scene.shots.map((shot) => ({
-          ...shot,
-          block_index: shot.block_index ?? scene.block_index ?? batch[index]?.index,
-        })),
-      })));
-    } catch {
+    if (!input.writeEpisodeBlocks) {
       scenes.push(
         ...batch.map((block) =>
-          synthesizeBlockShots({
-            block,
-            bible: input.bible,
-            lastBlock: block.index === outline.blocks.length - 1,
-          }),
+          synthesizeBlockShots({ block, bible: input.bible, lastBlock: block.index === outline.blocks.length - 1 }),
         ),
       );
+      continue;
+    }
+    const label = `blocks ${batch.map((block) => block.index).join(",")}`;
+    const planned = await withRetries(retries, label, async () => {
+      const drafted = await input.writeEpisodeBlocks!({ bible: input.bible, outline, blocks: batch });
+      if (!drafted.length) throw new Error("empty block batch");
+      return drafted;
+    });
+    // Match scenes to blocks by the block_index the writer set; only fall back to
+    // batch position when it set none, and never let a scene claim a block
+    // outside this batch.
+    const allowed = new Set(batch.map((block) => block.index));
+    scenes.push(
+      ...planned.map((scene, index) => {
+        const claimed = scene.block_index;
+        const blockIndex = claimed != null && allowed.has(claimed) ? claimed : batch[Math.min(index, batch.length - 1)]!.index;
+        return {
+          ...scene,
+          block_index: blockIndex,
+          shots: scene.shots.map((shot) => ({ ...shot, block_index: blockIndex })),
+        };
+      }),
+    );
+    const covered = new Set(scenes.map((scene) => scene.block_index));
+    const missing = batch.filter((block) => !covered.has(block.index));
+    if (missing.length) {
+      throw new LongFormPlanningError(label, `writer returned no scenes for block(s) ${missing.map((block) => block.index).join(",")}`);
     }
   }
   return assemblePlanFromBlocks({
@@ -465,4 +481,44 @@ export async function planLongFormEpisode(input: {
     outline,
     scenes,
   });
+}
+
+export class LongFormPlanningError extends Error {
+  constructor(readonly stage: string, readonly problem: string) {
+    super(`Long-form planning failed at ${stage}: ${problem}`);
+    this.name = "LongFormPlanningError";
+  }
+}
+
+async function withRetries<T>(retries: number, stage: string, work: () => Promise<T>): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new LongFormPlanningError(stage, lastError instanceof Error ? lastError.message : String(lastError));
+}
+
+/** Fill the fields the writer may omit so the rest of the planner sees one shape. */
+function normalizeOutline(outline: EpisodeOutline): EpisodeOutline {
+  const blocks = (outline.blocks ?? []).map((block, index) => ({
+    index: typeof block.index === "number" ? block.index : index,
+    title: block.title ?? `Block ${index + 1}`,
+    hook: block.hook ?? "",
+    friction: block.friction ?? "",
+    spike: block.spike ?? "",
+    button: block.button ?? "",
+    closes_hook: block.closes_hook ?? "",
+    opens_hook: block.opens_hook ?? "",
+    reprice: Boolean(block.reprice),
+    target_seconds: typeof block.target_seconds === "number" ? block.target_seconds : LONG_BLOCK_SECONDS.typical,
+  }));
+  return {
+    target_seconds: typeof outline.target_seconds === "number" ? outline.target_seconds : blocks.reduce((sum, block) => sum + block.target_seconds, 0),
+    mid_reprice_index: typeof outline.mid_reprice_index === "number" ? outline.mid_reprice_index : midRepriceIndex(blocks.length),
+    blocks,
+  };
 }

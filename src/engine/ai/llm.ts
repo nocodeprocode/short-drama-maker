@@ -7,6 +7,7 @@ import { MODEST_DRESS_RULE, MODEST_WARDROBE_EXAMPLES } from "./modesty.ts";
 import { pinLocationToBible } from "../pipeline/location-ref.ts";
 import { alignVoicePrompt } from "./voice-sex.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
+import { validateBibleShape, validateBlockScenesShape, validateOutlineShape, validatePlanShape } from "./plan-schema.ts";
 import { dramaHooks, ledgerForEpisode } from "../../drama-engine/index.ts";
 
 type ChatResponse = {
@@ -144,7 +145,7 @@ JSON shape:
   "episode_structure": [{ "episode_number": number, "title": string, "hook": string, "conflict": string, "type": "HookEp" | "RevealEp" | "ConfrontationEp" | "CliffhangerEp" | "ComfortEp" | "TentpoleEp", "cliffhanger": string, "tentpole": boolean, "paywall_flag": boolean }],
   "visual_style": { "format": "9:16", "lighting": string, "camera": string }
 }`;
-      return assertBible(await completeJson<StoryBible>(dramaHooks.enrichBiblePrompt(base, input)));
+      return assertBible(validateBibleShape(await completeJson<unknown>(dramaHooks.enrichBiblePrompt(base, input))));
     },
 
     async writeEpisode(input) {
@@ -152,13 +153,15 @@ JSON shape:
       const length = input.episode_length ?? "60_90";
       return pinPlanLocations(
         assertPlan(
-          await completeJson<EpisodePlan>(
-            dramaHooks.writeEpisodeUserPrompt({
-              bible: input.bible,
-              episodeNumber: input.episodeNumber,
+          validatePlanShape(
+            await completeJson<unknown>(
+              dramaHooks.writeEpisodeUserPrompt({
+                bible: input.bible,
+                episodeNumber: input.episodeNumber,
+                length,
+              }),
               length,
-            }),
-            length,
+            ),
           ),
           { bible: input.bible, length, episodeNumber: input.episodeNumber },
         ),
@@ -171,12 +174,14 @@ JSON shape:
       const length = input.episode_length ?? "60_90";
       return pinPlanLocations(
         assertPlan(
-          await completeJson<EpisodePlan>(
+          validatePlanShape(
+            await completeJson<unknown>(
             `Tighten this episode plan. Keep the same story. Enforce dialogue-first, hook/friction/spike/button, one reaction or listener_hold, off-screen over listener, no opera, no edit verbs in camera, 9:16.
 Do not change scene location strings. Each location must stay one of: ${locations.join(" | ")}
 ${JSON.stringify(input.plan)}
 Return the same JSON shape with edit_mode, audio_role, function, eyeline filled.`,
-            length,
+              length,
+            ),
           ),
           { bible: input.bible, length },
         ),
@@ -186,30 +191,30 @@ Return the same JSON shape with edit_mode, audio_role, function, eyeline filled.
 
     async outlineEpisode(input) {
       const length = input.episode_length ?? "900_1080";
-      return completeJson<import("../../drama-engine/plans/long-form.ts").EpisodeOutline>(
-        `Outline a ${length === "900_1080" ? "15-minute" : length} vertical short-drama episode for this bible. Do not write shots.
+      return validateOutlineShape(
+        await completeJson<unknown>(
+          `Outline a ${length === "900_1080" ? "15-minute" : length} vertical short-drama episode for this bible. Do not write shots.
 ${JSON.stringify({ title: input.bible.title, logline: input.bible.logline, characters: input.bible.characters.map((row) => row.name), locations: input.bible.locations })}
 Episode ${input.episodeNumber}.
 ${dramaHooks.writeEpisodeUserPrompt({ bible: input.bible, episodeNumber: input.episodeNumber, length })}`,
-        length,
+          length,
+        ),
       );
     },
 
     async writeEpisodeBlocks(input) {
       const length = input.episode_length ?? "900_1080";
-      const drafted = await completeJson<{ scenes: EpisodePlan["scenes"] }>(
-        dramaHooks.writeBlockBatchPrompt({
-          bible: input.bible,
-          outline: input.outline,
-          blocks: input.blocks,
+      return validateBlockScenesShape(
+        await completeJson<unknown>(
+          dramaHooks.writeBlockBatchPrompt({
+            bible: input.bible,
+            outline: input.outline,
+            blocks: input.blocks,
+            length,
+          }),
           length,
-        }),
-        length,
+        ),
       );
-      if (!Array.isArray(drafted.scenes) || drafted.scenes.length === 0) {
-        throw new Error("OpenRouter block batch returned no scenes");
-      }
-      return drafted.scenes;
     },
   };
 }

@@ -94,6 +94,51 @@ function tenShotPlan(): EpisodePlan["scenes"][number]["shots"] {
   ];
 }
 
+describe("continuity", () => {
+  it("keeps each regrouped scene on the location it was planned in", () => {
+    const ten = tenShotPlan();
+    const twoLocations: EpisodePlan = {
+      ...plan(ten),
+      scenes: [
+        { location: "penthouse kitchen", time: "night", characters: ["Sarah", "David"], shots: ten.slice(0, 5) },
+        { location: "estate lobby", time: "dawn", characters: ["Sarah", "David"], shots: ten.slice(5) },
+      ],
+    };
+    const repaired = repairEpisodePlan({ plan: twoLocations, namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const locations = new Set(repaired.scenes.map((scene) => scene.location));
+    expect(locations.has("penthouse kitchen")).toBe(true);
+    expect(locations.has("estate lobby")).toBe(true);
+    // The button was planned in the lobby; it must not be flattened onto the kitchen.
+    const buttonScene = repaired.scenes.find((scene) => scene.shots.some((row) => row.function === "button_cu"));
+    expect(buttonScene?.location).toBe("estate lobby");
+  });
+
+  it("warns on a location or light change that opens on a face instead of a wide or insert", () => {
+    const ten = tenShotPlan();
+    const jump: EpisodePlan = {
+      ...plan(ten),
+      scenes: [
+        { location: "penthouse kitchen", time: "night", characters: ["Sarah", "David"], shots: ten.slice(0, 6) },
+        // Opens on a dialogue CU in a new place at a new hour.
+        { location: "estate lobby", time: "dawn", characters: ["Sarah", "David"], shots: ten.slice(6) },
+      ],
+    };
+    const result = validateEpisodePlan({ plan: jump, namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    expect(result.warnings.map((row) => row.id)).toEqual(expect.arrayContaining(["CONTINUITY_JUMP", "LIGHT_JUMP"]));
+
+    const bridged: EpisodePlan = {
+      ...jump,
+      scenes: [
+        jump.scenes[0]!,
+        { ...jump.scenes[1]!, shots: [ten[8]!, ...ten.slice(6, 8), ten[9]!] },
+      ],
+    };
+    const ok = validateEpisodePlan({ plan: bridged, namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    expect(ok.warnings.map((row) => row.id)).not.toContain("CONTINUITY_JUMP");
+    expect(ok.warnings.map((row) => row.id)).not.toContain("LIGHT_JUMP");
+  });
+});
+
 describe("assertPlan.shotBudget", () => {
   it("throws on 7 or 13 shots and passes 10", () => {
     const namedCast = CAST3;

@@ -509,7 +509,7 @@ export function repairEpisodePlan(input: ValidatePlanInput): EpisodePlan {
   const budget = LENGTH_BUDGETS[input.length ?? "60_90"];
   let plan = applyShotBudget(input.plan, budget);
   let shots = plan.scenes
-    .flatMap((scene) => scene.shots)
+    .flatMap((scene, sceneIndex) => scene.shots.map((shot) => ({ ...shot, origin_scene: shot.origin_scene ?? sceneIndex })))
     .map((shot, index, all) => craftShot(shot, index, all.length));
   shots = applyPads(shots, budget);
   shots = collapseToShotBudget(shots, budget);
@@ -554,17 +554,53 @@ export function repairEpisodePlan(input: ValidatePlanInput): EpisodePlan {
   shots = collapseDuplicateButtons(shots);
 
   const head = plan.scenes[0] ?? { location: "interior", time: "night", characters: [] };
+  // Injected shots (wide, insert, recap) carry no origin; they take the scene of the nearest planned shot.
+  let lastOrigin = shots.find((shot) => shot.origin_scene != null)?.origin_scene ?? 0;
+  for (const shot of shots) {
+    if (shot.origin_scene == null) shot.origin_scene = lastOrigin;
+    else lastOrigin = shot.origin_scene;
+  }
   const grouped = groupEditorialScenes(shots);
   return {
     ...plan,
     hook: plan.hook?.trim() || shots[0]?.dialogue || "The turn is already happening.",
     cliffhanger: plan.cliffhanger?.trim() || "The door opens on the unpaid question.",
-    scenes: (grouped.length ? grouped : [{ kind: "dialogue" as const, shots, index: 0 }]).map((group) => ({
-      location: head.location,
-      time: head.time,
-      characters: uniqueNames(plan, group.shots),
-      kind: group.kind,
-      shots: group.shots,
-    })),
+    scenes: (grouped.length ? grouped : [{ kind: "dialogue" as const, shots, index: 0 }]).map((group) => {
+      const origin = sceneMetaForGroup(group.shots, plan, head);
+      return {
+        location: origin.location,
+        time: origin.time,
+        characters: uniqueNames(plan, group.shots),
+        kind: group.kind,
+        shots: group.shots,
+      };
+    }),
   };
+}
+
+/**
+ * Location/time for a regrouped editorial scene: the planned scene most of its
+ * shots came from. Regrouping used to flatten every scene onto the first one's
+ * location, which is where mid-episode location jumps were born.
+ */
+function sceneMetaForGroup(
+  shots: readonly PlanShot[],
+  plan: EpisodePlan,
+  head: { location: string; time: string },
+): { location: string; time: string } {
+  const counts = new Map<number, number>();
+  for (const shot of shots) {
+    if (shot.origin_scene == null) continue;
+    counts.set(shot.origin_scene, (counts.get(shot.origin_scene) ?? 0) + 1);
+  }
+  let best: number | null = null;
+  let bestCount = 0;
+  for (const [index, count] of counts) {
+    if (count > bestCount) {
+      best = index;
+      bestCount = count;
+    }
+  }
+  const scene = best == null ? null : plan.scenes[best];
+  return { location: scene?.location || head.location, time: scene?.time || head.time };
 }

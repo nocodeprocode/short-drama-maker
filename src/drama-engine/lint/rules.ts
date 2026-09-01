@@ -30,4 +30,9 @@ export const LINT_RULES: LintRule[] = [
   { id: "BLOCK_BUTTON", severity: "block", threshold: "every scene-block buttons into the next" },
   { id: "MID_REPRICE", severity: "block", threshold: "mid-episode reprice ~7–8 min" },
   { id: "REPEAT_BEAT", severity: "block", threshold: "blocks must escalate, not copy the same argument" },
+  { id: "COVERAGE_MIX", severity: "block", threshold: "≥1 empty wide, ≥1 insert, not 100% ECU faces" },
+  { id: "TWO_SHOT_RISK", severity: "warn", threshold: "two-shots only from a locked group still" },
+  { id: "CONTINUITY_JUMP", severity: "warn", threshold: "a location change opens on a wide or insert" },
+  { id: "LIGHT_JUMP", severity: "warn", threshold: "a time-of-day change opens on a wide or insert" },
+  { id: "COMIC_STING", severity: "block", threshold: "≥1 comic/stun cutaway + SFX" },
 ];

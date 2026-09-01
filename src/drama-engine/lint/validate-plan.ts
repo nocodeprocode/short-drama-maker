@@ -310,6 +310,40 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     ),
   );
 
+  // Continuity: consecutive scenes that change location without picture to
+  // carry the audience (an establishing/insert at the top of the new scene)
+  // read as a jump; a time-of-day change with no bridge reads as a light jump.
+  const sceneRows = input.plan.scenes;
+  const unbridgedLocationJumps: string[] = [];
+  const unbridgedLightJumps: string[] = [];
+  for (let i = 1; i < sceneRows.length; i += 1) {
+    const prev = sceneRows[i - 1]!;
+    const next = sceneRows[i]!;
+    const bridged = next.shots.some(
+      (shot, index) => index === 0 && (isWideCoverage(shot) || isObjectInsert({ ...shot, function: inferFunction(shot, index, next.shots.length) })),
+    );
+    if (norm(prev.location) !== norm(next.location) && !bridged) unbridgedLocationJumps.push(`${prev.location}→${next.location}`);
+    if (norm(prev.time) !== norm(next.time) && !bridged) unbridgedLightJumps.push(`${prev.time}→${next.time}`);
+  }
+  reports.push(
+    qc(
+      "CONTINUITY_JUMP",
+      unbridgedLocationJumps.length === 0,
+      unbridgedLocationJumps.length ? unbridgedLocationJumps.join(", ") : "none",
+      "a location change opens on a wide or insert",
+      "warn",
+    ),
+  );
+  reports.push(
+    qc(
+      "LIGHT_JUMP",
+      unbridgedLightJumps.length === 0,
+      unbridgedLightJumps.length ? unbridgedLightJumps.join(", ") : "none",
+      "a time-of-day change opens on a wide or insert",
+      "warn",
+    ),
+  );
+
   if (input.episodeKind === "ConfrontationEp" && input.jobs) {
     const hasWitness = Object.values(input.jobs).includes("witness");
     reports.push(qc("NO_JOB", hasWitness, hasWitness ? "witness" : "missing", "Witness on ConfrontationEp", "warn"));
