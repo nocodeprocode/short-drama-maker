@@ -12,7 +12,10 @@ import {
   VIDEO_PENDING_MAX_SECONDS,
   VIDEO_ROUTES,
 } from "./config/models.ts";
-import { decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
+import { decodeJson, encodeJson, sha256Hex, sha256HexSync } from "./crypto.ts";
+import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
+import { manifestFingerprint } from "./media/render.ts";
+import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
 import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
@@ -107,6 +110,8 @@ export type EngineDeps = {
   autoRegenerate?: boolean;
   /** Override the per-take measurement (tests). Defaults to the ffmpeg take analysis. */
   analyze?: typeof analyzeTake;
+  /** Override the aspect re-framer (tests). Defaults to the ffmpeg re-frame. */
+  reframe?: typeof reframeMp4;
 };
 
 export type StripeWebhookInput = {
@@ -160,6 +165,7 @@ export function createEngine(deps: EngineDeps = {}) {
   const audit = deps.audit ?? auditMux;
   const autoRegenerate = deps.autoRegenerate ?? true;
   const measureTake = deps.analyze ?? analyzeTake;
+  const reframe = deps.reframe ?? reframeMp4;
   const clock = deps.clock ?? systemClock();
   const ids = deps.ids ?? cryptoIds();
   store.dailyCap = deps.dailyCap ?? DEFAULT_DAILY_SPEND_CAP;
@@ -2691,6 +2697,8 @@ export function createEngine(deps: EngineDeps = {}) {
      * never does: a paying user gets every planned shot or a hard failure.
      */
     allow_partial?: boolean;
+    /** Extra aspects re-framed from the accepted 9:16 master. */
+    deliverables?: DeliverableAspect[];
   }) {
     const episode = store.episodes.get(input.episode_id);
     if (!episode) throw new Error("Episode not found");
@@ -2842,6 +2850,9 @@ export function createEngine(deps: EngineDeps = {}) {
       throw new RenderFailedError(`mux audit refused the cut (${muxAudit.reasons.join(", ")}); audit ${auditAsset.id}`);
     }
 
+    // Versioned finals: a re-render never overwrites; each accepted cut gets the
+    // next version and the previous stays addressable for a reviewer.
+    const version = (episode.render_version ?? 0) + 1;
     const finalAsset = await putAsset({
       owner_id: input.owner_id,
       series_id: episode.series_id,
@@ -2849,8 +2860,70 @@ export function createEngine(deps: EngineDeps = {}) {
       bucket: "private-final",
       mime_type: "video/mp4",
       body: rendered.body,
-      metadata: { episode_id: episode.id, checksum: rendered.checksum, audit_asset_id: auditAsset.id },
+      metadata: {
+        episode_id: episode.id,
+        checksum: rendered.checksum,
+        audit_asset_id: auditAsset.id,
+        version,
+        aspect: "9:16",
+        manifest_fingerprint: await sha256Hex(new TextEncoder().encode(manifestFingerprint(manifest))),
+      },
     });
+
+    // Caption sidecar (SubRip) so the same cues ship with the file.
+    const captionAsset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: episode.series_id,
+      kind: "episode_captions",
+      bucket: "private-final",
+      mime_type: "application/x-subrip",
+      body: new TextEncoder().encode(cuesToSrt(cuesFromVtt(rendered.vtt))),
+      metadata: { episode_id: episode.id, version, final_asset_id: finalAsset.id, format: "srt" },
+    });
+
+    // Additional aspects are re-frames of the accepted master, never separate cuts.
+    const deliverables: Array<{ aspect: DeliverableAspect; asset_id: string; checksum: string }> = [
+      { aspect: "9:16", asset_id: finalAsset.id, checksum: rendered.checksum },
+    ];
+    for (const aspect of input.deliverables ?? []) {
+      if (aspect === "9:16") continue;
+      const reframed = await reframe(rendered.body, aspect);
+      if (!reframed) continue;
+      const checksum = await sha256Hex(reframed);
+      const asset = await putAsset({
+        owner_id: input.owner_id,
+        series_id: episode.series_id,
+        kind: "episode_final",
+        bucket: "private-final",
+        mime_type: "video/mp4",
+        body: reframed,
+        metadata: { episode_id: episode.id, checksum, version, aspect, master_asset_id: finalAsset.id, audit_asset_id: auditAsset.id },
+      });
+      deliverables.push({ aspect, asset_id: asset.id, checksum });
+    }
+
+    // Provenance: everything a studio needs to know how these pixels were made.
+    const provenance = buildProvenance({
+      episode,
+      series: store.series.get(episode.series_id) ?? null,
+      version,
+      manifest,
+      takes: takes.map((row) => ({ shot: row.shot, assetId: row.assetId })),
+      finalChecksum: rendered.checksum,
+      auditAssetId: auditAsset.id,
+      captionAssetId: captionAsset.id,
+      deliverables,
+    });
+    const provenanceAsset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: episode.series_id,
+      kind: "episode_provenance",
+      bucket: "private-final",
+      mime_type: "application/json",
+      body: encodeJson(provenance),
+      metadata: { episode_id: episode.id, version, final_asset_id: finalAsset.id },
+    });
+
     for (const row of takes) {
       store.shots.set(row.shot.id, {
         ...row.shot,
@@ -2861,6 +2934,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const next = {
       ...episode,
       render_manifest: manifest,
+      render_version: version,
       status: "complete" as const,
       updated_at: iso(clock),
     };
@@ -2871,6 +2945,61 @@ export function createEngine(deps: EngineDeps = {}) {
       checksum: rendered.checksum,
       vtt: rendered.vtt,
       container: rendered.container,
+      version,
+      captions_asset_id: captionAsset.id,
+      provenance_asset_id: provenanceAsset.id,
+      deliverables,
+    };
+  }
+
+  /** Machine-readable record of how a final was made: models, takes, measurements, gates. */
+  function buildProvenance(input: {
+    episode: Episode;
+    series: Series | null;
+    version: number;
+    manifest: RenderManifest;
+    takes: Array<{ shot: Shot; assetId: string }>;
+    finalChecksum: string;
+    auditAssetId: string;
+    captionAssetId: string;
+    deliverables: Array<{ aspect: DeliverableAspect; asset_id: string; checksum: string }>;
+  }) {
+    const jobsByAsset = new Map<string, GenerationJob>();
+    for (const job of store.jobs.values()) {
+      const assetId = job.result_metadata.asset_id;
+      if (job.job_type === "video" && typeof assetId === "string") jobsByAsset.set(assetId, job);
+    }
+    return {
+      schema: "shortdramamaker/provenance@1",
+      generated_at: iso(clock),
+      engine: { price_snapshot_version: store.priceSnapshotVersion, identity_ref_policy: identityRefPolicy },
+      series: input.series ? { id: input.series.id, title: input.series.title } : null,
+      episode: { id: input.episode.id, number: input.episode.episode_number, title: input.episode.title, version: input.version },
+      final: { checksum: input.finalChecksum, audit_asset_id: input.auditAssetId, captions_asset_id: input.captionAssetId, deliverables: input.deliverables },
+      shots: input.takes.map(({ shot, assetId }) => {
+        const job = jobsByAsset.get(assetId);
+        const clip = input.manifest.shots.find((row) => row.shot_id === shot.id);
+        return {
+          shot_id: shot.id,
+          position: shot.position,
+          function: shot.shot_data.function ?? shot.shot_data.type,
+          speaker: shot.shot_data.speaker ?? null,
+          take_asset_id: assetId,
+          generation_job_id: job?.id ?? null,
+          model: job?.model ?? null,
+          provider: job?.provider ?? null,
+          prompt_sha256: typeof job?.request_metadata.prompt === "string" ? sha256HexSync(job.request_metadata.prompt) : null,
+          first_frame_asset_id: job?.request_metadata.first_frame_asset_id ?? shot.shot_data.first_frame_asset_id ?? null,
+          heard_audio: shot.shot_data.heard_audio ?? null,
+          in_point_seconds: clip?.in_point_seconds ?? null,
+          out_point_seconds: clip?.out_point_seconds ?? null,
+          take_analysis: shot.shot_data.take_analysis ?? null,
+          take_score: typeof job?.result_metadata.take_score === "number" ? job.result_metadata.take_score : null,
+          identity: job?.request_metadata.identity_judgement ?? null,
+          actual_cost: job?.actual_cost ?? null,
+        };
+      }),
+      moderation: store.moderation.filter((row) => row.series_id === input.episode.series_id).map((row) => ({ checkpoint: row.checkpoint, verdict: row.verdict, at: row.created_at })),
     };
   }
 

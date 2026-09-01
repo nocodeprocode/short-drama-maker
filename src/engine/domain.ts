@@ -61,6 +61,8 @@ export type AssetKind =
   | "shot_video"
   | "episode_final"
   | "episode_audit"
+  | "episode_captions"
+  | "episode_provenance"
   | "music"
   | "sfx";
 
@@ -341,6 +343,8 @@ export type Episode = {
   status: EpisodeStatus;
   render_manifest: RenderManifest | null;
   episode_outline?: import("../drama-engine/plans/long-form.ts").EpisodeOutline | null;
+  /** Increments on every accepted render; each final asset keeps its version in metadata. */
+  render_version?: number;
   created_at: string;
   updated_at: string;
 };

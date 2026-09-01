@@ -128,6 +128,14 @@ export function cuesToVtt(cues: readonly CaptionCue[]): string {
   return `WEBVTT\n\n${body}`;
 }
 
+/** SubRip sidecar for platforms that do not take WebVTT (broadcast QC, YouTube uploads). */
+export function cuesToSrt(cues: readonly CaptionCue[]): string {
+  const stamp = (seconds: number) => formatTs(seconds).replace(".", ",");
+  return cues
+    .map((cue, index) => `${index + 1}\n${stamp(cue.start)} --> ${stamp(cue.end)}\n${wrapCaptionLines(cue.text.replace(/\n/g, " ")).join("\n")}\n`)
+    .join("\n");
+}
+
 export function cuesFromVtt(vtt: string): CaptionCue[] {
   const cues: CaptionCue[] = [];
   const blocks = vtt.split(/\n\s*\n/);

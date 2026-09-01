@@ -1,3 +1,10 @@
+import { createHash } from "node:crypto";
+
+/** Synchronous digest for small strings (prompt fingerprints in provenance). */
+export function sha256HexSync(data: string): string {
+  return createHash("sha256").update(data, "utf8").digest("hex");
+}
+
 export async function sha256Hex(data: Uint8Array | string): Promise<string> {
   const bytes =
     typeof data === "string" ? new TextEncoder().encode(data) : data;

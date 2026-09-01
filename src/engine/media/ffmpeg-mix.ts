@@ -224,7 +224,8 @@ async function renderCaptionPlate(file: string, text: string, frameHeight = CAPT
   const lines = wrapCaptionLines(text.replace(/\n/g, " "));
   const fill = captionFillRgb(text);
   const font = DRAW_FONTS.find((row) => existsSync(row)) ?? "";
-  const script = join(file.replace(/[^/]+$/, ""), `plate-${Date.now()}-${Math.random().toString(16).slice(2)}.py`);
+  // Script name derived from the output file so the same manifest renders the same bytes.
+  const script = `${file}.py`;
   await writeFile(
     script,
     `from PIL import Image, ImageDraw, ImageFont

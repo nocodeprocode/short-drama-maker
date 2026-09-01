@@ -79,7 +79,8 @@ export function probeVideoBytes(bytes: Uint8Array): ProbeResult {
       if (dim + 8 <= box.end) {
         const width = readU32(bytes, dim) / 65536;
         const height = readU32(bytes, dim + 4) / 65536;
-        if (height >= width && width > 0) {
+        // Audio tracks carry a 0x0 tkhd; the first sized track is the picture.
+        if (width > 0 && height > 0 && result.width === 0) {
           result.width = Math.round(width);
           result.height = Math.round(height);
         }
