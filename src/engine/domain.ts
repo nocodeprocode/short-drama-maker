@@ -60,6 +60,7 @@ export type AssetKind =
   | "dialogue_alignment"
   | "shot_video"
   | "episode_final"
+  | "episode_block"
   | "episode_audit"
   | "episode_captions"
   | "episode_provenance"

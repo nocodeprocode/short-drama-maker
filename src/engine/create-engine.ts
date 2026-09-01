@@ -12,7 +12,8 @@ import {
   VIDEO_PENDING_MAX_SECONDS,
   VIDEO_ROUTES,
 } from "./config/models.ts";
-import { decodeJson, encodeJson, sha256Hex, sha256HexSync } from "./crypto.ts";
+import { decodeJson, encodeJson, sha256Hex, sha256HexSync, stableStringify } from "./crypto.ts";
+import { concatMp4Segments, mergeManifests, mergeVtt } from "./media/concat.ts";
 import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
@@ -112,6 +113,10 @@ export type EngineDeps = {
   analyze?: typeof analyzeTake;
   /** Override the aspect re-framer (tests). Defaults to the ffmpeg re-frame. */
   reframe?: typeof reframeMp4;
+  /** Override block concatenation (tests). Defaults to an ffmpeg stream-copy concat. */
+  concat?: typeof concatMp4Segments;
+  /** Episodes with at least this many takes render per block. */
+  blockRenderMinShots?: number;
 };
 
 export type StripeWebhookInput = {
@@ -152,6 +157,9 @@ export class RenderIncompleteError extends Error {
   }
 }
 
+/** Below this many takes an episode renders in one pass; above it, per block with reuse. */
+export const BLOCK_RENDER_MIN_SHOTS = 24;
+
 function emptyAppearance(): AppearanceProfile {
   return { age_look: "", ethnicity_notes: "", hair: "", face: "", body: "", default_wardrobe: "" };
 }
@@ -166,6 +174,8 @@ export function createEngine(deps: EngineDeps = {}) {
   const autoRegenerate = deps.autoRegenerate ?? true;
   const measureTake = deps.analyze ?? analyzeTake;
   const reframe = deps.reframe ?? reframeMp4;
+  const concat = deps.concat ?? concatMp4Segments;
+  const blockRenderMinShots = deps.blockRenderMinShots ?? BLOCK_RENDER_MIN_SHOTS;
   const clock = deps.clock ?? systemClock();
   const ids = deps.ids ?? cryptoIds();
   store.dailyCap = deps.dailyCap ?? DEFAULT_DAILY_SPEND_CAP;
@@ -2788,6 +2798,132 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!takes.length) {
       throw new RenderIncompleteError(missing.length ? missing : ["no takes"]);
     }
+
+    // Long episodes render per block, and a block whose takes have not changed
+    // since the last render is reused byte for byte. The programme is a stream
+    // copy of the blocks, so a failure late in a 15-minute cut costs one block.
+    const groups = blockGroups(takes);
+    const rendered =
+      groups.length > 1 && takes.length >= blockRenderMinShots
+        ? await renderInBlocks(episode, groups, input.owner_id)
+        : await renderSlice(episode, takes);
+    const { manifest, analyses, heardLanes } = rendered;
+
+    // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
+    // to call final. The audit JSON is stored either way so reviewers can see
+    // why a cut passed or was refused.
+    const muxAudit = await audit({ body: rendered.body, manifest, analyses, heardLanes });
+    return await finalizeRender({ input, episode, takes, rendered, muxAudit });
+  }
+
+  /** Takes grouped by block_index in programme order; shots without a block form one group. */
+  function blockGroups(takes: Array<{ shot: Shot; assetId: string }>): Array<{ block: number; takes: Array<{ shot: Shot; assetId: string }> }> {
+    const byBlock = new Map<number, Array<{ shot: Shot; assetId: string }>>();
+    for (const row of takes) {
+      const block = row.shot.shot_data.block_index ?? -1;
+      const list = byBlock.get(block) ?? [];
+      list.push(row);
+      byBlock.set(block, list);
+    }
+    return [...byBlock.entries()].sort((a, b) => a[0] - b[0]).map(([block, rows]) => ({ block, takes: rows }));
+  }
+
+  type SliceRender = {
+    body: Uint8Array;
+    checksum: string;
+    vtt: string;
+    container: "mp4";
+    manifest: RenderManifest;
+    analyses: Array<TakeAnalysis | null>;
+    heardLanes: Array<"native" | "tts" | "silent">;
+  };
+
+  /** What a block render depends on; identical inputs reuse the stored block. */
+  function blockFingerprint(rows: Array<{ shot: Shot; assetId: string }>): string {
+    return sha256HexSync(
+      stableStringify(
+        rows.map((row) => ({
+          shot: row.shot.id,
+          take: row.assetId,
+          measured: row.shot.shot_data.take_analysis?.measured_at ?? null,
+          heard: row.shot.shot_data.heard_audio ?? null,
+          alignment: row.shot.shot_data.dialogue_alignment_asset_id ?? null,
+          audio: row.shot.shot_data.dialogue_audio_asset_id ?? null,
+          silence: row.shot.shot_data.silence_license ?? null,
+        })),
+      ),
+    );
+  }
+
+  async function renderInBlocks(
+    episode: Episode,
+    groups: Array<{ block: number; takes: Array<{ shot: Shot; assetId: string }> }>,
+    ownerId: string,
+  ): Promise<SliceRender> {
+    const existing = (await liveAssetsForSeries(episode.series_id)).filter(
+      (asset) => asset.kind === "episode_block" && asset.metadata.episode_id === episode.id,
+    );
+    const pieces: Array<{ body: Uint8Array; vtt: string; manifest: RenderManifest; analyses: Array<TakeAnalysis | null>; heardLanes: Array<"native" | "tts" | "silent">; seconds: number; reused: boolean }> = [];
+    for (const group of groups) {
+      const fingerprint = blockFingerprint(group.takes);
+      const cached = existing.find((asset) => asset.metadata.block_index === group.block && asset.metadata.fingerprint === fingerprint);
+      const stored = cached ? await assets.get(cached.id).catch(() => null) : null;
+      if (stored && typeof cached?.metadata.vtt === "string" && cached.metadata.manifest) {
+        const seconds = probeVideoBytes(stored.body).duration_seconds;
+        pieces.push({
+          body: stored.body,
+          vtt: cached.metadata.vtt,
+          manifest: cached.metadata.manifest as RenderManifest,
+          analyses: group.takes.map((row) => row.shot.shot_data.take_analysis ?? null),
+          heardLanes: (cached.metadata.heard_lanes as Array<"native" | "tts" | "silent">) ?? group.takes.map(() => "silent" as const),
+          seconds,
+          reused: true,
+        });
+        continue;
+      }
+      const slice = await renderSlice(episode, group.takes);
+      const seconds = probeVideoBytes(slice.body).duration_seconds;
+      await putAsset({
+        owner_id: ownerId,
+        series_id: episode.series_id,
+        kind: "episode_block",
+        bucket: "private-final",
+        mime_type: "video/mp4",
+        body: slice.body,
+        metadata: {
+          episode_id: episode.id,
+          block_index: group.block,
+          fingerprint,
+          checksum: slice.checksum,
+          vtt: slice.vtt,
+          manifest: slice.manifest,
+          heard_lanes: slice.heardLanes,
+          seconds,
+        },
+      });
+      pieces.push({ ...slice, seconds, reused: false });
+    }
+    const body = await concat(pieces.map((piece) => piece.body));
+    if (!body) throw new RenderFailedError("block concatenation failed");
+    let offset = 0;
+    const offsets = pieces.map((piece) => {
+      const at = offset;
+      offset += piece.seconds;
+      return at;
+    });
+    return {
+      body,
+      checksum: await sha256Hex(body),
+      vtt: mergeVtt(pieces.map((piece, index) => ({ vtt: piece.vtt, offsetSeconds: offsets[index]! }))),
+      container: "mp4",
+      manifest: mergeManifests(episode.id, pieces.map((piece, index) => ({ manifest: piece.manifest, offsetSeconds: offsets[index]! }))),
+      analyses: pieces.flatMap((piece) => piece.analyses),
+      heardLanes: pieces.flatMap((piece) => piece.heardLanes),
+    };
+  }
+
+  /** Renders one contiguous run of takes into a mixed, captioned MP4. */
+  async function renderSlice(episode: Episode, takes: Array<{ shot: Shot; assetId: string }>): Promise<SliceRender> {
     const playable = takes.map((row) => row.shot);
     const assetByShot = new Map(takes.map((row) => [row.shot.id, row.assetId]));
     const shotBodies: Uint8Array[] = [];
@@ -2883,11 +3019,18 @@ export function createEngine(deps: EngineDeps = {}) {
       visemeMouthOpenSeconds: analyses.map((row) => row?.mouth_open_seconds ?? null),
       visemeVoiceOnsetSeconds: analyses.map((row) => row?.voice_onset_seconds ?? null),
     });
+    return { ...rendered, manifest, analyses, heardLanes };
+  }
 
-    // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
-    // to call final. The audit JSON is stored either way so reviewers can see
-    // why a cut passed or was refused.
-    const muxAudit = await audit({ body: rendered.body, manifest, analyses, heardLanes });
+  async function finalizeRender(args: {
+    input: { owner_id: string; deliverables?: DeliverableAspect[] };
+    episode: Episode;
+    takes: Array<{ shot: Shot; assetId: string }>;
+    rendered: SliceRender;
+    muxAudit: Awaited<ReturnType<MuxAuditFn>>;
+  }) {
+    const { input, episode, takes, rendered, muxAudit } = args;
+    const { manifest } = rendered;
     const auditAsset = await putAsset({
       owner_id: input.owner_id,
       series_id: episode.series_id,

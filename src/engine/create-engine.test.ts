@@ -692,6 +692,60 @@ describe("engine phase 0", () => {
     expect(manifestShot?.in_point_seconds).toBe(0.4);
   });
 
+  it("renders long episodes per block and reuses blocks whose takes did not change", async () => {
+    let renders = 0;
+    const counting: RenderFn = async (input) => {
+      renders += 1;
+      return fakeRender(input);
+    };
+    const app = engine({
+      render: counting,
+      blockRenderMinShots: 4,
+      concat: async (segments) => concatBytes(segments),
+    });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_1",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const analyzed = await app.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of analyzed.characters) await app.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    const episode = await app.createEpisode({ owner_id: "user-1", series_id: series.id, episode_number: 1, title: "Blocks" });
+    const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    // Pretend the planner produced three blocks.
+    planned.shots.forEach((shot, index) => {
+      app.store.shots.set(shot.id, { ...app.store.shots.get(shot.id)!, shot_data: { ...shot.shot_data, block_index: Math.floor((index * 3) / planned.shots.length) } });
+    });
+    for (const shot of planned.shots) await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    await app.tick();
+
+    const first = await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id, deliverables: [] });
+    expect(renders).toBe(3);
+    const blocks = (await app.assets.listBySeries(series.id)).filter((asset) => asset.kind === "episode_block");
+    expect(blocks).toHaveLength(3);
+    expect(first.episode.render_manifest?.shots.length).toBe(planned.shots.length);
+
+    // Nothing changed: no block renders again.
+    await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id, deliverables: [] });
+    expect(renders).toBe(3);
+
+    // One take replaced: exactly its block renders again.
+    const last = app.store.shotsForEpisode(episode.id).at(-1)!;
+    await app.regenerateShot({ owner_id: "user-1", shot_id: last.id });
+    await app.tick();
+    await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id, deliverables: [] });
+    expect(renders).toBe(4);
+  });
+
   it("lets a reviewer pin or drop a take and re-cuts without regenerating", async () => {
     const { app, episode, shots } = await fundedSeries();
     for (const shot of shots) await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
