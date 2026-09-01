@@ -9,6 +9,7 @@ import {
   publicCharacter,
   publicProduction,
   seriesBalance,
+  seriesSpent,
   seriesPoster,
   type ProductionRow,
 } from "../_shared/productions.ts";
@@ -536,11 +537,15 @@ Deno.serve(async (req) => {
         shoots: await productionShoots(supabase, data.series_id, episodes ?? []),
         current_step: (tasks ?? []).find((task) => task.status === "running") ?? (tasks ?? []).find((task) => task.status === "queued") ?? null,
         balance: usd(await seriesBalance(supabase, data.series_id)),
+        spent: usd(await seriesSpent(supabase, data.series_id)),
       });
     }
 
     if (req.method === "POST" && /\/productions\/[^/]+\/pause$/.test(path)) {
       return setPaused(supabase, user.id, path.split("/")[2], true, access.isAdmin);
+    }
+    if (req.method === "POST" && /\/productions\/[^/]+\/cancel$/.test(path)) {
+      return cancelProduction(supabase, user.id, path.split("/")[2], access.isAdmin);
     }
     if (req.method === "POST" && /\/productions\/[^/]+\/resume$/.test(path)) {
       return setPaused(supabase, user.id, path.split("/")[2], false, access.isAdmin);
@@ -1289,6 +1294,48 @@ async function setPaused(
     });
     await wakeJobs();
   }
+  return json(publicProduction(data as ProductionRow));
+}
+
+/**
+ * Cancel stops new work: queued tasks for the production are cancelled and the
+ * production is marked cancelled. Takes already generated stay on the series
+ * and unused credit stays on the ledger for the next production. A running
+ * task finishes its current step (its lease is short) and the runner will not
+ * advance a cancelled production.
+ */
+async function cancelProduction(
+  supabase: ReturnType<typeof serviceClient>,
+  userId: string,
+  id: string,
+  isAdmin: boolean,
+) {
+  const production = await loadProduction(supabase, userId, id, isAdmin);
+  if (!production) return json({ error: "Not found" }, 404);
+  if (production.status === "ready" || production.status === "cancelled") {
+    return json({ error: `Production is already ${production.status}` }, 409);
+  }
+  const now = new Date().toISOString();
+  await supabase
+    .from("engine_tasks")
+    .update({ status: "cancelled", error_code: "cancelled_by_user", lease_until: null, updated_at: now })
+    .eq("production_id", id)
+    .in("status", ["queued", "running"]);
+  const { data, error } = await supabase
+    .from("productions")
+    .update({
+      status: "cancelled",
+      paused: true,
+      ui_phase: "cancelled",
+      intervention_type: null,
+      intervention: {},
+      agent_decision: "Production cancelled. Finished takes stay on the show; unused credit stays on your balance.",
+      updated_at: now,
+    })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) return json({ error: error.message }, 400);
   return json(publicProduction(data as ProductionRow));
 }
 

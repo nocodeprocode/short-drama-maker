@@ -31,13 +31,17 @@ export default function Page() {
     setBusy(episode.id);
     try {
       const detail: EpisodeDetail = await studio.episode(episode.id);
-      const files = playableShotUrls(detail.shots);
       const base = downloadBasename(series?.title ?? detail.series_title, episode.episode_number);
+      // The finished cut is the deliverable. Per-shot files are only a fallback
+      // for an episode that has takes but has not been assembled yet.
+      const finalUrl = detail.final_url ?? episode.final_url;
+      if (finalUrl) {
+        await downloadMedia(finalUrl, `${base}.mp4`);
+        return;
+      }
+      const files = playableShotUrls(detail.shots);
       for (const file of files) {
-        await downloadMedia(
-          file.url,
-          files.length === 1 ? `${base}.mp4` : `${base}-shot-${String(file.position).padStart(2, "0")}.mp4`,
-        );
+        await downloadMedia(file.url, `${base}-shot-${String(file.position).padStart(2, "0")}.mp4`);
       }
     } finally {
       setBusy(null);

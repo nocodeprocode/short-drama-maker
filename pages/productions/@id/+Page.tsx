@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePageContext } from "vike-react/usePageContext";
-import { Pause, Play } from "@phosphor-icons/react";
+import { Pause, Play, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
@@ -93,7 +93,15 @@ export default function Page() {
   const shooting = run.status === "running" || run.status === "queued";
   const statusText = statusLabel(run.status, run.paused);
   const canPause = !run.paused && shooting;
-  const canResume = run.paused && run.status !== "awaiting_payment";
+  const canResume = run.paused && run.status !== "awaiting_payment" && run.status !== "cancelled";
+  const canCancel = !ready && run.status !== "cancelled" && run.status !== "awaiting_payment";
+  const cancel = () => {
+    if (!window.confirm("Cancel this production? Finished takes stay on the show and unused credit stays on your balance.")) return;
+    studio
+      .cancel(run.id)
+      .then(reload)
+      .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not cancel"));
+  };
   const watch = watchLinksForEpisodes(run.episodes);
   const shots = run.shoots ?? [];
   const grid = shotGridCounts(shots);
@@ -125,6 +133,11 @@ export default function Page() {
             {canPause ? (
               <Button color="secondary" iconLeading={Pause} onClick={() => studio.pause(run.id).then(reload)}>
                 Pause
+              </Button>
+            ) : null}
+            {canCancel ? (
+              <Button color="tertiary" iconLeading={XCircle} onClick={cancel}>
+                Cancel
               </Button>
             ) : null}
             {watch.map((link) => (
@@ -197,9 +210,15 @@ export default function Page() {
                 <h2 className="mt-1 text-lg font-semibold">{working?.title ?? run.headline ?? "Preparing this show"}</h2>
                 <p className="mt-1 text-sm text-secondary">{working?.detail ?? "You can close this page."}</p>
               </div>
-              <span className="text-sm text-tertiary">
-                Episode {Math.min(doneEpisodes + 1, totalEpisodes)} of {totalEpisodes}
-              </span>
+              <div className="text-right text-sm text-tertiary">
+                <div>
+                  Episode {Math.min(doneEpisodes + 1, totalEpisodes)} of {totalEpisodes}
+                </div>
+                <div className="mt-0.5 mono text-xs">
+                  {typeof run.spent === "number" ? `Spent $${run.spent.toFixed(2)} · ` : ""}
+                  Balance ${Number(run.balance ?? 0).toFixed(2)}
+                </div>
+              </div>
             </div>
             <div className="mt-4 h-2 overflow-hidden rounded-full bg-secondary">
               <div className="h-full rounded-full bg-brand-600" style={{ width: `${Math.min(100, progress)}%` }} />

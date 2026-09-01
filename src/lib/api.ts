@@ -75,6 +75,12 @@ export const studio = {
   pause: (id: string) => api<Production>(`/productions/${id}/pause`, { method: "POST", body: "{}" }),
   resume: (id: string) => api<Production>(`/productions/${id}/resume`, { method: "POST", body: "{}" }),
   useBest: (id: string) => api<Production>(`/productions/${id}/use-best`, { method: "POST", body: "{}" }),
+  cancel: (id: string) => api<Production>(`/productions/${id}/cancel`, { method: "POST", body: "{}" }),
+  regenerateShot: (shotId: string, seriesId: string) =>
+    api<{ task_id: string; status: string; deduplicated?: boolean }>(`/shots/${shotId}/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ series_id: seriesId }),
+    }),
   confirmTest: (id: string) => api<Production>(`/productions/${id}/confirm-test`, { method: "POST", body: "{}" }),
   episode: (id: string) => api<EpisodeDetail>(`/episodes/${id}`),
   character: (id: string) => api<Character & { series_title?: string }>(`/characters/${id}`),
@@ -330,6 +336,8 @@ export type ProductionDetail = Production & {
   shoots?: ProductionShoot[];
   current_step?: ProductionTask | null;
   balance: number;
+  /** Settled provider spend on this series to date. */
+  spent?: number;
   story_bible?: { logline?: string } | null;
 };
 

@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { usePageContext } from "vike-react/usePageContext";
+import { ArrowsClockwise, DownloadSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
 import { MediaPlayer, ShotThumb } from "@/components/drama/media-player.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { LoadError, StudioSkeleton } from "@/components/drama/skeleton.tsx";
-import { CTA, statusLabel, studioPlayerMode } from "@/engine/present.ts";
+import { CTA, downloadBasename, statusLabel, studioPlayerMode } from "@/engine/present.ts";
 import { studio, type EpisodeDetail } from "@/lib/api.ts";
+import { downloadMedia } from "@/lib/media.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 
 function shotLine(shot: EpisodeDetail["shots"][number]) {
@@ -22,6 +24,32 @@ export default function Page() {
   const id = usePageContext().routeParams.id;
   const { data: episode, error, reload } = useStudio(`episode:${id}`, () => studio.episode(id), [id]);
   const [shotIndex, setShotIndex] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const download = async () => {
+    if (!episode?.final_url) return;
+    setBusy("download");
+    try {
+      await downloadMedia(episode.final_url, `${downloadBasename(episode.series_title, episode.episode_number)}.mp4`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const reshoot = async (shotId: string) => {
+    if (!episode) return;
+    setBusy(shotId);
+    try {
+      const queued = await studio.regenerateShot(shotId, episode.series_id);
+      setNotice(queued.deduplicated ? "A reshoot for this shot is already queued." : "Reshoot queued. The cut updates when the new take lands.");
+      void reload();
+    } catch (caught) {
+      setNotice(caught instanceof Error ? caught.message : "Could not queue a reshoot.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const shots = useMemo(
     () => [...(episode?.shots ?? [])].sort((left, right) => (left.position ?? 0) - (right.position ?? 0)),
@@ -58,6 +86,11 @@ export default function Page() {
               : `Shooting for you · ${readyCount} of ${shots.length || 0} shots ready. You can close this page.`}
           </p>
         </div>
+        {episode.final_url ? (
+          <Button color="secondary" iconLeading={DownloadSimple} isDisabled={busy === "download"} onClick={() => void download()}>
+            {busy === "download" ? "Downloading…" : CTA.downloadMp4}
+          </Button>
+        ) : null}
         <Button href={`/episodes/${id}`} color="secondary">
           Back to episode
         </Button>
@@ -178,6 +211,18 @@ export default function Page() {
             readOnly
             value={String(shot?.shot_data.camera ?? "")}
           />
+          {shot && (shot.status === "needs_review" || shot.status === "complete") ? (
+            <Button
+              color="secondary"
+              size="sm"
+              iconLeading={ArrowsClockwise}
+              isDisabled={busy === shot.id}
+              onClick={() => void reshoot(shot.id)}
+            >
+              {busy === shot.id ? "Queuing…" : shot.status === "needs_review" ? "Reshoot this take" : "Reshoot"}
+            </Button>
+          ) : null}
+          {notice ? <p className="mt-3 text-xs text-tertiary">{notice}</p> : null}
         </aside>
       </div>
     </div>

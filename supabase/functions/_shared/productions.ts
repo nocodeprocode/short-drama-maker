@@ -55,6 +55,17 @@ export async function ownedSeries(
   return data;
 }
 
+/** Real provider spend to date: the sum of settled actuals. */
+export async function seriesSpent(supabase: Service, seriesId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from("project_ledger")
+    .select("amount")
+    .eq("series_id", seriesId)
+    .eq("entry_type", "settle");
+  if (error) throw new Error(error.message);
+  return (data ?? []).reduce((sum, row) => sum + Number(row.amount), 0);
+}
+
 export async function seriesBalance(supabase: Service, seriesId: string): Promise<number> {
   const { data, error } = await supabase
     .from("project_ledger")
