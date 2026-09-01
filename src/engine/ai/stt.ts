@@ -11,7 +11,7 @@ export async function transcribeAudio(input: {
       model: process.env.OPENROUTER_STT_MODEL?.trim() || "openai/whisper-large-v3",
       input_audio: { data, format: input.format },
     }),
-  });
+  }, { idempotent: true });
   if (!body.text?.trim()) {
     throw new Error("OpenRouter STT returned an empty transcript");
   }

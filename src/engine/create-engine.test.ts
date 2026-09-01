@@ -1431,6 +1431,51 @@ describe("engine phase 0", () => {
     expect(polls).toBeGreaterThanOrEqual(3);
   });
 
+  it("fails a video job that stays pending past the max age and releases its reserve", async () => {
+    let now = Date.parse("2026-08-30T00:00:00.000Z");
+    const ai = testGateway();
+    ai.video = {
+      async submit(request) {
+        return { upstream_job_id: "orv_lost", provider: "openrouter", model: request.model };
+      },
+      async getStatus() {
+        return { upstream_job_id: "orv_lost", status: "pending", output_url: null, actual_cost: null, error: null };
+      },
+      async download() {
+        throw new Error("never ready");
+      },
+    };
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore(), clock: { now: () => new Date(now) } });
+    const series = await app.createSeries({ owner_id: "user-1", title: "Lost", description: "A fictional kitchen argument the provider forgets." });
+    await app.handleStripeWebhook({
+      event_id: "evt_lost",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await app.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of app.store.charactersFor(series.id)) {
+      await app.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    }
+    const episode = await app.createEpisode({ owner_id: "user-1", series_id: series.id, episode_number: 1, title: "Lost" });
+    const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    const silent = planned.shots.find((shot) => !shot.shot_data.dialogue) ?? planned.shots[0]!;
+    const before = app.balance(series.id);
+    const { job } = await app.generateVideo({ owner_id: "user-1", shot_id: silent.id });
+    expect(app.balance(series.id)).toBeLessThan(before);
+    now += 10 * 60 * 1000;
+    await app.tick();
+    expect(app.getJob(job.id)?.status).toBe("generating");
+    now += 40 * 60 * 1000;
+    await app.tick();
+    expect(app.getJob(job.id)?.status).toBe("failed");
+    expect(app.getJob(job.id)?.error_code).toBe("pending_timeout");
+    expect(app.balance(series.id)).toBe(before);
+  });
+
   it("exposes a series estimate and refuses to plan before the cast is locked", async () => {
     const app = engine();
     const series = await app.createSeries({

@@ -101,7 +101,7 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
             { role: "user", content: parts },
           ],
         }),
-      });
+      }, { idempotent: true });
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the identity judgement");
       return parseIdentityJudgement(content, model);

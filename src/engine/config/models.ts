@@ -128,6 +128,12 @@ export const TAIL_HANDLE_SECONDS = 0.35;
 export const QC_DURATION_TOLERANCE_SECONDS = 0.35;
 export const QC_AUTOPILOT_DURATION_TOLERANCE_SECONDS = 2;
 export const RETRY_CAP = 3;
+/**
+ * A video job still pending this long after submit is treated as lost: the
+ * reserve is released and the job fails with `pending_timeout` instead of being
+ * re-polled forever. Wan/Seedance 720p takes finish in minutes, not hours.
+ */
+export const VIDEO_PENDING_MAX_SECONDS = 45 * 60;
 export const DEFAULT_DAILY_SPEND_CAP = 2000;
 export const FAILED_ASSET_TTL_DAYS = 7;
 export const INTERMEDIATE_ASSET_TTL_DAYS = 30;

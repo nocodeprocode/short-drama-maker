@@ -1,9 +1,12 @@
 import type { AlignmentTrack, VoiceIdentity } from "../domain.ts";
 import { TTS_MODEL, VOICE_DESIGN_MODEL } from "../config/models.ts";
 import { requireElevenLabsKey } from "./env.ts";
+import { providerFetch } from "./http.ts";
 import type { DialogueLine, VoiceEngine } from "./types.ts";
 
 const ELEVENLABS_API = "https://api.elevenlabs.io";
+/** Voice design and music composition are the slow calls; TTS lines are short. */
+const ELEVEN_TIMEOUT_MS = 120_000;
 
 function headers(extra?: HeadersInit): Headers {
   const headers = new Headers(extra);
@@ -12,16 +15,24 @@ function headers(extra?: HeadersInit): Headers {
   return headers;
 }
 
+function elevenFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  // Every ElevenLabs call here is a pure function of its body, so a retried
+  // POST after a 429/5xx costs at most one duplicate synthesis, never a paid job.
+  return providerFetch(
+    `${ELEVENLABS_API}${path}`,
+    { ...init, headers: headers(init.headers) },
+    { provider: "elevenlabs", label: path, timeoutMs: ELEVEN_TIMEOUT_MS, idempotent: true },
+  );
+}
+
 async function elevenJson<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${ELEVENLABS_API}${path}`, {
-    ...init,
-    headers: headers(init.headers),
-  });
+  const response = await elevenFetch(path, init);
   const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`ElevenLabs ${path} failed HTTP ${response.status}: ${text.slice(0, 800)}`);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`ElevenLabs ${path} returned invalid JSON: ${text.slice(0, 200)}`);
   }
-  return JSON.parse(text) as T;
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -92,9 +103,8 @@ export async function composeElevenMusic(input: {
   lengthMs: number;
   instrumental?: boolean;
 }): Promise<Uint8Array> {
-  const response = await fetch(`${ELEVENLABS_API}/v1/music`, {
+  const response = await elevenFetch("/v1/music", {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({
       prompt: input.prompt,
       music_length_ms: input.lengthMs,
@@ -102,24 +112,17 @@ export async function composeElevenMusic(input: {
       force_instrumental: input.instrumental ?? true,
     }),
   });
-  if (!response.ok) {
-    throw new Error(`ElevenLabs music failed HTTP ${response.status}: ${(await response.text()).slice(0, 800)}`);
-  }
   return new Uint8Array(await response.arrayBuffer());
 }
 
 export async function composeElevenSfx(input: { prompt: string; durationSeconds: number }): Promise<Uint8Array> {
-  const response = await fetch(`${ELEVENLABS_API}/v1/sound-generation`, {
+  const response = await elevenFetch("/v1/sound-generation", {
     method: "POST",
-    headers: headers(),
     body: JSON.stringify({
       text: input.prompt,
       duration_seconds: input.durationSeconds,
     }),
   });
-  if (!response.ok) {
-    throw new Error(`ElevenLabs SFX failed HTTP ${response.status}: ${(await response.text()).slice(0, 800)}`);
-  }
   return new Uint8Array(await response.arrayBuffer());
 }
 

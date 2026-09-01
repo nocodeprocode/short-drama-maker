@@ -1,7 +1,7 @@
 import type { GenerationStatus } from "../domain.ts";
 import type { VideoEngine, VideoSubmitRequest } from "./types.ts";
 import { VIDEO_RESOLUTION } from "../config/models.ts";
-import { openRouterBytes, openRouterJson, openRouterProvider } from "./openrouter.ts";
+import { OPENROUTER_TIMEOUTS_MS, openRouterBytes, openRouterJson, openRouterProvider } from "./openrouter.ts";
 
 type VideoSubmitResponse = {
   id?: string;
@@ -143,10 +143,13 @@ export function createOpenRouterVideo(audioStyle: AudioAttachStyle = DEFAULT_AUD
   return {
     async submit(request) {
       const payload = buildVideoSubmitPayload(request, audioStyle);
-      const submitted = await openRouterJson<VideoSubmitResponse>("/videos", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
+      // Never auto-retry a submit: a duplicate is a second paid render. The job
+      // layer retries with its own idempotency key once the failure is classified.
+      const submitted = await openRouterJson<VideoSubmitResponse>(
+        "/videos",
+        { method: "POST", body: JSON.stringify(payload) },
+        { timeoutMs: OPENROUTER_TIMEOUTS_MS.submit, retries: 0 },
+      );
       if (!submitted.id) {
         throw new Error(`OpenRouter video submit returned no id: ${JSON.stringify(submitted)}`);
       }
@@ -161,7 +164,9 @@ export function createOpenRouterVideo(audioStyle: AudioAttachStyle = DEFAULT_AUD
       if (!job.upstream_job_id) {
         throw new Error("Missing upstream_job_id");
       }
-      const status = await openRouterJson<VideoStatusResponse>(`/videos/${job.upstream_job_id}`);
+      const status = await openRouterJson<VideoStatusResponse>(`/videos/${job.upstream_job_id}`, {}, {
+        timeoutMs: OPENROUTER_TIMEOUTS_MS.poll,
+      });
       return {
         upstream_job_id: job.upstream_job_id,
         status: mapStatus(status.status),

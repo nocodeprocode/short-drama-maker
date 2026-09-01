@@ -9,6 +9,7 @@ import {
   RETRY_CAP,
   SIGNED_URL_TTL_SECONDS,
   TEXT_MODEL,
+  VIDEO_PENDING_MAX_SECONDS,
   VIDEO_ROUTES,
 } from "./config/models.ts";
 import { decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
@@ -1902,6 +1903,7 @@ export function createEngine(deps: EngineDeps = {}) {
         model: submitted.model,
         upstream_job_id: submitted.upstream_job_id,
         expected_ready_at: addSeconds(clock, 15),
+        request_metadata: { ...current.request_metadata, submitted_at: iso(clock) },
       });
       store.jobs.set(job.id, current);
       return current;
@@ -1912,13 +1914,19 @@ export function createEngine(deps: EngineDeps = {}) {
     }
   }
 
+  function pendingTooLong(job: GenerationJob): boolean {
+    const submittedAt = typeof job.request_metadata.submitted_at === "string" ? job.request_metadata.submitted_at : job.updated_at;
+    return clock.now().getTime() - Date.parse(submittedAt) > VIDEO_PENDING_MAX_SECONDS * 1000;
+  }
+
   async function ingestVideoJob(job: GenerationJob) {
     if (!job.upstream_job_id) throw new Error("Job has no upstream id");
     const status = await ai.video.getStatus(job);
     if (status.status !== "completed") {
-      if (status.status === "failed" || status.status === "cancelled" || status.status === "expired") {
+      const lost = status.status === "pending" && pendingTooLong(job);
+      if (status.status === "failed" || status.status === "cancelled" || status.status === "expired" || lost) {
         const failed = transitionJob(job, "failed", iso(clock), {
-          error_code: status.error ?? status.status,
+          error_code: lost ? "pending_timeout" : status.error ?? status.status,
         });
         store.jobs.set(job.id, failed);
         const reserved = reservedForJob(store.ledger, job.id);

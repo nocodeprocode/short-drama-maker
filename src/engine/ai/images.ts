@@ -1,6 +1,7 @@
 import { IMAGE_MODEL } from "../config/models.ts";
 import type { ImageEngine } from "./types.ts";
 import { MODEST_DRESS_RULE } from "./modesty.ts";
+import { providerFetch } from "./http.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 
 type ImageResponse = {
@@ -55,7 +56,7 @@ async function requestImage(
           }
         : {}),
     }),
-  });
+  }, { idempotent: true });
   const image = body.data?.[0];
   if (image?.b64_json) {
     return {
@@ -65,10 +66,7 @@ async function requestImage(
   }
   if (image?.url) {
     assertSafeImageUrl(image.url);
-    const response = await fetch(image.url);
-    if (!response.ok) {
-      throw new Error(`Failed to download OpenRouter image HTTP ${response.status}`);
-    }
+    const response = await providerFetch(image.url, {}, { provider: "openrouter-cdn", timeoutMs: 60_000 });
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),
       mime_type: response.headers.get("content-type") ?? "image/png",

@@ -25,7 +25,7 @@ async function completeJson<T>(user: string, length: EpisodeLength = "60_90"): P
         { role: "user", content: user },
       ],
     }),
-  });
+  }, { idempotent: true });
   const content = body.choices?.[0]?.message?.content;
   if (!content) {
     throw new Error("OpenRouter returned no text for a required JSON completion");
