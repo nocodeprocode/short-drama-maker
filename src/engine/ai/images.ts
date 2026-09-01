@@ -1,11 +1,13 @@
-import { IMAGE_MODEL } from "../config/models.ts";
+import { IMAGE_MODEL, IMAGE_PRICE } from "../config/models.ts";
 import type { ImageEngine } from "./types.ts";
 import { MODEST_DRESS_RULE } from "./modesty.ts";
 import { providerFetch } from "./http.ts";
+import { costMeter, openRouterUsageCost } from "./meter.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 
 type ImageResponse = {
   data?: Array<{ b64_json?: string; url?: string; media_type?: string }>;
+  usage?: { cost?: number };
 };
 
 function decodeBase64(value: string): Uint8Array {
@@ -57,6 +59,7 @@ async function requestImage(
         : {}),
     }),
   }, { idempotent: true });
+  costMeter.record(openRouterUsageCost(body.usage, IMAGE_PRICE, "image"));
   const image = body.data?.[0];
   if (image?.b64_json) {
     return {

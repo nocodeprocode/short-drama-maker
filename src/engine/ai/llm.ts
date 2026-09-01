@@ -1,6 +1,7 @@
 import { SCREENPLAY_RULES, type EpisodePlan, type StoryBible } from "../domain.ts";
 import type { EpisodeLength } from "../config/catalog.ts";
-import { TEXT_MODEL } from "../config/models.ts";
+import { LLM_PRICE, TEXT_MODEL } from "../config/models.ts";
+import { costMeter, openRouterUsageCost } from "./meter.ts";
 import type { LLMEngine } from "./types.ts";
 import { MODEST_DRESS_RULE, MODEST_WARDROBE_EXAMPLES } from "./modesty.ts";
 import { pinLocationToBible } from "../pipeline/location-ref.ts";
@@ -10,6 +11,7 @@ import { dramaHooks, ledgerForEpisode } from "../../drama-engine/index.ts";
 
 type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
+  usage?: { cost?: number; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 };
 
 async function completeJson<T>(user: string, length: EpisodeLength = "60_90"): Promise<T> {
@@ -19,6 +21,7 @@ async function completeJson<T>(user: string, length: EpisodeLength = "60_90"): P
       model: TEXT_MODEL,
       temperature: 0.4,
       response_format: { type: "json_object" },
+      usage: { include: true },
       provider: openRouterProvider(),
       messages: [
         { role: "system", content: `${dramaHooks.systemPrompt(length)}\n- ${MODEST_DRESS_RULE}\n- default_wardrobe must be modest public clothing. ${MODEST_WARDROBE_EXAMPLES}` },
@@ -26,6 +29,7 @@ async function completeJson<T>(user: string, length: EpisodeLength = "60_90"): P
       ],
     }),
   }, { idempotent: true });
+  costMeter.record(openRouterUsageCost(body.usage, LLM_PRICE, "llm"));
   const content = body.choices?.[0]?.message?.content;
   if (!content) {
     throw new Error("OpenRouter returned no text for a required JSON completion");

@@ -344,6 +344,8 @@ export function createEngine(deps: EngineDeps = {}) {
       price_snapshot_version: store.priceSnapshotVersion,
     });
     store.dailySpend += job.estimated_cost;
+    // Anything metered before this point belongs to an earlier job.
+    ai.meter.take();
   }
 
   function settle(job: GenerationJob, actual: number) {
@@ -506,8 +508,15 @@ export function createEngine(deps: EngineDeps = {}) {
     store.jobs.set(job.id, ingesting);
     const qc = transitionJob(ingesting, "qc", iso(clock));
     store.jobs.set(job.id, qc);
-    store.jobs.set(job.id, transitionJob(qc, "completed", iso(clock), { actual_cost: job.estimated_cost }));
-    settle(store.jobs.get(job.id)!, job.estimated_cost);
+    const { actual, breakdown } = meteredActual(job.estimated_cost);
+    store.jobs.set(
+      job.id,
+      transitionJob(qc, "completed", iso(clock), {
+        actual_cost: actual,
+        result_metadata: breakdown ? { ...qc.result_metadata, cost_breakdown: breakdown } : qc.result_metadata,
+      }),
+    );
+    settle(store.jobs.get(job.id)!, actual);
     store.series.set(series.id, { ...series, status: "ready", story_bible: bible });
     return { job: store.jobs.get(job.id)!, bible, characters: store.charactersFor(series.id) };
   }
@@ -1471,7 +1480,26 @@ export function createEngine(deps: EngineDeps = {}) {
     return { job: store.jobs.get(job.id)!, shot: store.shots.get(shot.id)!, duration };
   }
 
-  function completeSyncJob(job: GenerationJob, actual: number, result: Record<string, unknown>) {
+  /**
+   * Real spend for the job that just ran: what the providers reported (or
+   * usage-derived) since the reserve, falling back to the estimate only when
+   * nothing was metered. The breakdown is kept on the job for the audit trail.
+   */
+  function meteredActual(fallback: number): { actual: number; breakdown: Record<string, unknown> | null } {
+    const taken = ai.meter.take();
+    if (taken.usd <= 0) return { actual: fallback, breakdown: null };
+    return {
+      actual: taken.usd,
+      breakdown: {
+        metered_usd: taken.usd,
+        estimated_usd: fallback,
+        entries: taken.entries.map((row) => ({ provider: row.provider, kind: row.kind, usd: row.usd, reported: row.reported, ...(row.usage ?? {}) })),
+      },
+    };
+  }
+
+  function completeSyncJob(job: GenerationJob, estimated: number, result: Record<string, unknown>) {
+    const { actual, breakdown } = meteredActual(estimated);
     let current = store.jobs.get(job.id)!;
     current = transitionJob(current, "submitting", iso(clock));
     current = transitionJob(current, "generating", iso(clock));
@@ -1479,7 +1507,7 @@ export function createEngine(deps: EngineDeps = {}) {
     current = transitionJob(current, "qc", iso(clock));
     current = transitionJob(current, "completed", iso(clock), {
       actual_cost: actual,
-      result_metadata: result,
+      result_metadata: breakdown ? { ...result, cost_breakdown: breakdown } : result,
     });
     store.jobs.set(job.id, current);
     settle(current, actual);
@@ -2106,7 +2134,6 @@ export function createEngine(deps: EngineDeps = {}) {
         : allowsTwoShot(shot.shot_data.function) && shot.shot_data.group_still_asset_id
           ? 2
           : 1;
-    let identityCost = 0;
     if (ai.vision && expectedFaces != null) {
       const pictured = shot.shot_data.speaker_on_camera ?? shot.shot_data.speaker;
       let description: string | null = null;
@@ -2126,7 +2153,6 @@ export function createEngine(deps: EngineDeps = {}) {
         vision: ai.vision,
       });
       analysis = identity.analysis;
-      if (identity.judgement) identityCost = ai.pricing.estimateVision();
       current = {
         ...current,
         request_metadata: {
@@ -2241,8 +2267,17 @@ export function createEngine(deps: EngineDeps = {}) {
       take_warnings: verdict.warnings,
     };
 
-    // The identity judgement is part of what this take cost.
-    const actualCost = (status.actual_cost ?? job.estimated_cost) + identityCost;
+    // The take's real cost: the provider's render price plus whatever the
+    // identity judge and STT sample metered while ingesting it.
+    const sideCosts = ai.meter.take();
+    const actualCost = Number(((status.actual_cost ?? job.estimated_cost) + sideCosts.usd).toFixed(4));
+    if (sideCosts.usd > 0) {
+      current = {
+        ...current,
+        request_metadata: { ...current.request_metadata, ingest_side_costs: sideCosts.entries.map((row) => ({ kind: row.kind, usd: row.usd })) },
+      };
+      store.jobs.set(current.id, current);
+    }
 
     if (blockingQcReasons(qc.reasons).length > 0 || !qc.pass) {
       current = transitionJob(current, "needs_review", iso(clock), {

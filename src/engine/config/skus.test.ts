@@ -38,6 +38,11 @@ describe("block SKUs", () => {
     const short = estimateSeries({ episode_count: 2, length: "60_90" });
     const long = estimateSeries({ episode_count: 2, length: "900_1080" });
     expect(long.estimated_min).toBeGreaterThan(short.estimated_min * 8);
+    // Both pricing paths must agree on what a 15-minute pilot retails for.
+    expect(long.retail).toBe(retailForBlock(2, "balanced", "900_1080"));
+    expect(long.estimated_max).toBeLessThan(long.retail);
+    // COGS includes the hero route, identity judgements, STT samples and the planner calls.
+    expect(short.generate / 2).toBeGreaterThan(5);
     expect(estimateBlock({ sku: 2, priority: "balanced", length: "900_1080" }).finished_runtime_seconds).toBe(1800);
   });
 });

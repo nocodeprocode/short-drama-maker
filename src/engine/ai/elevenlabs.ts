@@ -1,7 +1,8 @@
 import type { AlignmentTrack, VoiceIdentity } from "../domain.ts";
-import { TTS_MODEL, VOICE_DESIGN_MODEL } from "../config/models.ts";
+import { ELEVEN_TTS_PRICE_PER_CHAR, TTS_MODEL, VOICE_DESIGN_MODEL, VOICE_DESIGN_PRICE } from "../config/models.ts";
 import { requireElevenLabsKey } from "./env.ts";
 import { providerFetch } from "./http.ts";
+import { costMeter } from "./meter.ts";
 import type { DialogueLine, VoiceEngine } from "./types.ts";
 
 const ELEVENLABS_API = "https://api.elevenlabs.io";
@@ -169,6 +170,7 @@ export function createElevenLabsVoice(): VoiceEngine {
           auto_generate_text: true,
         }),
       });
+      costMeter.record({ provider: "elevenlabs", kind: "voice_design", usd: VOICE_DESIGN_PRICE, reported: false });
       const previews = designed.previews ?? [];
       if (previews.length === 0) {
         throw new Error("ElevenLabs Voice Design returned no previews");
@@ -228,6 +230,13 @@ export function createElevenLabsVoice(): VoiceEngine {
           }),
         },
       );
+      costMeter.record({
+        provider: "elevenlabs",
+        kind: "tts",
+        usd: performed.text.length * ELEVEN_TTS_PRICE_PER_CHAR,
+        usage: { characters: performed.text.length },
+        reported: false,
+      });
       const audio = body.audio_base64 ?? body.audio_base_64;
       if (!audio) {
         throw new Error("ElevenLabs TTS returned no audio");

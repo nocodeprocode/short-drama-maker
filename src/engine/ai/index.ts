@@ -4,6 +4,7 @@ import { createOpenRouterLlm } from "./llm.ts";
 import { createOpenRouterVideo } from "./video.ts";
 import { createOpenRouterVision, type VisionEngine } from "./vision.ts";
 import { transcribeAudio } from "./stt.ts";
+import { costMeter, type CostMeter } from "./meter.ts";
 import { moderation } from "./moderation.ts";
 import { pricing } from "./pricing.ts";
 import { router } from "./router.ts";
@@ -22,6 +23,8 @@ export type AIGateway = {
   stt?: SttEngine;
   /** Identity judge for takes. Absent → the RGB fallback runs and face fields stay null. */
   vision?: VisionEngine;
+  /** Real provider spend recorded by the modules above; drained per job at settle. */
+  meter: CostMeter;
   router: typeof router;
   privacy: typeof privacy;
   moderation: typeof moderation;
@@ -38,6 +41,7 @@ export function createAiGateway(
     video: overrides.video ?? createOpenRouterVideo(),
     stt: overrides.stt ?? { transcribe: transcribeAudio },
     vision: "vision" in overrides ? overrides.vision : createOpenRouterVision(),
+    meter: costMeter,
     router,
     privacy,
     moderation,

@@ -1,4 +1,5 @@
-import { VISION_MODEL } from "../config/models.ts";
+import { VISION_MODEL, VISION_PRICE } from "../config/models.ts";
+import { costMeter, openRouterUsageCost } from "./meter.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 
 /**
@@ -38,6 +39,7 @@ export interface VisionEngine {
 
 type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
+  usage?: { cost?: number; prompt_tokens?: number; completion_tokens?: number };
 };
 
 const RUBRIC = `You are a continuity supervisor checking generated footage against a locked cast reference.
@@ -95,6 +97,7 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
           model,
           temperature: 0,
           response_format: { type: "json_object" },
+          usage: { include: true },
           provider: openRouterProvider("text"),
           messages: [
             { role: "system", content: RUBRIC },
@@ -102,6 +105,7 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
           ],
         }),
       }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the identity judgement");
       return parseIdentityJudgement(content, model);

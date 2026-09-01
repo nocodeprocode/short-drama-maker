@@ -1,28 +1,17 @@
 import { roundMoney } from "../ai/pricing.ts";
-import { estimateSeries, SEASON_PRICES_USD, type CatalogSku } from "./skus.ts";
+import { estimateSeries, LENGTH_FACTOR, SEASON_PRICES_USD, type CatalogSku, type EpisodeLength } from "./skus.ts";
 import type { SeasonSku } from "../domain.ts";
 
 export const BLOCK_SKUS = [2, 12, 24, 45, 60] as const;
 export type BlockSku = (typeof BLOCK_SKUS)[number];
 export type ProductionPriority = "fast" | "balanced" | "quality";
-export type EpisodeLength = "30_45" | "60_90" | "120_180" | "900_1080";
+export type { EpisodeLength };
+export { LENGTH_FACTOR };
 
 export const PRIORITY_RATES_USD: Record<ProductionPriority, number> = {
   fast: 24,
   balanced: 38,
   quality: 62,
-};
-
-/**
- * Retail multiplier vs the 60s SKU.
- * 15 min of locked-take picture is 15× a 60s episode — not 1.9×.
- * COGS scales by finished seconds (900/75 = 12× video vs the 60s retail estimate).
- */
-export const LENGTH_FACTOR: Record<EpisodeLength, number> = {
-  "30_45": 0.6,
-  "60_90": 1,
-  "120_180": 1.9,
-  "900_1080": 15,
 };
 
 export const LENGTH_LABEL: Record<EpisodeLength, string> = {

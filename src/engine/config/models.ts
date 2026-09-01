@@ -19,6 +19,10 @@ export const DIALOGUE_TTS_PRICE = 0.004;
 export const IMAGE_PRICE = 0.04;
 export const LLM_PRICE = 0.01;
 export const VOICE_DESIGN_PRICE = 0.12;
+/** ElevenLabs bills per character; this is the metered rate used for actuals. */
+export const ELEVEN_TTS_PRICE_PER_CHAR = 0.00003;
+/** STT billed per audio minute when the provider reports no cost. */
+export const STT_PRICE_PER_MINUTE = 0.006;
 
 export const TEXT_MODEL = "anthropic/claude-sonnet-4.6";
 /** Identity judge: same ZDR-capable family as the writer so one privacy posture covers both. */
