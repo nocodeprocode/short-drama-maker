@@ -55,7 +55,7 @@ async function trimHeardBytes(dir: string, index: number, body: Uint8Array, skip
   }
 }
 
-function run(cmd: string, args: string[]): Promise<void> {
+function runCapture(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
@@ -64,10 +64,75 @@ function run(cmd: string, args: string[]): Promise<void> {
     });
     child.on("error", reject);
     child.on("exit", (code) => {
-      if (code === 0) resolve();
+      if (code === 0) resolve(stderr);
       else reject(new Error(`${cmd} exited ${code}: ${stderr.slice(-800)}`));
     });
   });
+}
+
+async function run(cmd: string, args: string[]): Promise<void> {
+  await runCapture(cmd, args);
+}
+
+/** EBU R128 numbers from a loudnorm analysis pass (`print_format=json`). */
+export type LoudnessMeasurement = {
+  input_i: number;
+  input_tp: number;
+  input_lra: number;
+  input_thresh: number;
+  target_offset: number;
+};
+
+export function parseLoudnormJson(stderr: string): LoudnessMeasurement | null {
+  const start = stderr.lastIndexOf("{");
+  const end = stderr.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    const raw = JSON.parse(stderr.slice(start, end + 1)) as Record<string, string>;
+    const pick = (key: string) => Number(raw[key]);
+    const out = {
+      input_i: pick("input_i"),
+      input_tp: pick("input_tp"),
+      input_lra: pick("input_lra"),
+      input_thresh: pick("input_thresh"),
+      target_offset: pick("target_offset"),
+    };
+    return Object.values(out).every((value) => Number.isFinite(value)) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Second-pass loudnorm: linear gain from the measured values, so the mix keeps its dynamics. */
+export function loudnormFilter(measured: LoudnessMeasurement | null): string {
+  const base = `loudnorm=I=${LOUDNESS.mixLufs}:TP=${LOUDNESS.truePeakDb}:LRA=${LOUDNESS.lraTarget}`;
+  if (!measured) return base;
+  return (
+    `${base}:measured_I=${measured.input_i}:measured_TP=${measured.input_tp}:measured_LRA=${measured.input_lra}` +
+    `:measured_thresh=${measured.input_thresh}:offset=${measured.target_offset}:linear=true`
+  );
+}
+
+/** Contiguous runs of shots sharing a bed mood, in picture time. */
+export type BedSegment = { mood: string; start: number; end: number };
+
+export function bedSegments(manifest: RenderManifest, total: number, fallback = "thriller"): BedSegment[] {
+  const shots = [...manifest.shots].sort((a, b) => (a.picture_start_seconds ?? 0) - (b.picture_start_seconds ?? 0));
+  const segments: BedSegment[] = [];
+  for (const shot of shots) {
+    const mood = shot.music_mood ?? fallback;
+    const start = shot.picture_start_seconds ?? 0;
+    const end = start + pictureDuration(shot);
+    const last = segments.at(-1);
+    if (last && last.mood === mood) {
+      last.end = Math.max(last.end, end);
+    } else {
+      segments.push({ mood, start, end });
+    }
+  }
+  if (!segments.length) return [{ mood: fallback, start: 0, end: total }];
+  segments[segments.length - 1]!.end = Math.max(segments[segments.length - 1]!.end, total);
+  return segments;
 }
 
 /** Silence only. A sine/ping bed is banned — never regenerate one here. */
@@ -446,20 +511,25 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     }
 
     const total = Math.max(8, totalPicture(localManifest));
-    const mood = localManifest.shots.find((shot) => shot.music_mood)?.music_mood ?? "thriller";
-    const bedBytes = libraryStem("bed", mood) ?? silentWav(total + 2);
-    const stingBytes = libraryStem("sting", "impact") ?? silentWav(1.4);
-    if (!libraryReady() && bedBytes.byteLength <= 100) {
-      /* library missing: stay silent. Never synthesize a sine bed. */
+    // One bed per scene mood, written once per mood; segments below reference them.
+    const segments = bedSegments(localManifest, total);
+    const bedFiles = new Map<string, string>();
+    for (const segment of segments) {
+      if (bedFiles.has(segment.mood)) continue;
+      // Library missing: stay silent. Never synthesize a sine bed.
+      const bytes = libraryStem("bed", segment.mood) ?? silentWav(total + 2);
+      const file = join(dir, `bed-${bedFiles.size}.bin`);
+      await writeFile(file, bytes);
+      bedFiles.set(segment.mood, file);
     }
-    const bed = join(dir, "bed.wav");
+    const stingBytes = libraryStem("sting", "impact") ?? silentWav(1.4);
     const stinger = join(dir, "stinger.wav");
-    await writeFile(bed, bedBytes);
     await writeFile(stinger, stingBytes);
+    void libraryReady;
 
     const stingAts = stingTimesMs(localManifest, total);
 
-    const dialogueFiles: Array<{ file: string; delayMs: number }> = [];
+    const dialogueFiles: Array<{ file: string; delayMs: number; windowSeconds: number }> = [];
     for (const [index, shot] of shots.entries()) {
       const lane = input.heardLanes?.[index] ?? shot.heard_audio ?? (shot.audio_role === "silent" ? "silent" : "tts");
       if (lane === "silent") continue;
@@ -497,7 +567,13 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
           await writeFile(file, aligned);
         }
       }
-      dialogueFiles.push({ file, delayMs: Math.round(delay * 1000) });
+      // A take's sound ends with its picture (plus any licensed L-cut tail); the
+      // pad already moved its start later, so the window shrinks by the same.
+      const windowSeconds = Math.max(
+        0.3,
+        pictureDuration(shot) + (shot.overlap_seconds ?? 0) - (visemePads[index] ?? 0),
+      );
+      dialogueFiles.push({ file, delayMs: Math.round(delay * 1000), windowSeconds });
     }
 
     const sfxFiles: Array<{ file: string; delayMs: number }> = [];
@@ -515,54 +591,141 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     if (input.vtt?.includes("-->")) await writeFile(vttPath, input.vtt);
 
     const mixed = join(dir, "mixed.mp4");
-    const args = ["-y", "-i", picture, "-stream_loop", "-1", "-i", bed, "-i", stinger];
-    for (const row of dialogueFiles) args.push("-i", row.file);
-    for (const row of sfxFiles) args.push("-i", row.file);
-    const dlgOffset = 3;
+    // Inputs: 0 picture, 1 stinger, then one looped bed input per segment, then dialogue, then sfx.
+    const inputs = ["-y", "-i", picture, "-i", stinger];
+    const bedOffset = 2;
+    for (const segment of segments) inputs.push("-stream_loop", "-1", "-i", bedFiles.get(segment.mood)!);
+    const dlgOffset = bedOffset + segments.length;
+    for (const row of dialogueFiles) inputs.push("-i", row.file);
+    const sfxOffset = dlgOffset + dialogueFiles.length;
+    for (const row of sfxFiles) inputs.push("-i", row.file);
+
+    const fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo";
+    const xf = LOUDNESS.bedCrossfadeSeconds;
+    // Each bed segment fades in over the previous one's fade-out so scene joins
+    // are crossfades, not cuts; the last one runs to the end of picture.
+    const bedGraph =
+      segments
+        .map((segment, i) => {
+          const first = i === 0;
+          const last = i === segments.length - 1;
+          const start = Math.max(0, segment.start - (first ? 0 : xf / 2));
+          const end = last ? total + 0.5 : segment.end + xf / 2;
+          const len = Math.max(0.5, end - start);
+          const fadeIn = first ? Math.min(0.4, len / 2) : Math.min(xf, len / 2);
+          const fadeOut = last ? Math.min(0.6, len / 2) : Math.min(xf, len / 2);
+          return (
+            `[${bedOffset + i}:a]${fmt},atrim=0:${len.toFixed(3)},asetpts=PTS-STARTPTS,` +
+            `afade=t=in:d=${fadeIn.toFixed(3)},afade=t=out:st=${Math.max(0, len - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)},` +
+            `adelay=${Math.round(start * 1000)}|${Math.round(start * 1000)},volume=${LOUDNESS.bedGain}[b${i}]`
+          );
+        })
+        .join(";") +
+      ";" +
+      segments.map((_, i) => `[b${i}]`).join("") +
+      (segments.length > 1 ? `amix=inputs=${segments.length}:normalize=0:dropout_transition=0,` : "") +
+      `${fmt}[bedmix]`;
+
+    // Every dialogue edge gets a short fade so cuts never click, and the take's
+    // sound is trimmed to its picture window.
     const dlg =
       dialogueFiles.length === 0
-        ? "anullsrc=channel_layout=mono:sample_rate=44100,atrim=0:" + total.toFixed(3) + "[dlgraw]"
+        ? `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${total.toFixed(3)},${fmt}[dlgraw]`
         : dialogueFiles
-            .map((row, i) => `[${dlgOffset + i}:a]adelay=${Math.round(row.delayMs)}|${Math.round(row.delayMs)}[t${i}]`)
+            .map((row, i) => {
+              const win = row.windowSeconds;
+              const fo = Math.min(LOUDNESS.dialogueFadeOutSeconds, win / 4);
+              return (
+                `[${dlgOffset + i}:a]${fmt},atrim=0:${win.toFixed(3)},asetpts=PTS-STARTPTS,` +
+                `afade=t=in:d=${LOUDNESS.dialogueFadeInSeconds},afade=t=out:st=${Math.max(0, win - fo).toFixed(3)}:d=${fo.toFixed(3)},` +
+                `adelay=${Math.round(row.delayMs)}|${Math.round(row.delayMs)}[t${i}]`
+              );
+            })
             .join(";") +
           ";" +
           dialogueFiles.map((_, i) => `[t${i}]`).join("") +
-          `amix=inputs=${dialogueFiles.length}:normalize=0:dropout_transition=0[dlgraw]`;
-    const sfxOffset = dlgOffset + dialogueFiles.length;
+          (dialogueFiles.length > 1 ? `amix=inputs=${dialogueFiles.length}:normalize=0:dropout_transition=0,` : "") +
+          `${fmt}[dlgraw]`;
+
     const sfxGraph =
       sfxFiles.length === 0
-        ? "anullsrc=channel_layout=mono:sample_rate=44100,atrim=0:0.2,volume=0[sfx]"
+        ? `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:0.2,volume=0,${fmt}[sfx]`
         : sfxFiles
-            .map((row, i) => `[${sfxOffset + i}:a]adelay=${Math.round(row.delayMs)}|${Math.round(row.delayMs)},volume=1.8[x${i}]`)
+            .map((row, i) => `[${sfxOffset + i}:a]${fmt},adelay=${Math.round(row.delayMs)}|${Math.round(row.delayMs)},volume=1.8[x${i}]`)
             .join(";") +
           ";" +
           sfxFiles.map((_, i) => `[x${i}]`).join("") +
-          `amix=inputs=${sfxFiles.length}:normalize=0:dropout_transition=0[sfx]`;
+          (sfxFiles.length > 1 ? `amix=inputs=${sfxFiles.length}:normalize=0:dropout_transition=0,` : "") +
+          `${fmt}[sfx]`;
     const burn = "[0:v]format=yuv420p[v]";
     const stingGraph =
       stingAts.length <= 1
-        ? `[2:a]adelay=${Math.round(stingAts[0] ?? 0)}|${Math.round(stingAts[0] ?? 0)},volume=1.8[sting]`
-        : `[2:a]asplit=${stingAts.length}${stingAts.map((_, i) => `[ss${i}]`).join("")};` +
+        ? `[1:a]${fmt},adelay=${Math.round(stingAts[0] ?? 0)}|${Math.round(stingAts[0] ?? 0)},volume=1.8[sting]`
+        : `[1:a]${fmt},asplit=${stingAts.length}${stingAts.map((_, i) => `[ss${i}]`).join("")};` +
           stingAts
             .map((at, i) => `[ss${i}]adelay=${Math.round(at)}|${Math.round(at)},volume=1.8[st${i}]`)
             .join(";") +
           ";" +
           stingAts.map((_, i) => `[st${i}]`).join("") +
           `amix=inputs=${stingAts.length}:normalize=0:dropout_transition=0[sting]`;
-    const duck = dialogueFiles.length ? 0.22 : 0.38;
-    const spiked = localManifest.shots.some((shot) => shot.spike);
-    const filter = [
-      burn,
-      `[1:a]atrim=0:${(total + 1).toFixed(3)},asetpts=PTS-STARTPTS,volume=${spiked ? Math.min(duck, 0.16) : duck}[bed]`,
-      stingGraph,
-      dlg,
-      `[dlgraw]volume=1.4[dlg]`,
-      sfxGraph,
-      `[dlg][bed][sting][sfx]amix=inputs=4:normalize=0:dropout_transition=0,loudnorm=I=${LOUDNESS.mixLufs}:TP=${LOUDNESS.truePeakDb}[a]`,
-    ].join(";");
 
-    args.push("-filter_complex", filter, "-map", "[v]", "-map", "[a]");
-    args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-shortest", mixed);
+    // The bed is ducked by the dialogue itself (sidechain), so it sits under
+    // speech and comes back up in the gaps instead of a flat volume for the
+    // whole episode. A spike scene keeps the bed lower throughout.
+    const spiked = localManifest.shots.some((shot) => shot.spike);
+    const { thresholdLinear, ratio, attackMs, releaseMs } = LOUDNESS.duck;
+    const duckGraph =
+      `[dlgraw]asplit=2[dlg][dlgsc];` +
+      `[bedmix][dlgsc]sidechaincompress=threshold=${thresholdLinear}:ratio=${ratio}:attack=${attackMs}:release=${releaseMs}:makeup=1` +
+      (spiked ? ",volume=0.6" : "") +
+      `[bed]`;
+
+    const premaster =
+      `[dlg]volume=1.4[dlgv];` +
+      `[dlgv][bed][sting][sfx]amix=inputs=4:normalize=0:dropout_transition=0[pre]`;
+
+    const graph = (master: string) => [burn, bedGraph, stingGraph, dlg, sfxGraph, duckGraph, premaster, `[pre]${master}[a]`].join(";");
+
+    // Two-pass EBU R128: measure the mix once, then normalise with a linear gain
+    // computed from the measurement so dialogue dynamics survive.
+    let measured: LoudnessMeasurement | null = null;
+    try {
+      const analysis = await runCapture("ffmpeg", [
+        ...inputs,
+        "-filter_complex",
+        graph(`${loudnormFilter(null)}:print_format=json`),
+        "-map",
+        "[a]",
+        "-f",
+        "null",
+        "-",
+      ]);
+      measured = parseLoudnormJson(analysis);
+    } catch {
+      measured = null;
+    }
+
+    const args = [
+      ...inputs,
+      "-filter_complex",
+      graph(`${loudnormFilter(measured)},aresample=48000`),
+      "-map",
+      "[v]",
+      "-map",
+      "[a]",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "20",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      mixed,
+    ];
 
     // No fallback: a mix that drops the dialogue is not a lesser episode, it is
     // a broken one. Fail so the render is refused and the reason is recorded.

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
+import { LOUDNESS } from "../../drama-engine/types/audio.ts";
 import type { RenderManifest } from "../domain.ts";
 import type { TakeAnalysis } from "../pipeline/take-analysis.ts";
 import { probeVideoBytes } from "./probe.ts";
@@ -38,6 +39,10 @@ export type MuxAudit = {
   expected_duration_seconds: number;
   has_audio: boolean;
   black_frames: number;
+  /** EBU R128 on the encoded file; null when it could not be measured. */
+  integrated_lufs: number | null;
+  true_peak_dbfs: number | null;
+  loudness_range_lu: number | null;
   lines: MuxAuditLine[];
   measured_at: string;
 };
@@ -102,6 +107,42 @@ function meanLuma(frame: Uint8Array): number {
   return frame.length ? sum / frame.length : 0;
 }
 
+function runStderr(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += String(chunk);
+    });
+    child.on("error", () => resolve(""));
+    child.on("exit", () => resolve(stderr));
+  });
+}
+
+/** Parses the `ebur128` summary block ffmpeg prints on stderr. */
+export function parseEbur128Summary(stderr: string): { integrated: number; truePeak: number; lra: number } | null {
+  const summaryAt = stderr.lastIndexOf("Summary:");
+  const block = summaryAt >= 0 ? stderr.slice(summaryAt) : stderr;
+  const integrated = /I:\s+(-?[\d.]+) LUFS/.exec(block);
+  const lra = /LRA:\s+(-?[\d.]+) LU/.exec(block);
+  const peak = /Peak:\s+(-?[\d.]+) dBFS/.exec(block);
+  if (!integrated || !peak) return null;
+  return {
+    integrated: Number(integrated[1]),
+    truePeak: Number(peak[1]),
+    lra: lra ? Number(lra[1]) : 0,
+  };
+}
+
+/** Delivery loudness check against the mix target. */
+export function loudnessReasons(measure: { integrated: number; truePeak: number } | null): string[] {
+  if (!measure) return [];
+  const reasons: string[] = [];
+  if (Math.abs(measure.integrated - LOUDNESS.mixLufs) > LOUDNESS.deliveryToleranceLu) reasons.push("loudness_off_target");
+  if (measure.truePeak > LOUDNESS.deliveryTruePeakMaxDb) reasons.push("true_peak_over");
+  return reasons;
+}
+
 function pcmFromWav(pcm: Buffer): Int16Array {
   let dataAt = 12;
   while (dataAt + 8 <= pcm.byteLength) {
@@ -155,6 +196,9 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
     expected_duration_seconds: Number(expected.toFixed(3)),
     has_audio: probe.has_audio,
     black_frames: 0,
+    integrated_lufs: null,
+    true_peak_dbfs: null,
+    loudness_range_lu: null,
     lines: [],
     measured_at: now(),
   };
@@ -186,6 +230,15 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       const wav = join(dir, "mux.wav");
       const ok = await run("ffmpeg", ["-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", wav]);
       if (ok.ok) samples = pcmFromWav(await readFile(wav));
+
+      // Delivery loudness, measured on the encoded file rather than trusted from the normaliser.
+      const measure = parseEbur128Summary(await runStderr("ffmpeg", ["-hide_banner", "-nostats", "-i", file, "-af", "ebur128=peak=true", "-f", "null", "-"]));
+      if (measure) {
+        audit.integrated_lufs = measure.integrated;
+        audit.true_peak_dbfs = measure.truePeak;
+        audit.loudness_range_lu = measure.lra;
+        audit.reasons.push(...loudnessReasons(measure));
+      }
     }
 
     for (const [index, shot] of input.manifest.shots.entries()) {

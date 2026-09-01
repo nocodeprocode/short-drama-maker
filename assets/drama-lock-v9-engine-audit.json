@@ -6,6 +6,9 @@
   "expected_duration_seconds": 8.298,
   "has_audio": true,
   "black_frames": 0,
+  "integrated_lufs": -13.7,
+  "true_peak_dbfs": -1.4,
+  "loudness_range_lu": 6.8,
   "lines": [
     {
       "shot_id": "mara",
@@ -34,7 +37,7 @@
       "settled_open": true
     }
   ],
-  "measured_at": "2026-09-01T20:57:22.356Z",
+  "measured_at": "2026-09-01T21:17:29.424Z",
   "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v9-engine.mp4",
   "watch_file": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v9-engine.mp4",
   "do_not_overwrite": [
@@ -42,7 +45,7 @@
     "assets/drama-lock-v8.mp4",
     "assets/drama-lock-v7.mp4"
   ],
-  "sha256": "b68338647c2b742dad9494fbc898b50606f64412f9d36dd54b1b4bd231c955e4",
+  "sha256": "5a96fcd203f9c2ecfcfeb7320cf4559be4573bac94ccfd40e55fa3cb73ab896b",
   "takes": [
     {
       "id": "mara",
@@ -107,7 +110,7 @@
         "sheer_or_bra": false,
         "face_similarity": null,
         "face_count": null,
-        "measured_at": "2026-09-01T20:57:16.770Z",
+        "measured_at": "2026-09-01T21:17:15.414Z",
         "settle_steps": [
           2.69,
           3.38,
@@ -213,7 +216,7 @@
         "sheer_or_bra": false,
         "face_similarity": null,
         "face_count": null,
-        "measured_at": "2026-09-01T20:57:17.958Z",
+        "measured_at": "2026-09-01T21:17:17.975Z",
         "settle_steps": [
           48.93,
           49.53,

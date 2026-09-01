@@ -39,7 +39,20 @@ export const OVERLAP: OverlapRule = {
 
 export const LOUDNESS = {
   mixLufs: -14,
-  truePeakDb: -1,
+  /** Normaliser target. AAC overshoots by up to ~0.5 dB, so this lands the file at or under −1 dBTP. */
+  truePeakDb: -1.5,
+  /** Delivery gate on the encoded file. */
+  deliveryToleranceLu: 1.5,
+  deliveryTruePeakMaxDb: -0.5,
+  /** Loudness range target for the two-pass normaliser; dialogue drama sits around 8–11 LU. */
+  lraTarget: 11,
+  /** Bed level before ducking, and how the sidechain compressor pulls it under speech. */
+  bedGain: 0.38,
+  duck: { thresholdLinear: 0.015, ratio: 8, attackMs: 25, releaseMs: 350 },
+  /** Bed crossfade at scene joins and the fade on every dialogue edge. */
+  bedCrossfadeSeconds: 0.8,
+  dialogueFadeInSeconds: 0.015,
+  dialogueFadeOutSeconds: 0.03,
   dialogueShortTerm: { min: -14, max: -12 },
   musicUnderDialogueLufs: { min: -20, max: -18 },
   duckDb: { min: -10, max: -6 },

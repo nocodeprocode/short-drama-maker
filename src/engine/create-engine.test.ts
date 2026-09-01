@@ -360,6 +360,9 @@ const passingAudit: MuxAuditFn = async (input) => ({
   expected_duration_seconds: 0,
   has_audio: true,
   black_frames: 0,
+  integrated_lufs: -14,
+  true_peak_dbfs: -1.2,
+  loudness_range_lu: 8,
   lines: input.manifest.shots.map((shot) => ({
     shot_id: shot.shot_id,
     speaker: shot.speaker ?? null,
