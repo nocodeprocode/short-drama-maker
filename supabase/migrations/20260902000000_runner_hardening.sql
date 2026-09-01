@@ -104,3 +104,4 @@ create or replace view public.engine_tasks_stuck as
   where status = 'running' and lease_until is not null and lease_until < now() - interval '5 minutes';
 
 revoke all on public.engine_tasks_stuck from public, anon, authenticated;
+grant select on public.engine_tasks_stuck to service_role;

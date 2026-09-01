@@ -806,6 +806,35 @@ Deno.serve(async (req) => {
       return createCheckout(req, supabase, user.id, access.isAdmin);
     }
 
+    // Operator health: what is stuck, what gave up, what failed recently. The
+    // runner logs the same facts, but a paged operator needs one call.
+    if (req.method === "GET" && path === "/ops/health") {
+      if (!access.isAdmin) return json({ error: "admin_required" }, 403);
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const [stuck, dead, queued, running, recentFailures, pendingVideo] = await Promise.all([
+        supabase.from("engine_tasks_stuck").select("*").order("lease_until", { ascending: true }).limit(50),
+        supabase.from("engine_tasks").select("id, series_id, production_id, action, attempt, error_code, updated_at").eq("status", "dead_lettered").order("updated_at", { ascending: false }).limit(50),
+        supabase.from("engine_tasks").select("id", { count: "exact", head: true }).eq("status", "queued"),
+        supabase.from("engine_tasks").select("id", { count: "exact", head: true }).eq("status", "running"),
+        supabase.from("job_events").select("kind, status, series_id, task_id, detail, created_at").in("kind", ["task_failed", "task_dead_lettered"]).gte("created_at", since).order("created_at", { ascending: false }).limit(100),
+        supabase.from("generation_jobs").select("id, series_id, model, status, updated_at").eq("job_type", "video").in("status", ["queued", "submitting", "generating", "ingesting"]).order("updated_at", { ascending: true }).limit(100),
+      ]);
+      const oldestPending = pendingVideo.data?.[0]?.updated_at ?? null;
+      const alerts: string[] = [];
+      if ((stuck.data?.length ?? 0) > 0) alerts.push(`${stuck.data!.length} task(s) hold an expired lease`);
+      if ((dead.data?.length ?? 0) > 0) alerts.push(`${dead.data!.length} task(s) dead-lettered`);
+      if (oldestPending && Date.now() - Date.parse(oldestPending) > 45 * 60 * 1000) alerts.push("a video job has been pending for over 45 minutes");
+      return json({
+        ok: alerts.length === 0,
+        alerts,
+        queue: { queued: queued.count ?? 0, running: running.count ?? 0, pending_video: pendingVideo.data?.length ?? 0, oldest_pending_video_at: oldestPending },
+        stuck: stuck.data ?? [],
+        dead_lettered: dead.data ?? [],
+        recent_failures: recentFailures.data ?? [],
+        checked_at: new Date().toISOString(),
+      });
+    }
+
     if (req.method === "POST" && path === "/billing/adjust") {
       if (!access.isAdmin) return json({ error: "admin_required" }, 403);
       const body = await req.json();
