@@ -23,6 +23,12 @@
     },
     "openrouter": {
       "url": "https://mcp.openrouter.ai/mcp"
+    },
+    "untitledui": {
+      "url": "https://www.untitledui.com/react/api/mcp"
+    },
+    "elevenlabs": {
+      "url": "https://api.elevenlabs.io/v1/mcp"
     }
   }
 }

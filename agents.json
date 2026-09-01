@@ -1,0 +1,7 @@
+{
+  "agents": [
+    {
+      "config": "agent_configs/short-drama-maker-support.json"
+    }
+  ]
+}

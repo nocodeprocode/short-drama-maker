@@ -1,0 +1,19 @@
+{
+  "tests": [
+    { "id": "U01", "command": "npm test", "layer": "offline" },
+    { "id": "C01", "name": "Required secrets present" },
+    { "id": "C02", "name": "Stripe test API" },
+    { "id": "C03", "name": "Cloudflare media-store health" },
+    { "id": "C04", "name": "R2 PUT/GET/DELETE" },
+    { "id": "C05", "name": "OpenRouter models" },
+    { "id": "C06", "name": "Wan 3.0 video model" },
+    { "id": "C07", "name": "ElevenLabs account" },
+    { "id": "C08", "name": "Supabase reachable" },
+    { "id": "C09", "name": "Prior artifacts on disk" },
+    { "id": "C10", "name": "Probe 06-wan-15s.mp4" },
+    { "id": "G01", "name": "LLM episode plan" },
+    { "id": "G02", "name": "ElevenLabs TTS + STT" },
+    { "id": "G03", "name": "Engine Wan+audio ingest" },
+    { "id": "G04", "name": "Deterministic render" }
+  ]
+}

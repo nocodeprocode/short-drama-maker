@@ -1,0 +1,279 @@
+{
+  "name": "Short Drama Maker Support",
+  "tags": ["test", "support", "short-drama-maker"],
+  "conversation_config": {
+    "agent": {
+      "dynamic_variables": {
+        "dynamic_variable_placeholders": {}
+      },
+      "first_message": "Hi, this is Alexis from Short Drama Maker. I can help with how the product works, privacy, and the legal pages. What do you need?",
+      "language": "en",
+      "prompt": {
+        "custom_llm": null,
+        "ignore_default_personality": false,
+        "knowledge_base": [],
+        "llm": "gemini-2.5-flash",
+        "max_tokens": 1000,
+        "mcp_server_ids": [],
+        "native_mcp_server_ids": [],
+        "prompt": "# Personality\nYou are Alexis, a concise product guide for Short Drama Maker. You are precise, calm, and honest about what the product actually does today.\n\n# Environment\nYou speak with visitors on the Short Drama Maker website. You do not have access to anyone's private series, scripts, voices, or generated episodes. You cannot start a generation job.\n\n# Tone\n- Keep answers to one or two sentences unless the user asks for more detail.\n- Use plain language. Do not sound like a lawyer or a marketer.\n- If you do not know, say so and point to a page or email placeholder.\n- Never invent a legal entity, address, governing law, or Merchant of Record.\n\n# Goal\n1. Explain the current product: a story goes in, a locked fictional cast is created, dialogue is spoken first, then vertical shots are generated and assembled.\n2. Explain privacy only as the site already states it: projects are private by default; we store project content; AI processors receive only what a requested job needs; OpenRouter is the primary AI gateway and forwards inputs to approved model providers; ElevenLabs is used for fictional Voice Design; we do not sell project content and we do not train our own public models on private projects.\n3. Send users to public pages when they ask for the full policy: /legal/privacy, /legal/terms, /legal/ai-processing, /legal/acceptable-use, /legal/cookies, /legal/copyright, /legal/dpa, /security, /privacy/request.\n4. This step is important. Refuse to clone a real person's voice or a public figure. Voice Design from a text description of a fictional character is the default.\n5. This step is important. Do not claim GDPR compliance, that data never leaves a country, that only OpenRouter sees content, that AI providers never train, or that every output is copyrighted.\n6. Users must be 18 or the age of majority in their jurisdiction.\n7. If they need a privacy request or account deletion, point them to /privacy/request. Account deletion is not a finished authenticated product flow yet.\n8. You cannot start generation jobs, grant credits, or change anyone's budget. Point billing questions to the site or the operator.\n9. End the call when they are done.\n",
+        "rag": {
+          "embedding_model": "e5_mistral_7b_instruct",
+          "enabled": false,
+          "max_documents_length": 50000,
+          "max_retrieved_rag_chunks_count": 20,
+          "max_vector_distance": 0.6
+        },
+        "temperature": 0.3,
+        "tool_ids": [],
+        "built_in_tools": {
+          "end_call": {}
+        }
+      }
+    },
+    "asr": {
+      "keywords": [
+        "Short Drama Maker",
+        "OpenRouter",
+        "ElevenLabs",
+        "Seedance",
+        "Voice Design",
+        "subprocessor",
+        "DPA"
+      ],
+      "provider": "scribe_realtime",
+      "quality": "high",
+      "user_input_audio_format": "pcm_16000"
+    },
+    "conversation": {
+      "client_events": ["audio", "interruption"],
+      "max_duration_seconds": 600,
+      "text_only": false
+    },
+    "language_presets": {},
+    "tts": {
+      "agent_output_audio_format": "pcm_16000",
+      "model_id": "eleven_flash_v2_5",
+      "optimize_streaming_latency": 3,
+      "pronunciation_dictionary_locators": [],
+      "similarity_boost": 0.8,
+      "speed": 1.0,
+      "stability": 0.5,
+      "supported_voices": [],
+      "voice_id": "EXAVITQu4vr4xnSDxMaL"
+    },
+    "turn": {
+      "mode": "turn",
+      "silence_end_call_timeout": -1.0,
+      "turn_eagerness": "normal",
+      "turn_timeout": 7.0
+    }
+  },
+  "platform_settings": {
+    "auth": {
+      "allowlist": [],
+      "enable_auth": false,
+      "shareable_token": null
+    },
+    "ban": null,
+    "call_limits": {
+      "agent_concurrency_limit": -1,
+      "bursting_enabled": true,
+      "daily_limit": 200
+    },
+    "data_collection": {
+      "user_question": {
+        "type": "string",
+        "description": "Extract the user's questions and inquiries from the conversation."
+      }
+    },
+    "evaluation": {
+      "criteria": [
+        {
+          "id": "solved_user_inquiry",
+          "name": "solved_user_inquiry",
+          "conversation_goal_prompt": "The assistant answered the user's product questions or directed them to a public legal or privacy page. Success if questions were answered or redirected. Failure if the assistant invented a legal entity, claimed GDPR compliance, offered to generate or open a private project, or agreed to clone a real person's voice."
+        }
+      ]
+    },
+    "guardrails": {
+      "version": "1",
+      "focus": { "is_enabled": true },
+      "prompt_injection": { "is_enabled": true },
+      "content": {
+        "config": {
+          "harassment": { "is_enabled": true, "threshold": 0.5 },
+          "sexual": { "is_enabled": true, "threshold": 0.4 }
+        }
+      },
+      "custom": {
+        "config": {
+          "configs": [
+            {
+              "is_enabled": true,
+              "name": "No private project access",
+              "prompt": "Block the agent from claiming it can open, edit, generate, export, or delete a user's private series, scripts, voices, or episodes.",
+              "execution_mode": "blocking",
+              "model": "gemini-2.5-flash-lite",
+              "history_message_count": 1,
+              "trigger_action": {
+                "type": "retry",
+                "feedback": "Reason: {{trigger_reason}}"
+              }
+            },
+            {
+              "is_enabled": true,
+              "name": "No real-person voice cloning",
+              "prompt": "Block the agent from helping clone a real person's voice or a public figure. Fictional Voice Design from a text description is allowed to be explained.",
+              "execution_mode": "blocking",
+              "model": "gemini-2.5-flash-lite",
+              "history_message_count": 1,
+              "trigger_action": {
+                "type": "retry",
+                "feedback": "Reason: {{trigger_reason}}"
+              }
+            },
+            {
+              "is_enabled": true,
+              "name": "No legal overclaims",
+              "prompt": "Block claims that the product is GDPR compliant, that data never leaves a country, that only OpenRouter receives content, or that AI outputs are automatically copyrighted.",
+              "execution_mode": "blocking",
+              "model": "gemini-2.5-flash-lite",
+              "history_message_count": 1,
+              "trigger_action": {
+                "type": "retry",
+                "feedback": "Reason: {{trigger_reason}}"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "overrides": {
+      "conversation_config_override": {
+        "agent": {
+          "first_message": false,
+          "language": false,
+          "prompt": {
+            "prompt": false
+          }
+        },
+        "conversation": {
+          "text_only": true
+        },
+        "tts": {
+          "voice_id": false
+        }
+      },
+      "custom_llm_extra_body": false,
+      "enable_conversation_initiation_client_data_from_webhook": false
+    },
+    "privacy": {
+      "apply_to_existing_conversations": false,
+      "delete_audio": true,
+      "delete_transcript_and_pii": false,
+      "record_voice": true,
+      "retention_days": 30,
+      "zero_retention_mode": false
+    },
+    "safety": {
+      "ignore_safety_evaluation": false,
+      "is_blocked_ivc": false,
+      "is_blocked_non_ivc": false
+    },
+    "testing": {
+      "attached_tests": []
+    },
+    "widget": {
+      "action_text": "Ask about Short Drama Maker",
+      "avatar": {
+        "color_1": "#414651",
+        "color_2": "#d5d7da",
+        "type": "orb"
+      },
+      "bg_color": "#ffffff",
+      "border_color": "#e9eaeb",
+      "border_radius": null,
+      "btn_color": "#181d27",
+      "btn_radius": null,
+      "btn_text_color": "#ffffff",
+      "custom_avatar_path": null,
+      "disable_banner": false,
+      "end_call_text": "End call",
+      "expand_text": "Open",
+      "expandable": "never",
+      "feedback_mode": "none",
+      "focus_color": "#181d27",
+      "language_presets": {},
+      "language_selector": false,
+      "listening_text": "Listening",
+      "mic_muting_enabled": true,
+      "override_link": null,
+      "placement": "bottom-right",
+      "shareable_page_show_terms": true,
+      "shareable_page_text": null,
+      "show_avatar_when_collapsed": false,
+      "speaking_text": "Alexis is speaking",
+      "start_call_text": "Start call",
+      "styles": {
+        "accent": null,
+        "accent_active": null,
+        "accent_border": null,
+        "accent_hover": null,
+        "accent_primary": null,
+        "accent_subtle": null,
+        "base": null,
+        "base_active": null,
+        "base_border": null,
+        "base_error": null,
+        "base_hover": null,
+        "base_primary": null,
+        "base_subtle": null,
+        "bubble_radius": null,
+        "button_radius": null,
+        "compact_sheet_radius": null,
+        "dropdown_sheet_radius": null,
+        "input_radius": null,
+        "overlay_padding": null,
+        "sheet_radius": null
+      },
+      "supports_text_only": true,
+      "terms_html": null,
+      "terms_key": null,
+      "terms_text": null,
+      "text_color": "#181d27",
+      "text_contents": {
+        "accept_terms": null,
+        "agent_ended_conversation": null,
+        "change_language": null,
+        "collapse": null,
+        "connecting_status": null,
+        "conversation_id": null,
+        "copied": null,
+        "copy_id": null,
+        "dismiss_terms": null,
+        "end_call": null,
+        "error_occurred": null,
+        "expand": null,
+        "input_label": null,
+        "input_placeholder": null,
+        "listening_status": null,
+        "main_label": null,
+        "mute_microphone": null,
+        "new_call": null,
+        "speaking_status": null,
+        "start_call": null,
+        "user_ended_conversation": null
+      },
+      "text_input_enabled": true,
+      "transcript_enabled": false,
+      "variant": "compact"
+    },
+    "workspace_overrides": {
+      "conversation_initiation_client_data_webhook": null,
+      "webhooks": {
+        "post_call_webhook_id": null
+      }
+    }
+  }
+}
