@@ -1,0 +1,138 @@
+{
+  "ran_at": "2026-08-31T20:23:31.631Z",
+  "kind": "identity-bakeoff-c",
+  "spend_this_pass_usd": 4.2014,
+  "generated": [
+    {
+      "id": "C-mara-wan-face-only",
+      "policy": "face_only",
+      "model": "alibaba/wan-3.0",
+      "location_ref": false,
+      "function": "accusation_cu",
+      "status": "needs_review",
+      "file": "drama-bake-C-mara-wan-face-only.mp4",
+      "cost": 0.425,
+      "first_frame_kind": "cu",
+      "first_frame_asset_id": "348c19f4-7edc-4255-80f6-ca79b1c264eb",
+      "extra_ref_count": 0,
+      "pictured_name": "Mara Voss",
+      "qc": [
+        "internal_cut"
+      ],
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.041,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      }
+    },
+    {
+      "id": "C-mara-sd25-face-only",
+      "policy": "face_only",
+      "model": "bytedance/seedance-2.5",
+      "location_ref": false,
+      "function": "accusation_cu",
+      "status": "completed",
+      "file": "drama-bake-C-mara-sd25-face-only.mp4",
+      "cost": 0.93411,
+      "first_frame_kind": "cu",
+      "first_frame_asset_id": "b7d0065a-6283-4830-abf2-d38ad17ac988",
+      "extra_ref_count": 0,
+      "pictured_name": "Mara Voss",
+      "qc": [],
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.064,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      }
+    },
+    {
+      "id": "C-mara-sd25-location-on",
+      "policy": "face_first",
+      "model": "bytedance/seedance-2.5",
+      "location_ref": true,
+      "function": "accusation_cu",
+      "status": "completed",
+      "file": "drama-bake-C-mara-sd25-location-on.mp4",
+      "cost": 0.93411,
+      "first_frame_kind": "cu",
+      "first_frame_asset_id": "78f6e5d9-c611-4f37-8ead-fd6713836976",
+      "extra_ref_count": 1,
+      "pictured_name": "Mara Voss",
+      "qc": [],
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.064,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      }
+    },
+    {
+      "id": "C-eli-sd25-face-only",
+      "policy": "face_only",
+      "model": "bytedance/seedance-2.5",
+      "location_ref": false,
+      "function": "reaction",
+      "status": "completed",
+      "file": "drama-bake-C-eli-sd25-face-only.mp4",
+      "cost": 0.93411,
+      "first_frame_kind": "cu",
+      "first_frame_asset_id": "6bde5492-6f67-4bbf-a9ac-f4716eb7a914",
+      "extra_ref_count": 0,
+      "pictured_name": "Eli Hart",
+      "qc": [],
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      }
+    },
+    {
+      "id": "C-mara-button-sd25-face-only",
+      "policy": "face_only",
+      "model": "bytedance/seedance-2.5",
+      "location_ref": false,
+      "function": "button_cu",
+      "status": "completed",
+      "file": "drama-bake-C-mara-button-sd25-face-only.mp4",
+      "cost": 0.93411,
+      "first_frame_kind": "cu",
+      "first_frame_asset_id": "9d16e061-0516-4440-ba59-574be57d4e3b",
+      "extra_ref_count": 0,
+      "pictured_name": "Mara Voss",
+      "qc": [],
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      }
+    }
+  ],
+  "visual_verdict": {
+    "winner": "alibaba/wan-3.0 + face_only",
+    "mara_wan_face_only": "HOLD. Auburn bun, X-scar, ivory turtleneck+cardigan at 0.4s / 1.2s / 2.0s / 3.5s. Same woman. QC internal_cut looks like a false positive.",
+    "mara_sd25_face_only": "FAIL. Dark turtleneck, no X-scar, hair reads blonde/light brown.",
+    "mara_sd25_location_on": "FAIL. Same drift as face-only Seedance plus extra wardrobe ref (extra=1).",
+    "mara_button_sd25": "FAIL. Charcoal turtleneck, no scar — stranger MCU.",
+    "eli_sd25_face_only": "FAIL. Straight hair + dark turtleneck, not curly henley Eli."
+  },
+  "note": "Seedance 2.5 lost identity vs Wan face_only. Route Mara dialogue/button to Wan. Route Eli silent reactions to Seedance 2.0-mini (prior A winner). Do not failover Wan→2.5."
+}

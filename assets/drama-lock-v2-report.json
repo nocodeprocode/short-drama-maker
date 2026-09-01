@@ -1,0 +1,71 @@
+{
+  "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v2.mp4",
+  "sha256": "91fa79e9078a9146b06cc38969f2b24e0c990b6a28648c9719f9afa7b8c25014",
+  "duration_seconds": 21.267,
+  "spend_this_pass_usd": 1.79,
+  "spend_estimate_cumulative_usd": 53.92,
+  "residual_usd": 96.08,
+  "takes": [
+    {
+      "function": "hook_cu",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Mara Voss"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Eli Hart"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Jules Renner"
+    },
+    {
+      "function": "establishing",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "stacked_two",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Mara Voss",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v2-cu-mara-voss",
+      "cost": 0.51
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Eli Hart",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v2-cu-eli-hart",
+      "cost": 0.51
+    },
+    {
+      "function": "reaction",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "insert_evidence",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "skipped": "v2_omit"
+    },
+    {
+      "function": "button_cu",
+      "speaker": "Mara Voss",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v2-cu-mara-voss",
+      "cost": 0.51
+    }
+  ],
+  "vtt": "WEBVTT\n\n1\n00:00:05.205 --> 00:00:06.640\nMARA: Eli, look at Tuesday.\n\n2\n00:00:11.065 --> 00:00:13.478\nELI: I did not write the paper.\n\n3\n00:00:17.063 --> 00:00:20.236\nMARA: If it is not Eli Hart, who\nsigned Tuesday?\n"
+}

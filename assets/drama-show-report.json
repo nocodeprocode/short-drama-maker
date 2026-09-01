@@ -1,0 +1,309 @@
+{
+  "ran_at": "2026-08-31T22:23:47.712Z",
+  "artifact_prefix": "drama-show",
+  "product_path": "createEngine().planEpisode + generateDialogue + generateVideo + renderEpisode",
+  "identity_ref_policy": "face_only",
+  "cu_model": "alibaba/wan-3.0",
+  "spend_this_pass_usd": 2.9,
+  "spend_estimate_cumulative_usd": 22.33,
+  "spend_note": "First generate: 3×Wan 7s + 1×Mini 4s (~$2.40). Remux TTS ~$0.38. No Veo. OpenRouter video only on button, Eli henley, and two duration holes.",
+  "lint_pass": true,
+  "shot_count": 12,
+  "scene_count": 7,
+  "scenes": [
+    {
+      "position": 1,
+      "kind": "evidence",
+      "shot_count": 1
+    },
+    {
+      "position": 2,
+      "kind": "dialogue",
+      "shot_count": 3
+    },
+    {
+      "position": 3,
+      "kind": "evidence",
+      "shot_count": 1
+    },
+    {
+      "position": 4,
+      "kind": "dialogue",
+      "shot_count": 2
+    },
+    {
+      "position": 5,
+      "kind": "evidence",
+      "shot_count": 2
+    },
+    {
+      "position": 6,
+      "kind": "dialogue",
+      "shot_count": 2
+    },
+    {
+      "position": 7,
+      "kind": "button",
+      "shot_count": 1
+    }
+  ],
+  "edit_decisions": {
+    "container": "mp4",
+    "scenes": [
+      {
+        "index": 0,
+        "kind": "evidence",
+        "shot_ids": [
+          "6567cec8-6219-4adb-89a7-f205169b7d46"
+        ]
+      },
+      {
+        "index": 1,
+        "kind": "dialogue",
+        "shot_ids": [
+          "37d5c5e0-1141-4a0e-8065-6198e0d316eb",
+          "cf8df446-c56b-43ae-9417-946c6275e93d",
+          "468336b1-ee49-4a7d-abed-50eced346ae2"
+        ]
+      },
+      {
+        "index": 2,
+        "kind": "evidence",
+        "shot_ids": [
+          "73a5ec15-6429-4058-b5eb-0f716b3ad093"
+        ]
+      },
+      {
+        "index": 3,
+        "kind": "dialogue",
+        "shot_ids": [
+          "96630df8-0b58-440c-aa23-9d88578a0ae3",
+          "23dd4ae4-112f-4e99-82d9-8f1aaffc8421"
+        ]
+      },
+      {
+        "index": 4,
+        "kind": "evidence",
+        "shot_ids": [
+          "eed034a2-c057-46ff-977f-9d4f440e6ded",
+          "65e9f5c7-4ec8-4753-a7c5-0419ec9fa97b"
+        ]
+      },
+      {
+        "index": 5,
+        "kind": "dialogue",
+        "shot_ids": [
+          "f2c2de4d-b53c-46ea-ba91-985dd2fd7eb3",
+          "f95783de-714e-48cd-903e-815fef2dc8ed"
+        ]
+      },
+      {
+        "index": 6,
+        "kind": "button",
+        "shot_ids": [
+          "9655bca3-e053-4a07-8fb0-05cb816137a9"
+        ]
+      }
+    ],
+    "shots": [
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 0,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 5.042,
+        "audio_start_seconds": 4.6419999999999995,
+        "hold_tail_seconds": 0.4
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 9.442,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 11.942,
+        "audio_start_seconds": 11.942,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 15.942,
+        "audio_start_seconds": 15.942,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 19.942,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 22.442,
+        "audio_start_seconds": 22.042,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 29.442,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "lcut",
+        "picture_start_seconds": 31.542,
+        "audio_start_seconds": 31.542,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 35.542,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 38.042,
+        "audio_start_seconds": 37.642,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "button",
+        "transition_in": "cut",
+        "picture_start_seconds": 45.042,
+        "audio_start_seconds": 45.042,
+        "hold_tail_seconds": 0
+      }
+    ]
+  },
+  "cut": "drama-show-cut.mp4",
+  "captions": "drama-show-captions.vtt",
+  "container": "mp4",
+  "duration_seconds": 52.07,
+  "button_count": 1,
+  "production_ready": true,
+  "production_ready_note": "50–70s 9:16 MP4, one Mara button, scenes + J/L-cuts, product path renderEpisode().",
+  "hook_in_cut": true,
+  "button_in_cut": true,
+  "reused_takes": 12,
+  "generated_takes": 0,
+  "first_line": "I wasn't going to say anything tonight.",
+  "button_line": "Then whose name is on it?",
+  "cut_to_in_camera": false,
+  "qc": {
+    "lint_pass": true,
+    "single_button": true,
+    "duration_window": true,
+    "wan_internal_cut_no_mini_failover": true,
+    "slideshow": false
+  },
+  "takes": [
+    {
+      "function": "hook_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "phone_ui",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "button_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    }
+  ],
+  "how_to_run": "LIVE_DRAMA_REPLAN=0 DRAMA_IDENTITY_REF_POLICY=face_only npm run test:live-show",
+  "how_user_produces": "Pay → analyze → lock cast → planEpisode → generateDialogue → generateVideo → render_episode (createEngine / autopilot).",
+  "remaining_gaps": [
+    "Earlier Eli silent holds (not the regen) may still be crew-neck rather than henley.",
+    "Captions are TTS-aligned to the edit timeline, not STT of the mixed file.",
+    "Studio final_url play-through needs a signed-in episode; browser tabs were empty so no live click-through."
+  ]
+}

@@ -1,0 +1,404 @@
+{
+  "ran_at": "2026-08-31T21:56:43.407Z",
+  "artifact_prefix": "drama-prod",
+  "product_path": "createEngine().planEpisode + generateDialogue + renderEpisode",
+  "identity_ref_policy": "face_only",
+  "cu_model": "alibaba/wan-3.0",
+  "spend_cap_usd": 150,
+  "spend_this_pass_usd": 0.19,
+  "spend_estimate_cumulative_usd": 19.62,
+  "lint_pass": true,
+  "shot_count": 12,
+  "scene_count": 7,
+  "scenes": [
+    {
+      "position": 1,
+      "kind": "evidence",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 1
+    },
+    {
+      "position": 2,
+      "kind": "dialogue",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 3
+    },
+    {
+      "position": 3,
+      "kind": "evidence",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 1
+    },
+    {
+      "position": 4,
+      "kind": "dialogue",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 2
+    },
+    {
+      "position": 5,
+      "kind": "evidence",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 2
+    },
+    {
+      "position": 6,
+      "kind": "dialogue",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 1
+    },
+    {
+      "position": 7,
+      "kind": "button",
+      "location": "Penthouse kitchen — marble island center frame, under-cabinet lighting on low, city skyline visible through floor-to-ceiling windows behind them, a half-drunk glass of water on the counter that neither of them poured",
+      "shot_count": 2
+    }
+  ],
+  "edit_decisions": {
+    "container": "mp4",
+    "scenes": [
+      {
+        "index": 0,
+        "kind": "evidence",
+        "shot_ids": [
+          "390ba4da-51c2-40c2-ba54-7aa47a459521"
+        ]
+      },
+      {
+        "index": 1,
+        "kind": "dialogue",
+        "shot_ids": [
+          "79f35ea3-d33c-40d6-b9e7-4fb02fd02bf4",
+          "157a0d06-5d47-4d48-ad20-f47979f1992b",
+          "41a9e607-8dab-4472-875f-a29cc5399f89"
+        ]
+      },
+      {
+        "index": 2,
+        "kind": "evidence",
+        "shot_ids": [
+          "3cee748e-f3d8-4f7f-be10-f17ef579c28f"
+        ]
+      },
+      {
+        "index": 3,
+        "kind": "dialogue",
+        "shot_ids": [
+          "dd08b00a-7540-4558-8732-74b11ecf0080",
+          "b8d4396d-e6fe-4749-8c2a-a482a2ac47bf"
+        ]
+      },
+      {
+        "index": 4,
+        "kind": "evidence",
+        "shot_ids": [
+          "7e24e94c-f7ca-4ca1-9630-e05732cc4ea7",
+          "3675cf99-54a3-4ebb-a55c-5856f9c386a1"
+        ]
+      },
+      {
+        "index": 5,
+        "kind": "dialogue",
+        "shot_ids": [
+          "364f442d-e85f-4fb9-9835-5ef30bdda7d8"
+        ]
+      },
+      {
+        "index": 6,
+        "kind": "button",
+        "shot_ids": [
+          "92f4c8e0-c685-4186-9ad5-1bdb2efe3ac7",
+          "6fac4775-21b0-48e3-850b-40f42065cfcc"
+        ]
+      }
+    ],
+    "shots": [
+      {
+        "shot_id": "390ba4da-51c2-40c2-ba54-7aa47a459521",
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 0,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0,
+        "spike": true
+      },
+      {
+        "shot_id": "79f35ea3-d33c-40d6-b9e7-4fb02fd02bf4",
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 5.042,
+        "audio_start_seconds": 4.6419999999999995,
+        "hold_tail_seconds": 0.4,
+        "spike": false
+      },
+      {
+        "shot_id": "157a0d06-5d47-4d48-ad20-f47979f1992b",
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 9.483,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "41a9e607-8dab-4472-875f-a29cc5399f89",
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 13.525,
+        "audio_start_seconds": 13.525,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "3cee748e-f3d8-4f7f-be10-f17ef579c28f",
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 17.566000000000003,
+        "audio_start_seconds": 17.566000000000003,
+        "hold_tail_seconds": 0,
+        "spike": true
+      },
+      {
+        "shot_id": "dd08b00a-7540-4558-8732-74b11ecf0080",
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 21.608000000000004,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "b8d4396d-e6fe-4749-8c2a-a482a2ac47bf",
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 25.650000000000006,
+        "audio_start_seconds": 25.250000000000007,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "7e24e94c-f7ca-4ca1-9630-e05732cc4ea7",
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 29.691000000000006,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0,
+        "spike": true
+      },
+      {
+        "shot_id": "3675cf99-54a3-4ebb-a55c-5856f9c386a1",
+        "scene_kind": "evidence",
+        "transition_in": "lcut",
+        "picture_start_seconds": 33.333000000000006,
+        "audio_start_seconds": 33.333000000000006,
+        "hold_tail_seconds": 0,
+        "spike": true
+      },
+      {
+        "shot_id": "364f442d-e85f-4fb9-9835-5ef30bdda7d8",
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 37.37500000000001,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "92f4c8e0-c685-4186-9ad5-1bdb2efe3ac7",
+        "scene_kind": "button",
+        "transition_in": "cut",
+        "picture_start_seconds": 41.41700000000001,
+        "audio_start_seconds": 41.41700000000001,
+        "hold_tail_seconds": 0,
+        "spike": false
+      },
+      {
+        "shot_id": "6fac4775-21b0-48e3-850b-40f42065cfcc",
+        "scene_kind": "button",
+        "transition_in": "hold",
+        "picture_start_seconds": 45.513000000000005,
+        "audio_start_seconds": 45.513000000000005,
+        "hold_tail_seconds": 0.4,
+        "spike": false
+      }
+    ],
+    "transitions": [
+      {
+        "after_shot_id": "390ba4da-51c2-40c2-ba54-7aa47a459521",
+        "type": "jcut",
+        "overlap_seconds": 0.4
+      },
+      {
+        "after_shot_id": "79f35ea3-d33c-40d6-b9e7-4fb02fd02bf4",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "157a0d06-5d47-4d48-ad20-f47979f1992b",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "41a9e607-8dab-4472-875f-a29cc5399f89",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "3cee748e-f3d8-4f7f-be10-f17ef579c28f",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "dd08b00a-7540-4558-8732-74b11ecf0080",
+        "type": "jcut",
+        "overlap_seconds": 0.35
+      },
+      {
+        "after_shot_id": "b8d4396d-e6fe-4749-8c2a-a482a2ac47bf",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "7e24e94c-f7ca-4ca1-9630-e05732cc4ea7",
+        "type": "lcut",
+        "overlap_seconds": 0.35
+      },
+      {
+        "after_shot_id": "3675cf99-54a3-4ebb-a55c-5856f9c386a1",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "364f442d-e85f-4fb9-9835-5ef30bdda7d8",
+        "type": "cut",
+        "overlap_seconds": 0
+      },
+      {
+        "after_shot_id": "92f4c8e0-c685-4186-9ad5-1bdb2efe3ac7",
+        "type": "hold",
+        "overlap_seconds": 0.4
+      }
+    ]
+  },
+  "cut": "drama-prod-cut.mp4",
+  "captions": "drama-prod-captions.vtt",
+  "container": "mp4",
+  "duration_seconds": 49.7,
+  "editorial_ready": true,
+  "production_ready": false,
+  "production_ready_note": "Editorial mix is in the product path, but the cut is short of a 50–70s consumer episode or still has craft residuals.",
+  "hook_in_cut": true,
+  "button_in_cut": true,
+  "reused_takes": 12,
+  "generated_takes": 0,
+  "named_cast": [
+    "Mara Voss",
+    "Eli Hart",
+    "Jules Renner"
+  ],
+  "first_line": "I wasn't going to say anything tonight.",
+  "button_line": "Then whose name is on it?",
+  "cut_to_in_camera": false,
+  "qc": {
+    "lint_pass": true,
+    "opera_blocked": true,
+    "wan_internal_cut_no_mini_failover": true,
+    "face_only_extra_zero": true,
+    "slideshow": false
+  },
+  "takes": [
+    {
+      "function": "hook_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "phone_ui",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "button_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "button_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    }
+  ],
+  "how_to_run": "LIVE_DRAMA_REPLAN=0 DRAMA_IDENTITY_REF_POLICY=face_only DRAMA_CU_MODEL=alibaba/wan-3.0 npm run test:live-prod",
+  "how_user_produces": "Pay → analyze → lock cast → planEpisode → generateDialogue → generateVideo → render_episode (same createEngine path as autopilot advanceProduction).",
+  "remaining_gaps": [
+    "49.7s cut — source takes are ~4s; no new video this pass, so not a full 50–70s SKU.",
+    "Two button_cu shots back-to-back; button wardrobe slipped from ivory turtleneck to charcoal shirt.",
+    "Eli silent reactions can still slip henley to turtleneck (not regenerated this pass).",
+    "Captions from TTS alignment, not STT of the mix.",
+    "Studio play-through of final_url needs a signed episode_final in Supabase; browser tab was not available to click through a live episode."
+  ]
+}

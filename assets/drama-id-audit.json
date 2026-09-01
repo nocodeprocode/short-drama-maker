@@ -1,0 +1,155 @@
+{
+  "source": "assets/drama-hq-slice.mp4",
+  "audited_at": "2026-09-01T12:00:00.000Z",
+  "locked_refs": {
+    "Mara Voss": {
+      "file": "assets/drama-id-cu-mara-voss.png",
+      "must_hold": "auburn bun, X-scar on upper left forehead, freckles, ivory turtleneck + ivory cardigan"
+    },
+    "Eli Hart": {
+      "file": "assets/drama-id-cu-eli-hart.png",
+      "must_hold": "dark curly hair, stubble, charcoal three-button henley"
+    },
+    "Jules Renner": {
+      "file": "assets/drama-still-jules-renner.png",
+      "must_hold": "black hair pulled back, navy high-neck knit, building badge"
+    }
+  },
+  "verdict": "REJECT. Locked Mara (auburn + X-scar + ivory) never appears. Locked Eli (curls + henley) almost never appears. Captions have no speaker name. Kitchen jumps to estate/banquet. Multiple stranger faces.",
+  "takes": [
+    {
+      "t": 0,
+      "should_be": "object (TUESDAY paper)",
+      "looks_like": "TUESDAY slip on cobblestone. No people.",
+      "match": true,
+      "mouth_vs_caption": "no caption"
+    },
+    {
+      "t": 3,
+      "should_be": "Eli and/or Mara wide, kitchen",
+      "looks_like": "STRANGER man: trimmed beard, ivory slit jumpsuit, loafers. Not henley. Not Eli curls.",
+      "match": false,
+      "mouth_vs_caption": "mouth closed, no caption"
+    },
+    {
+      "t": 6,
+      "should_be": "same two-shot / Eli",
+      "looks_like": "Same ivory-jumpsuit stranger, kitchen island.",
+      "match": false,
+      "mouth_vs_caption": "mouth closed"
+    },
+    {
+      "t": 9,
+      "should_be": "Mara Voss speaking",
+      "looks_like": "STRANGER woman: long wavy blonde, beige crew sweater, no X-scar, no bun, no ivory turtleneck. Caption 'Eli Hart, look at Tuesday.' Mouth closed while line is up — desync.",
+      "match": false,
+      "mouth_vs_caption": "caption on, mouth closed (>150ms fail)"
+    },
+    {
+      "t": 12,
+      "should_be": "Mara Voss",
+      "looks_like": "Same blonde stranger, tan crew sweater, no scar.",
+      "match": false,
+      "mouth_vs_caption": "no caption this frame"
+    },
+    {
+      "t": 15,
+      "should_be": "Eli Hart",
+      "looks_like": "STRANGER man: straight/wavy light-brown hair, clean-shaven, slate button shirt with pocket. Not curls. Not henley.",
+      "match": false,
+      "mouth_vs_caption": "mouth open, no caption yet"
+    },
+    {
+      "t": 18,
+      "should_be": "Eli Hart saying I did not write the paper",
+      "looks_like": "Another STRANGER: dark quiff, clean-shaven, light grey crewneck. Caption has no ELI: prefix. Mouth open on the line (closer, still not locked Eli).",
+      "match": false,
+      "mouth_vs_caption": "mouth open with caption — sync closer, identity fail"
+    },
+    {
+      "t": 21,
+      "should_be": "Eli Hart",
+      "looks_like": "Same grey-crewneck stranger.",
+      "match": false,
+      "mouth_vs_caption": "mouth slightly open"
+    },
+    {
+      "t": 24,
+      "should_be": "TUESDAY paper insert",
+      "looks_like": "Boxed TUESDAY on slate. Object OK.",
+      "match": true,
+      "mouth_vs_caption": "no people"
+    },
+    {
+      "t": 27,
+      "should_be": "Mara Voss",
+      "looks_like": "STRANGER woman: dirty-blonde ponytail, navy waffle knit, gold hoops, blue eyes, no X-scar. OTS of a beige shoulder.",
+      "match": false,
+      "mouth_vs_caption": "caption 'Then say who wrote the paper.' — no MARA: prefix"
+    },
+    {
+      "t": 33,
+      "should_be": "Eli Hart",
+      "looks_like": "Closest to wardrobe: charcoal henley. Hair is straight/wavy brown quiff, not locked curls. Different face than t=18.",
+      "match": false,
+      "mouth_vs_caption": "mouth closed"
+    },
+    {
+      "t": 36,
+      "should_be": "Eli Hart",
+      "looks_like": "Henley-ish, downward gaze. Still not locked Eli curls/stubble match.",
+      "match": false,
+      "mouth_vs_caption": "mouth closed"
+    },
+    {
+      "t": 42,
+      "should_be": "Mara Voss",
+      "looks_like": "STRANGER: brown ponytail, dark taupe crew, mouth wide open. Caption 'If it is not Eli Hart, who signed Tuesday?' No name prefix. Not auburn/scar/ivory.",
+      "match": false,
+      "mouth_vs_caption": "mouth open with caption"
+    },
+    {
+      "t": 48,
+      "should_be": "establishing kitchen or Eli/Mara",
+      "looks_like": "STRANGER man in ivory turtleneck + ivory wide trousers in a marble estate foyer. Location jump. Wardrobe stolen from Mara.",
+      "match": false,
+      "mouth_vs_caption": "no caption"
+    },
+    {
+      "t": 54,
+      "should_be": "same estate wide",
+      "looks_like": "Same ivory-turtleneck stranger, chandelier lobby. Not kitchen. Not Eli henley.",
+      "match": false,
+      "mouth_vs_caption": "no caption"
+    },
+    {
+      "t": 66,
+      "should_be": "Eli Hart",
+      "looks_like": "STRANGER: white dress shirt, navy polka tie, maroon cardigan, gold ring, holding paper. Caption 'I did not write who signed.' No ELI:.",
+      "match": false,
+      "mouth_vs_caption": "mouth slightly open"
+    },
+    {
+      "t": 102,
+      "should_be": "Mara Voss",
+      "looks_like": "STRANGER: blonde updo, burgundy V-neck, banquet candles. Caption 'Eli Hart, look at Tuesday.' No MARA:. Not kitchen, not ivory, no X-scar.",
+      "match": false,
+      "mouth_vs_caption": "mouth open with caption"
+    },
+    {
+      "t": 120,
+      "should_be": "TUESDAY paper",
+      "looks_like": "Notebook page TUESDAY. Object OK.",
+      "match": true,
+      "mouth_vs_caption": "no people"
+    }
+  ],
+  "causes": [
+    "Two-shots/wides used the location plate as first_frame, so I2V invented new people.",
+    "Dialogue CUs were not actually locked to one CU still in the take (Wan invented hair/wardrobe).",
+    "No stranger reject: needs_review takes with new faces were still cut.",
+    "No NAME: captions, no name plants — a viewer cannot tell who is speaking.",
+    "Plan rotated kitchen → lobby → banquet in 140s.",
+    "TTS muxed on an editorial clock; at least one line (t=9s) is on screen with a closed mouth."
+  ]
+}

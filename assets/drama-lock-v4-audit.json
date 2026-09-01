@@ -1,0 +1,90 @@
+{
+  "ship": false,
+  "reason": "V4 stopped before mux. Eli CU was identity_reject (second person). No watch file.",
+  "muxed_file": null,
+  "lines": [
+    {
+      "line": "MARA: Eli, look at Tuesday.",
+      "take_voice_onset_s": 3.24,
+      "take_mouth_open_s": null,
+      "muxed_voice_onset_s": null,
+      "muxed_mouth_open_s": null,
+      "pass": false,
+      "note": "Take accepted (modest still, no second person). Never muxed because Eli was rejected. Mouth probe on the take returned unknown."
+    },
+    {
+      "line": "ELI: I did not write the paper.",
+      "take_voice_onset_s": null,
+      "muxed_voice_onset_s": null,
+      "pass": false,
+      "omitted": "identity_reject_second_person",
+      "ingest_qc": ["transcript_wer_warn", "invented_people"]
+    }
+  ],
+  "spend_this_pass_usd": 1.06,
+  "spend_estimate_cumulative_usd": 59.22,
+  "residual_usd": 90.78,
+  "takes": [
+    {
+      "function": "hook_cu",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Mara Voss"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Eli Hart"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Jules Renner"
+    },
+    {
+      "function": "establishing",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "stacked_two",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Mara Voss",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v4-cu-mara-voss",
+      "cost": 0.51,
+      "take_voice_onset_s": 3.24,
+      "take_mouth_open_s": null
+    },
+    {
+      "function": "accusation_cu",
+      "omitted": "identity_reject_second_person"
+    },
+    {
+      "function": "reaction",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "insert_evidence",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "skipped": "v4_omit"
+    },
+    {
+      "function": "button_cu",
+      "skipped": "v4_omit"
+    }
+  ],
+  "do_not_overwrite_open_file": "assets/drama-lock-slice.mp4 was not touched",
+  "watch_file": null,
+  "soft_cap_usd": 12,
+  "product": {
+    "sync": "voice_onset + pad >= mouth_open - 0.08; unknown mouth + Wan dialogue pads ≥1.2s; picture in_point only when voice starts at take head",
+    "units": "209 engine/drama-engine tests green before regen; viseme+mix rechecked after late-voice trim guard"
+  }
+}

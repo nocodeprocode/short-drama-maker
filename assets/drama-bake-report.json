@@ -1,0 +1,37 @@
+{
+  "ran_at": "2026-08-31T18:48:30.000Z",
+  "kind": "identity-bakeoff",
+  "spend_this_pass_usd": 1.8,
+  "winner": "face_first",
+  "generated": [
+    {
+      "id": "A-eli-face",
+      "policy": "face_first",
+      "model": "bytedance/seedance-2.0-mini",
+      "got": "MCU, dark charcoal knit/henley. Not a navy suit. Face younger/cleaner than still, but wardrobe class matches.",
+      "status": "completed"
+    },
+    {
+      "id": "B-eli-wardrobe",
+      "policy": "wardrobe_first",
+      "model": "bytedance/seedance-2.0-mini",
+      "got": "MCU, navy button-down. Worse wardrobe drift than A. Loser.",
+      "status": "completed"
+    },
+    {
+      "id": "A-mara-face",
+      "policy": "face_first",
+      "model": "alibaba/wan-3.0",
+      "got": "MCU Mara locked: X-scar, auburn bun, ivory turtleneck/cardigan. needs_review was duration/heuristic, pixels are good.",
+      "status": "needs_review"
+    },
+    {
+      "id": "B-mara-wardrobe",
+      "policy": "wardrobe_first",
+      "model": "alibaba/wan-3.0",
+      "got": "Wan 503. Not retried — A already won Eli and locked Mara.",
+      "status": "failed"
+    }
+  ],
+  "decision": "Lock face_first. First_frame = 28% CU crop. Wardrobe look stays extra input_reference. Do not use wardrobe as first_frame."
+}

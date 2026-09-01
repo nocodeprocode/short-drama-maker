@@ -1,0 +1,50 @@
+{
+  "ship": false,
+  "reason": "Second regen+align loop still fails the same audit. Stop.",
+  "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v3.mp4",
+  "sha256": "0cb8503e37785cc7b75baaea132448d9aa918525da4472715b347f562b904717",
+  "duration_seconds": 16.233,
+  "loops": 2,
+  "do_not_overwrite_open_file": "assets/drama-lock-slice.mp4 was not touched",
+  "modest_mara_still": {
+    "path": "assets/drama-id-cu-mara-voss-modest.png",
+    "opaque_ivory": true,
+    "bra_line": false,
+    "used_as_first_frame": true,
+    "not_used": "assets/drama-ship-cu-mara-voss.png"
+  },
+  "lines": [
+    {
+      "line": "MARA: Eli, look at Tuesday.",
+      "voice_onset_s": 5.3,
+      "first_clear_mouth_open_s": 6.5,
+      "lag_ms": 1200,
+      "limit_ms": 80,
+      "pass": false,
+      "extra_person": "over-the-shoulder second head/shoulder in Mara CU (f012, f013, mara_10)"
+    },
+    {
+      "line": "ELI: I did not write the paper.",
+      "voice_onset_s": 11.3,
+      "mouth_at_onset": "closed / idle (eli_09, eli_12)",
+      "lag_ms": ">80",
+      "pass": false,
+      "ghost_this_loop": false
+    }
+  ],
+  "loop1_fail": {
+    "sha256": "789cece40a08f0288fe93ecea48a0577d189e659c1de2c2886d098bc7991a153",
+    "kept_as": "assets/drama-lock-v3-audit-fail.mp4",
+    "eli_ghost": "second torso/arm and miniature face at ~11.4–11.5s",
+    "mara_lag_ms": 2000
+  },
+  "product": {
+    "viseme_pad_in_mixer": true,
+    "unit_test": "audio that leads picture by 2s is delayed; native take tone is kept, TTS is not muxed",
+    "why_align_did_not_save_the_cut": "Wan still opens the mouth ~1s after native audio. Mouth probe on these CUs did not produce a pad large enough. Align cannot invent visemes that are not in the take."
+  },
+  "spend_this_task_usd": 4.24,
+  "spend_estimate_cumulative_usd": 58.16,
+  "residual_usd": 91.84,
+  "soft_cap_usd": 15
+}

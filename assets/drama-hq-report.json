@@ -1,0 +1,155 @@
+{
+  "ran_at": "2026-09-01T10:32:11.875Z",
+  "verified_at": "2026-09-01T10:38:00.000Z",
+  "sku": "900_1080",
+  "slice_blocks": [0, 1, 2],
+  "slice_path": "drama-hq-slice.mp4",
+  "caption_frame": "drama-hq-caption-check.jpg",
+  "caption_frames_dir": "hq-frames/",
+  "duration_seconds": 140.3,
+  "container": "mp4",
+  "probe": {
+    "width": 720,
+    "height": 1280,
+    "fps": 30,
+    "audio": "aac mono 96kHz",
+    "rms": 0.112,
+    "sine_110_or_880_continuous": false,
+    "note": "t=0.5s (no dialogue) has no 110/880 spike. t=17s 880 energy is speech/music formant, not a sine bed."
+  },
+  "mix": {
+    "sine_bed": false,
+    "music_library": true,
+    "library_files": [
+      "assets/music/beds/thriller-friction.mp3",
+      "assets/music/beds/romance-under.mp3",
+      "assets/music/beds/estate-night.mp3",
+      "assets/music/beds/tension-pad.mp3",
+      "assets/music/stings/impact.mp3",
+      "assets/music/stings/comic-didnt-know.mp3",
+      "assets/music/stings/stunned.mp3",
+      "assets/music/sfx/slap.mp3",
+      "assets/music/sfx/door.mp3",
+      "assets/music/sfx/glass.mp3",
+      "assets/music/sfx/paper.mp3"
+    ],
+    "heard_lane_this_slice": "tts_to_picture_start",
+    "heard_lane_note": "Ingest used to overwrite shot_data after STT, wiping heard_audio. This slice therefore muxed ElevenLabs TTS to each take's picture_start (no J-cut). bindShotTake now preserves heard_audio so native Wan audio can be kept on the next render when STT matches."
+  },
+  "coverage": {
+    "establishing": 3,
+    "two_shot": 3,
+    "insert": 6,
+    "singles": 12,
+    "reactions_listener": 6
+  },
+  "frame_by_frame": [
+    {
+      "t": 0.4,
+      "file": "hq-frames/00-establishing.jpg",
+      "see": "Insert: TUESDAY slip on stone. Mute-readable spike. No caption. Not a face ECU."
+    },
+    {
+      "t": 4.5,
+      "file": "hq-frames/04-coverage.jpg",
+      "see": "Kitchen night two-person wide: marble island, chandelier, city windows, second pair of hands on the island. Geography locked."
+    },
+    {
+      "t": 8.0,
+      "file": "hq-frames/08-eli-look-tuesday.jpg",
+      "see": "Caption 'Eli Hart, look at Tuesday.' full, unclipped, lower-third. Kitchen night with under-cabinet key + city window."
+    },
+    {
+      "t": 12.5,
+      "file": "hq-frames/12-kitchen.jpg",
+      "see": "Mara MCU, same kitchen night plate (subway tile, faucet, city). No random forest bokeh."
+    },
+    {
+      "t": 17.0,
+      "file": "drama-hq-caption-check.jpg",
+      "see": "Comic/stun line 'I did not write the paper.' fully visible, lower-third (~75–79%). Mouth open on the line. Kitchen island + city still in frame."
+    },
+    {
+      "t": 22.0,
+      "file": "hq-frames/22-mid.jpg",
+      "see": "Eli single, same kitchen night grade (marble, faucet, city)."
+    },
+    {
+      "t": 27.5,
+      "file": "hq-frames/27-who-wrote.jpg",
+      "see": "OTS + caption 'Then say who wrote the paper.' wrapped, unclipped, lower-third."
+    },
+    {
+      "t": 34.5,
+      "file": "hq-frames/34-paper-name.jpg",
+      "see": "Two-line caption measured y=74.2–79.2% of 1280: 'Eli Hart, the paper still has a name.' Never clipped."
+    },
+    {
+      "t": 40.8,
+      "file": "hq-frames/40-who-signed.jpg",
+      "see": "Wrapped 4–8 words: 'If it is not Eli Hart, who / signed Tuesday?' y=73.7–78.8%. Not TikTok chrome."
+    },
+    {
+      "t": 50.0,
+      "file": "hq-frames/50-block1.jpg",
+      "see": "Comic/stun cutaway: boxed TUESDAY paper insert (SFX/paper beat)."
+    },
+    {
+      "t": 102.0,
+      "file": "hq-frames/102-block2.jpg",
+      "see": "Location change: banquet/estate OTS, candles, stained glass. Caption 'Eli Hart, look at Tuesday.' unclipped. Establishing/wide exists in this block."
+    }
+  ],
+  "founder_bugs": {
+    "beep": {
+      "fixed": true,
+      "how": "Deleted deterministic 110/880 sine/ping bed. assembleEpisodeMp4 loads assets/music or silentWav. Never synthesizes a sine.",
+      "evidence": "Goertzel on mix: t=0.5s p110=3 vs p200=55 (no bed tone). Product path has no Math.sin / 110Hz / 880Hz. ffmpeg-mix.test asserts that."
+    },
+    "lipsync": {
+      "fixed": true,
+      "how": "Onscreen speech: audio_start === picture_start (no J-cut lead). Prefer native Wan when STT WER matches; else mux TTS to THAT take's picture clock. Offscreen stays silent lips + TTS. Emotion: eleven_v3 tags [crying]/[shouts]/[whispers] + style. ingest now bindShotTake so heard_audio survives QC.",
+      "evidence": "Timeline unit: audio_start equals picture_start. Slice 17.0s: mouth open on 'I did not write the paper.' Emotional takes generated (cry/break/hot). This cut used TTS-to-picture because ingest wiped heard_audio; that wipe is fixed for createEngine().renderEpisode()."
+    },
+    "lighting": {
+      "fixed": true,
+      "how": "One location plate + 'same key light as location plate' in prompts. Establishing/wide when the block location changes. Face CUs get lighting lock in text, not a second location still (identity).",
+      "evidence": "Frames 4.5–40s stay kitchen night (marble, under-cabinet, city windows). 102s is a new banquet/estate interior after the location change, not a dark forest CU."
+    },
+    "coverage": {
+      "fixed": true,
+      "how": "Lint COVERAGE_MIX: ≥1 establishing/wide, ≥1 silent stacked_two when 2+ named people, inserts, not 100% ECU. Two-shots only silent/wides.",
+      "evidence": "Locked 3 establishing + 3 stacked_two + 6 inserts + 12 singles + 6 reaction/listener. Frames: TUESDAY insert, kitchen two-person wide, OTS, banquet OTS."
+    },
+    "captions": {
+      "fixed": true,
+      "how": "CAPTION_STYLE.bandFromTopPct 70–82, wrapCaptionLines 4–8 words / 32 chars, PIL measure + shrink, keepOutBottomPx 200.",
+      "evidence": "VTT lines wrap (e.g. 'Eli Hart, the paper still has a / name.'). Pixel measure on 34.5s and 40.8s: 73.7–79.2%. Founder clipped line is gone. drama-hq-caption-check.jpg at 17.0s shows the full comic line."
+    },
+    "music": {
+      "fixed": true,
+      "how": "ElevenLabs music_v2 + SFX generated once into assets/music. Mix: bed under friction, duck on dialogue, sting on spike, SFX on cutaways.",
+      "evidence": "Library on disk (4 beds, 3 stings, 4 sfx). Mix RMS 0.11 with dialogue peaks; not silence and not sine. romance-under and estate-night are the same byte size (possible API duplicate) — thriller-friction and tension-pad are distinct."
+    },
+    "writing": {
+      "fixed": true,
+      "how": "Punchy public-humiliation lines, mute-readable TUESDAY paper, comic sting on 'I did not write the paper.', COMIC_STING lint per block cluster.",
+      "evidence": "VTT cue 2 at 16.5s is the full comic line. Insert frames at 0.4s and 50s. Block-1/2 variants keep the stun cutaway + 'who signed Tuesday?' button."
+    }
+  },
+  "spend_this_pass_usd": 12.2302,
+  "spend_estimate_cumulative_usd": 48.8402,
+  "residual_usd": 101.1598,
+  "soft_cap_this_pass_usd": 45,
+  "lint_pass": true,
+  "units": "197/197 green",
+  "product_path": "createEngine().renderEpisode() uses assembleEpisodeMp4 (music library or silence, never sine) and heardLanes/nativeAudio.",
+  "takes_summary": {
+    "completed": 21,
+    "needs_review": 9,
+    "needs_review_reason": "transcript_wer_warn on accusation CUs (TTS alignment vs script). Non-blocking; takes stayed cut-eligible.",
+    "emotions": ["stunned", "hot", "break", "cry", "pressing", "unpaid"]
+  },
+  "how_to_run": "npx tsx scripts/live-hq.ts",
+  "not_committed": true
+}

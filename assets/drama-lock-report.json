@@ -1,0 +1,38 @@
+{
+  "ran_at": "2026-09-01T14:50:00.000Z",
+  "slice_path": "assets/drama-lock-slice.mp4",
+  "clean_path": "assets/drama-lock-slice-clean.mp4",
+  "safe_to_record": true,
+  "duration_seconds": 35.6,
+  "bra_extra": {
+    "removed": true,
+    "original_window": "6.50s–9.00s of the 38.2s cut",
+    "what_it_was": "Empty-kitchen I2V invented a headless extra in sheer ivory with a visible bra.",
+    "now": "Jules name-plant cuts to locked Mara CU. No sheer/bra frames on the splice."
+  },
+  "sync_diagnosis": {
+    "cause": "our cut, not the Wan API",
+    "what_we_did": "prepareClip stripped take audio (-an). Mix laid dry ElevenLabs or full-take extract at picture_start while the mouth, timed to the 0.35s generation handle plus Wan preroll, opened ~1–2s later. Editorial in_point was 0.15s; generation handle was 0.35s. mara_who_signed was explicitly heard_audio=tts (zcr ~2700 vs ~400 on native takes).",
+    "original_deltas_voice_then_lips": [
+      { "line": "MARA: Eli, look at Tuesday.", "lane": "native (extract remuxed, not glued to picture)", "voice": 9.7, "mouth": 10.95, "delta_ms": 1250 },
+      { "line": "ELI: I did not write the paper.", "lane": "native (same remux)", "voice": 15.63, "mouth": 16.65, "delta_ms": 1020 },
+      { "line": "MARA: Then say who signed Tuesday.", "lane": "tts dry studio", "voice": 28.32, "mouth": "still closed at 30.35 — whole cue over idle lips", "delta_ms": 2030 }
+    ]
+  },
+  "new_file_deltas": [
+    { "line": "MARA: Eli, look at Tuesday.", "voice": 8.39, "mouth": 8.45, "delta_ms": 60, "within_80ms": true },
+    { "line": "ELI: I did not write the paper.", "voice": 13.98, "mouth": 14.0, "delta_ms": 20, "within_80ms": true },
+    { "line": "MARA: Then say who signed Tuesday.", "voice": null, "mouth": "never opened during the cue", "delta_ms": null, "note": "Dry TTS muted. Would not play a studio read over idle lips. Next product render keeps Wan native on audio-conditioned takes." }
+  ],
+  "product_changes": [
+    "chooseHeardLane keeps native when the take was audio-conditioned, even if STT misses. No TTS over that picture.",
+    "Mix trims native by the same in_point as picture. Never J-cuts onscreen speech before picture_start.",
+    "Editorial HEAD_HANDLE is now 0.35s to match finalizeShotDuration.",
+    "Empty establishing: location plate only, EMPTY ROOM / NO people prompt, invented_people + identity_reject if the take drifts from the empty plate.",
+    "Location stills: no extras."
+  ],
+  "spend_this_pass_usd": 0,
+  "spend_estimate_cumulative_usd": 52.1321,
+  "residual_usd": 97.8679,
+  "not_committed": true
+}

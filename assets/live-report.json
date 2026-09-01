@@ -1,0 +1,274 @@
+{
+  "started_note": "Real Stripe / OpenRouter / ElevenLabs / R2. No mocks on live-cheap or live-gen.",
+  "finished_at": "2026-08-30T13:37:37.182Z",
+  "audio_style": "alibaba_media",
+  "results": [
+    {
+      "id": "U01",
+      "title": "Offline unit + contract suite",
+      "layer": "offline",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "passed": 51,
+        "exit": 0
+      },
+      "ms": 871
+    },
+    {
+      "id": "C01",
+      "title": "Required secrets are present (masked)",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "OPENROUTER_API_KEY": "sk-o…f7bd",
+        "ELEVENLABS_API_KEY": "sk_0…d3c3",
+        "STRIPE_SECRET_KEY": "rk_t…MVJ1",
+        "MEDIA_STORE_URL": "http….dev",
+        "MEDIA_SIGNING_SECRET": "b27a…f01a",
+        "MEDIA_STORE_TOKEN": "5cf7…9ed8",
+        "VITE_SUPABASE_URL": "http…e.co"
+      },
+      "ms": 1
+    },
+    {
+      "id": "C02",
+      "title": "Stripe test API answers",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "http": 200,
+        "livemode": false
+      },
+      "ms": 545
+    },
+    {
+      "id": "C03",
+      "title": "Cloudflare media-store health",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "http": 200,
+        "ok": true
+      },
+      "ms": 394
+    },
+    {
+      "id": "C04",
+      "title": "R2 PUT / signed GET / DELETE",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "signed_get": "https",
+        "bytes": 35
+      },
+      "ms": 2783
+    },
+    {
+      "id": "C05",
+      "title": "OpenRouter key can list models",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "models": 396
+      },
+      "ms": 74
+    },
+    {
+      "id": "C06",
+      "title": "Wan 3.0 is a live video model",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "id": "alibaba/wan-3.0",
+        "supported_durations": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30
+        ],
+        "aspect_ratios": [
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "passthrough": [],
+        "generate_audio": true,
+        "chosen_duration": 4
+      },
+      "ms": 30
+    },
+    {
+      "id": "C07",
+      "title": "ElevenLabs account answers",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "subscription": "active",
+        "tier": "creator"
+      },
+      "ms": 616
+    },
+    {
+      "id": "C08",
+      "title": "Supabase project is reachable",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "url": "https://zdhbmvdprdyqzrmuxwiy.supabase.co",
+        "http": 200,
+        "authenticated": true
+      },
+      "ms": 401
+    },
+    {
+      "id": "C09",
+      "title": "Prior live artifacts still exist",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "01-story-bible.json": 6906,
+        "02-character-still.png": 1125491,
+        "03-voice-preview.mp3": 746102,
+        "04-dialogue.mp3": 31391,
+        "04-dialogue-alignment.json": 3311,
+        "06-wan-15s.mp4": 35268561
+      },
+      "ms": 0
+    },
+    {
+      "id": "C10",
+      "title": "Identity clip 06 is a portrait ~15s container",
+      "layer": "live-cheap",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 15.024,
+        "width": 1080,
+        "height": 1920,
+        "has_audio": true,
+        "black_frames": false
+      },
+      "ms": 13
+    },
+    {
+      "id": "G01",
+      "title": "LLM writes a real episode plan from the stored bible",
+      "layer": "live-gen",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "title": "Kitchen After Midnight — Episode 1: The Receipt",
+        "scenes": 4,
+        "shots": 16
+      },
+      "ms": 39432
+    },
+    {
+      "id": "G02",
+      "title": "ElevenLabs TTS + alignment for the locked line",
+      "layer": "live-gen",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "voice_id": "D6VW…",
+        "duration_seconds": 1.904,
+        "stt": "You knew about this for 3 months."
+      },
+      "ms": 3182
+    },
+    {
+      "id": "G03",
+      "title": "Engine path: fund → lock → TTS → Wan+audio → ingest",
+      "layer": "live-gen",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "job_status": "completed",
+        "audio_style": "alibaba_media",
+        "bytes": 12969210,
+        "probe": {
+          "exists": true,
+          "decodes": true,
+          "duration_seconds": 4.041,
+          "width": 1080,
+          "height": 1920,
+          "has_audio": true,
+          "black_frames": false
+        },
+        "qc": {
+          "pass": true,
+          "reasons": []
+        },
+        "stt": "You knew about this for 3 months.",
+        "stt_error": null,
+        "transcript_matches": true,
+        "audio_conditioning_verified": true,
+        "extracted_audio": "assets/07-wan-audio.mp3"
+      },
+      "ms": 213284
+    },
+    {
+      "id": "G04",
+      "title": "Deterministic render from the ingested clip",
+      "layer": "live-gen",
+      "required": true,
+      "status": "pass",
+      "detail": {
+        "checksum": "0a326575d0578fc87dc0de1daa4ba87a0729f39035c739136f87882b2843720b",
+        "bytes": 12969739
+      },
+      "ms": 40
+    }
+  ],
+  "files": {
+    "09-episode-plan.json": "file:///Users/yacinenedjar/short-drama-maker/assets/09-episode-plan.json",
+    "voice-id.json": "file:///Users/yacinenedjar/short-drama-maker/assets/voice-id.json",
+    "04-dialogue.mp3": "file:///Users/yacinenedjar/short-drama-maker/assets/04-dialogue.mp3",
+    "04-dialogue-alignment.json": "file:///Users/yacinenedjar/short-drama-maker/assets/04-dialogue-alignment.json",
+    "07-wan-audio.mp4": "file:///Users/yacinenedjar/short-drama-maker/assets/07-wan-audio.mp4",
+    "07-wan-audio.json": "file:///Users/yacinenedjar/short-drama-maker/assets/07-wan-audio.json",
+    "08-render.bin": "file:///Users/yacinenedjar/short-drama-maker/assets/08-render.bin",
+    "08-captions.vtt": "file:///Users/yacinenedjar/short-drama-maker/assets/08-captions.vtt"
+  },
+  "required_failed": [],
+  "audio_conditioning_verified": true
+}

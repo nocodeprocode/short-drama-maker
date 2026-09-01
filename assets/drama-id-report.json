@@ -1,0 +1,269 @@
+{
+  "ran_at": "2026-08-31T17:04:02.685Z",
+  "artifact_prefix": "drama-id",
+  "compare_to": "drama-cu-*",
+  "spend_cap_usd": 150,
+  "spend_this_pass_usd": 1.3669,
+  "spend_estimate_cumulative_usd": 5.7669,
+  "lint_pass": true,
+  "shot_count": 12,
+  "durations": [
+    4.8125,
+    5.8125,
+    2.5,
+    6.8125,
+    4.8125,
+    2.5,
+    5.8125,
+    2.5,
+    6.8125,
+    2.5,
+    4.8125,
+    4.8125
+  ],
+  "first_shot_function": "hook_cu",
+  "last_shot_function": "button_cu",
+  "cut_to_in_camera": false,
+  "has_offscreen": true,
+  "generated": [
+    {
+      "function": "hook_cu",
+      "audio_role": "silent",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 5.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-hook_cu-1.mp4",
+      "cost": 0.15246,
+      "first_frame_kind": "object",
+      "first_frame_qc": "ok",
+      "prompt": "OBJECT INSERT. Image-to-video from the first frame. | NO people. NO faces. NO second person. NO couple. NO two-shot. NO portrait. NO hands unless the first frame already shows only a hand on the object. | Only the evidence object. Keep the "
+    },
+    {
+      "function": "reaction",
+      "audio_role": "silent",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-reaction-3.mp4",
+      "cost": 0.12222,
+      "first_frame_kind": "cu",
+      "first_frame_qc": "ok",
+      "prompt": "TIGHT CLOSE-UP SINGLE. Fill the frame with one face. Crop chest-up or tighter. | ONE face only: Eli Hart. | FORBIDDEN: second person, couple, two-shot, over-the-shoulder, wide master, both people, marble island two-shot. | Background only, "
+    },
+    {
+      "function": "accusation_cu",
+      "audio_role": "onscreen",
+      "status": "needs_review",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.041,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      },
+      "file": "drama-id-accusation_cu-2.mp4",
+      "cost": 0.425,
+      "first_frame_kind": "cu",
+      "first_frame_qc": "ok",
+      "prompt": "TIGHT CLOSE-UP SINGLE. Fill the frame with one face. Crop chest-up or tighter. | ONE face only: Mara Voss. | FORBIDDEN: second person, couple, two-shot, over-the-shoulder, wide master, both people, marble island two-shot. | Background only,"
+    },
+    {
+      "function": "phone_ui",
+      "audio_role": "offscreen",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-phone_ui-9.mp4",
+      "cost": 0.12222,
+      "first_frame_kind": "object",
+      "first_frame_qc": "ok",
+      "prompt": "OBJECT INSERT. Image-to-video from the first frame. | NO people. NO faces. NO second person. NO couple. NO two-shot. NO portrait. NO hands unless the first frame already shows only a hand on the object. | Only the evidence object. Keep the "
+    },
+    {
+      "function": "button_cu",
+      "audio_role": "onscreen",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.041,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      },
+      "file": "drama-id-button_cu-12.mp4",
+      "cost": 0.425,
+      "first_frame_kind": "cu",
+      "first_frame_qc": "ok",
+      "prompt": "TIGHT CLOSE-UP SINGLE. Fill the frame with one face. Crop chest-up or tighter. | ONE face only: Mara Voss. | FORBIDDEN: second person, couple, two-shot, over-the-shoulder, wide master, both people, marble island two-shot. | Background only,"
+    }
+  ],
+  "cu_stills": [
+    {
+      "name": "Mara Voss",
+      "file": "drama-id-cu-mara-voss.png",
+      "kind": "cu"
+    },
+    {
+      "name": "Eli Hart",
+      "file": "drama-id-cu-eli-hart.png",
+      "kind": "cu"
+    }
+  ],
+  "named_cast": [
+    "Mara Voss",
+    "Eli Hart",
+    "Jules Renner"
+  ],
+  "first_line": null,
+  "button_line": "Then whose name is on it?",
+  "shipped": [
+    {
+      "function": "hook_cu",
+      "audio_role": "silent",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 5.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-hook_cu-1.mp4",
+      "cost": 0.15246,
+      "first_frame_kind": "object",
+      "first_frame_qc": "ok",
+      "prompt": "OBJECT INSERT. Image-to-video from the first frame. | NO people. NO faces. NO second person. NO couple. NO two-shot. NO portrait. NO hands unless the first frame already shows only a hand on the object. | Only the evidence object. Keep the "
+    },
+    {
+      "function": "reaction",
+      "audio_role": "silent",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-reaction-3.mp4",
+      "cost": 0.12222,
+      "first_frame_kind": "cu",
+      "first_frame_qc": "ok",
+      "prompt": "TIGHT CLOSE-UP SINGLE. Fill the frame with one face. Crop chest-up or tighter. | ONE face only: Eli Hart. | FORBIDDEN: second person, couple, two-shot, over-the-shoulder, wide master, both people, marble island two-shot. | Background only, "
+    },
+    {
+      "function": "phone_ui",
+      "audio_role": "offscreen",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.042,
+        "width": 720,
+        "height": 1280,
+        "has_audio": false,
+        "black_frames": false
+      },
+      "file": "drama-id-phone_ui-9.mp4",
+      "cost": 0.12222,
+      "first_frame_kind": "object",
+      "first_frame_qc": "ok",
+      "prompt": "OBJECT INSERT. Image-to-video from the first frame. | NO people. NO faces. NO second person. NO couple. NO two-shot. NO portrait. NO hands unless the first frame already shows only a hand on the object. | Only the evidence object. Keep the "
+    },
+    {
+      "function": "button_cu",
+      "audio_role": "onscreen",
+      "status": "completed",
+      "probe": {
+        "exists": true,
+        "decodes": true,
+        "duration_seconds": 4.041,
+        "width": 720,
+        "height": 1280,
+        "has_audio": true,
+        "black_frames": false
+      },
+      "file": "drama-id-button_cu-12.mp4",
+      "cost": 0.425,
+      "first_frame_kind": "cu",
+      "first_frame_qc": "ok",
+      "prompt": "TIGHT CLOSE-UP SINGLE. Fill the frame with one face. Crop chest-up or tighter. | ONE face only: Mara Voss. | FORBIDDEN: second person, couple, two-shot, over-the-shoulder, wide master, both people, marble island two-shot. | Background only,"
+    }
+  ],
+  "first_frame_kinds": [
+    {
+      "function": "hook_cu",
+      "kind": "object",
+      "qc": "ok"
+    },
+    {
+      "function": "reaction",
+      "kind": "cu",
+      "qc": "ok"
+    },
+    {
+      "function": "accusation_cu",
+      "kind": "cu",
+      "qc": "ok"
+    },
+    {
+      "function": "phone_ui",
+      "kind": "object",
+      "qc": "ok"
+    },
+    {
+      "function": "button_cu",
+      "kind": "cu",
+      "qc": "ok"
+    }
+  ],
+  "identity_vs_drama_cu": {
+    "better": [
+      "Button is an MCU of Mara (scar, auburn bun, white turtleneck), not the wide full-body single in drama-cu-button_cu-11.mp4.",
+      "phone_ui is a phone on a stand (John Doe / 10:30 AM), not Jules's face as in drama-cu-phone_ui-9.mp4.",
+      "Hook stays an object receipt. Accusation is one Mara, same scar/wardrobe as the cropped still.",
+      "Process first_frame_kind matched pixels: object/object/cu/cu/cu."
+    ],
+    "not_locked": [
+      "Eli reaction is a tight single, but wardrobe drifted to a navy suit/tie vs the henley CU still. Hair/face also drifted. Face-first_frame did not lock identity.",
+      "Mara CU crop this pass was waist-up (42% window). Tightened to 28% in code after the run; do not claim a tight face crop on the cached drama-id-cu-mara-voss.png.",
+      "phone_ui is an object, but a generic lock-screen plate — not Jules's desk pad / 41A. Seedream also wrote prompt-like text on the still.",
+      "accusation_cu went needs_review on duration (4.04s vs ~5.8s hint), not identity."
+    ]
+  },
+  "remaining_gaps": [
+    "Identity lock is framing-correct, not likeness-correct. Eli still drifts after CU first_frame.",
+    "Pixel face-count QC is still a process heuristic (first_frame_kind), not a detector",
+    "HeyGen mute-mouth fallback not in catalog"
+  ],
+  "how_to_run": "LIVE_DRAMA_REPLAN=0 npm run test:live-drama"
+}

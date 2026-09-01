@@ -1,0 +1,70 @@
+{
+  "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v3.mp4",
+  "sha256": "0cb8503e37785cc7b75baaea132448d9aa918525da4472715b347f562b904717",
+  "duration_seconds": 16.233,
+  "spend_this_pass_usd": 1.06,
+  "spend_estimate_cumulative_usd": 54.98,
+  "residual_usd": 95.02,
+  "modest_mara_still": "/Users/yacinenedjar/short-drama-maker/assets/drama-id-cu-mara-voss-modest.png",
+  "takes": [
+    {
+      "function": "hook_cu",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Mara Voss"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Eli Hart"
+    },
+    {
+      "function": "name_plant",
+      "speaker": "Jules Renner"
+    },
+    {
+      "function": "establishing",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "stacked_two",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Mara Voss",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v3-cu-mara-voss",
+      "cost": 0.51,
+      "try": 1
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Eli Hart",
+      "heard_audio": "native",
+      "extra_ref_count": 0,
+      "first_frame": "drama-lock-v3-cu-eli-hart",
+      "cost": 0.51,
+      "try": 1
+    },
+    {
+      "function": "reaction",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "insert_evidence",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "accusation_cu",
+      "skipped": "v3_omit"
+    },
+    {
+      "function": "button_cu",
+      "skipped": "v3_omit"
+    }
+  ],
+  "vtt": "WEBVTT\n\n1\n00:00:05.300 --> 00:00:07.280\nMARA: Eli, look at Tuesday.\n\n2\n00:00:11.038 --> 00:00:13.718\nELI: I did not write the paper.\n"
+}

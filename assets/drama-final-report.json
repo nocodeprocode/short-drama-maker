@@ -1,0 +1,310 @@
+{
+  "ran_at": "2026-08-31T23:18:52.640Z",
+  "artifact_prefix": "drama-final",
+  "product_path": "createEngine().planEpisode + generateDialogue + generateVideo + renderEpisode",
+  "identity_ref_policy": "face_only",
+  "cu_model": "alibaba/wan-3.0",
+    "spend_this_pass_usd": 1.62,
+    "spend_estimate_cumulative_usd": 23.95,
+  "lint_pass": true,
+  "shot_count": 12,
+  "scene_count": 7,
+  "scenes": [
+    {
+      "position": 1,
+      "kind": "evidence",
+      "shot_count": 1
+    },
+    {
+      "position": 2,
+      "kind": "dialogue",
+      "shot_count": 3
+    },
+    {
+      "position": 3,
+      "kind": "evidence",
+      "shot_count": 1
+    },
+    {
+      "position": 4,
+      "kind": "dialogue",
+      "shot_count": 2
+    },
+    {
+      "position": 5,
+      "kind": "evidence",
+      "shot_count": 2
+    },
+    {
+      "position": 6,
+      "kind": "dialogue",
+      "shot_count": 2
+    },
+    {
+      "position": 7,
+      "kind": "button",
+      "shot_count": 1
+    }
+  ],
+  "edit_decisions": {
+    "container": "mp4",
+    "scenes": [
+      {
+        "index": 0,
+        "kind": "evidence",
+        "shot_ids": [
+          "78efce13-e518-46ef-b0f5-80ffc154fd60"
+        ]
+      },
+      {
+        "index": 1,
+        "kind": "dialogue",
+        "shot_ids": [
+          "042ebe32-5a41-44ee-b516-96d6ff68a808",
+          "a82beadb-367a-4b44-9790-ea837cc75f93",
+          "528a6a0b-724d-4d24-902e-8666b55ac9b2"
+        ]
+      },
+      {
+        "index": 2,
+        "kind": "evidence",
+        "shot_ids": [
+          "dfdc9029-1200-43e0-b4f5-d8f8d516a247"
+        ]
+      },
+      {
+        "index": 3,
+        "kind": "dialogue",
+        "shot_ids": [
+          "e862b928-a497-4a78-8fa1-35cc9a5e17a3",
+          "7ec81df8-45d1-4472-a293-0a35ae971604"
+        ]
+      },
+      {
+        "index": 4,
+        "kind": "evidence",
+        "shot_ids": [
+          "250923fc-1cca-4260-9f1b-1437bee0bf82",
+          "aa74fcf6-93b8-442d-97db-eb1580a02271"
+        ]
+      },
+      {
+        "index": 5,
+        "kind": "dialogue",
+        "shot_ids": [
+          "2c919405-8611-45e1-a2a4-bf239b109622",
+          "220b48ab-a131-4e3c-91d2-4e6b39fc1237"
+        ]
+      },
+      {
+        "index": 6,
+        "kind": "button",
+        "shot_ids": [
+          "05be7c3a-fe0a-4f41-8d00-0c8362ae2ed9"
+        ]
+      }
+    ],
+    "shots": [
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 0,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 2.2,
+        "audio_start_seconds": 1.35,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "lcut",
+        "picture_start_seconds": 5.841,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 8.341000000000001,
+        "audio_start_seconds": 8.341000000000001,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 12.382000000000001,
+        "audio_start_seconds": 12.382000000000001,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 16.382,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 18.882,
+        "audio_start_seconds": 18.482000000000003,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "cut",
+        "picture_start_seconds": 25.382,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "evidence",
+        "transition_in": "lcut",
+        "picture_start_seconds": 27.482000000000003,
+        "audio_start_seconds": 27.482000000000003,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "cut",
+        "picture_start_seconds": 31.482000000000003,
+        "audio_start_seconds": null,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "dialogue",
+        "transition_in": "jcut",
+        "picture_start_seconds": 33.982,
+        "audio_start_seconds": 33.582,
+        "hold_tail_seconds": 0
+      },
+      {
+        "scene_kind": "button",
+        "transition_in": "cut",
+        "picture_start_seconds": 40.482,
+        "audio_start_seconds": 40.482,
+        "hold_tail_seconds": 1.2
+      }
+    ]
+  },
+  "cut": "drama-final-cut.mp4",
+  "captions": "drama-final-captions.vtt",
+  "container": "mp4",
+  "duration_seconds": 45.03,
+  "button_count": 1,
+  "production_ready": true,
+  "production_ready_note": "ReelShort grammar recut via createEngine().renderEpisode(): hook smash by 3s, hold caps, henley Eli, denser bed, mid-band captions, 5s button.",
+  "hook_in_cut": true,
+  "button_in_cut": true,
+  "reused_takes": 12,
+  "generated_takes": 0,
+  "first_line": "I wasn't going to say anything tonight.",
+  "button_line": "Then whose name is on it?",
+  "cut_to_in_camera": false,
+  "qc": {
+    "lint_pass": true,
+    "single_button": true,
+    "duration_window": true,
+    "wan_internal_cut_no_mini_failover": true,
+    "slideshow": false
+  },
+  "takes": [
+    {
+      "function": "hook_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "phone_ui",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "accusation_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    },
+    {
+      "function": "button_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true,
+      "extra_ref_count": 0
+    }
+  ],
+  "how_to_run": "LIVE_DRAMA_REPLAN=0 DRAMA_IDENTITY_REF_POLICY=face_only npm run test:live-final",
+    "how_user_produces": "Pay → analyze → lock cast → planEpisode → generateDialogue → generateVideo → render_episode (createEngine / autopilot).",
+  "remaining_gaps": [
+    "AI pores/lighting vs $200k live-action ReelShort.",
+    "Some CUs still read lens-adjacent (model default), not a two-shot couple.",
+    "Bed/sting are dense deterministic cues, not a licensed thriller cue sheet.",
+    "This Homebrew ffmpeg has no libass/drawtext; captions burn via PIL overlay plates.",
+    "Studio final_url play-through needs a signed-in episode; file:// is blocked in the browser tool."
+  ]
+}

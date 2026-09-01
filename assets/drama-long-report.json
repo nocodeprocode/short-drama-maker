@@ -1,0 +1,278 @@
+{
+  "ran_at": "2026-09-01T01:23:46.929Z",
+  "sku": "900_1080",
+  "length_factor": 15,
+  "shot_budget": {
+    "min": 120,
+    "max": 200
+  },
+  "plan": {
+    "blocks": 14,
+    "shots": 140,
+    "duration_hint_seconds": 838,
+    "mid_reprice_index": 7,
+    "lint_pass": true
+  },
+  "slice_blocks": [
+    0,
+    1,
+    2
+  ],
+  "slice_shots": 30,
+  "slice_path": "drama-long-slice.mp4",
+  "duration_seconds": 159.13,
+  "container": "mp4",
+  "identity_ref_policy": "face_only",
+  "cu_model": "alibaba/wan-3.0",
+  "spend_this_pass_usd": 12.6581,
+  "spend_estimate_cumulative_usd": 36.6081,
+  "reused_takes": 7,
+  "generated_takes": 23,
+  "not_a_full_15_min_render": true,
+  "honest_note": "Tooling + a 2–4 min consecutive-block slice inside a 15-min plan. Full 15-min picture was not generated.",
+  "takes": [
+    {
+      "function": "hook_cu",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "insert_evidence",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "listener_hold",
+      "model": "bytedance/seedance-2.0-mini",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "block_button",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "hook_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "insert_evidence",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "listener_hold",
+      "model": "bytedance/seedance-2.0-mini",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "block_button",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "hook_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "reaction",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "phone_ui",
+      "model": "reused",
+      "reused": true,
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "needs_review",
+      "qc": [
+        "internal_cut"
+      ],
+      "cut_eligible": true
+    },
+    {
+      "function": "listener_hold",
+      "model": "bytedance/seedance-2.0-mini",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "accusation_cu",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    },
+    {
+      "function": "block_button",
+      "model": "alibaba/wan-3.0",
+      "reused": false,
+      "status": "completed",
+      "qc": [],
+      "cut_eligible": true
+    }
+  ],
+  "how_to_run": "DRAMA_IDENTITY_REF_POLICY=face_only npm run test:live-long"
+}

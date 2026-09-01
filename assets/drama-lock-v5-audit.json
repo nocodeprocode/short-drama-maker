@@ -1,0 +1,92 @@
+{
+  "ship": false,
+  "reason": "Frame-audit failed. Do not treat this as the watch file.",
+  "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v5-audit-fail.mp4",
+  "watch_file": null,
+  "do_not_overwrite_open_file": "assets/drama-lock-slice.mp4 was not touched",
+  "duration_seconds": 16.3,
+  "sha256": "a0d561d0a9acde8992ea9f9cc1e75ae54e8ffc21e9b2f1a8ba3ece90d7c3adcc",
+  "lines": [
+    {
+      "line": "MARA: Eli, look at Tuesday.",
+      "voice_onset_s": 1.02,
+      "first_clear_mouth_open_s": 2.12,
+      "lag_ms": 1100,
+      "limit_ms": 80,
+      "sync_band": "fail",
+      "pass": false,
+      "extra_person": false,
+      "chest_skin": 0.258
+    },
+    {
+      "line": "ELI: I did not write the paper.",
+      "voice_onset_s": 10.8,
+      "first_clear_mouth_open_s": 10.9,
+      "lag_ms": 100,
+      "limit_ms": 150,
+      "sync_band": "150ms",
+      "pass": false,
+      "extra_person": true,
+      "chest_skin": 0.472
+    }
+  ],
+  "frames": [
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f000.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f005.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f010.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f015.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f020.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f025.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f030.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f035.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f040.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f045.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f050.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f055.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f060.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f065.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f070.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f075.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f080.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f085.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f090.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f095.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f100.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f105.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f110.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f115.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f120.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f125.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f130.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f135.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f140.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f145.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f150.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f155.png",
+    "/Users/yacinenedjar/short-drama-maker/assets/lock-v5-tmp/audit/frames/f160.png"
+  ],
+  "second_person": true,
+  "sheer_or_bra": false,
+  "detector_after_fix": {
+    "mara": false,
+    "eli": true
+  },
+  "eli_used": "assets/lock-v5-tmp/eli-try2.mp4",
+  "mara_used": "assets/lock-v5-tmp/mara-try1.mp4",
+  "spend_this_pass_usd": 2.59,
+  "spend_estimate_cumulative_usd": 61.81,
+  "residual_usd": 88.19,
+  "soft_cap_usd": 20,
+  "visual_truth": {
+    "mara_take": "assets/lock-v5-tmp/mara-try1.mp4 — single face, modest ivory turtleneck, take voice 3.38s / mouth 3.4s",
+    "eli_takes": "4 Wan tries, all single-face henley CUs on visual inspect. Detector false-positived invented_people (night window vs still).",
+    "muxed_audio_onsets_s": [0.65, 9.66, 10.8, 15.84],
+    "mara_mux": "Mouth open on picture ~8.5–8.7s. First strong voice after plants ~9.66s (~1s late vs mouth). Auto-audit measured the name-plant at 1.02s — wrong window.",
+    "eli_mux": "Auto-audit 10.8 vs 10.9 (100ms) but flagged extra_person. Visual: one face. 10.8 frame also looked like the still/plant, so Eli mux timing is not trusted.",
+    "loops": 2,
+    "stopped": "one regen+mux loop after first fail, then stop"
+  },
+  "product": {
+    "note": "v4 Mara bytes were not on disk so Mara was regen once. Eli 3+1 Wan tries. Muxed saved takes after visual override. Audit still fails. drama-lock-v5.mp4 was not written."
+  }
+}

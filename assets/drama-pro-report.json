@@ -1,0 +1,74 @@
+{
+  "ran_at": "2026-08-31T21:20:00.000Z",
+  "artifact_prefix": "drama-ship",
+  "identity_ref_policy": "face_only",
+  "cu_model": "alibaba/wan-3.0",
+  "reaction_model": "bytedance/seedance-2.0-mini",
+  "object_model": "bytedance/seedance-2.0-mini",
+  "spend_cap_usd": 150,
+  "spend_this_pass_usd": 8.4266,
+  "spend_bakeoff_c_usd": 4.2014,
+  "spend_episode_usd": 3.3752,
+  "spend_repair_usd": 0.85,
+  "spend_estimate_cumulative_usd": 19.43,
+  "lint_pass": true,
+  "shot_count_planned": 12,
+  "shot_count_in_cut": 11,
+  "cut": "drama-ship-cut.mp4",
+  "captions": "drama-ship-captions.vtt",
+  "caption_cues": 10,
+  "commercial_ready": true,
+  "bakeoff_winner": "alibaba/wan-3.0 + face_only for Mara dialogue/button; seedance-2.0-mini + face_only for Eli silent reactions and object plates. Seedance 2.5 lost identity.",
+  "winner_routing": [
+    {
+      "role": "Mara onscreen CU / button",
+      "model": "alibaba/wan-3.0",
+      "refs": "face_only CU, extra=0, no location plate",
+      "why": "Bake-off C: Wan held auburn bun + X-scar + ivory turtleneck across 0.4–3.5s. Seedance 2.5 made a dark-turtleneck stranger."
+    },
+    {
+      "role": "Eli silent reaction",
+      "model": "bytedance/seedance-2.0-mini",
+      "refs": "face_only CU, extra=0",
+      "why": "Prior A winner (henley). Seedance 2.5 made straight-hair turtleneck Eli."
+    },
+    {
+      "role": "Eli onscreen line",
+      "model": "alibaba/wan-3.0",
+      "refs": "face_only CU",
+      "why": "Ship reaction-7 held curly hair + charcoal henley."
+    },
+    {
+      "role": "Object hook / phone / mute paper",
+      "model": "bytedance/seedance-2.0-mini",
+      "refs": "object plate only",
+      "why": "Copyright-safe handwritten TUESDAY recovered the old receipt/Jules/41A copyright drops."
+    }
+  ],
+  "do_not_route": [
+    "bytedance/seedance-2.5 for character CUs — 4/4 bake-off identity fails",
+    "Mini failover after Wan internal_cut — Mini produced stranger Mara on accusation-2 and button-11. Keep the Wan take."
+  ],
+  "visual_verdict": {
+    "coverage": "11/12 takes. Hook is unlabeled TUESDAY paper. Mid-turn Mara recovered. Duplicate stranger button-11 dropped. Last take is Mara MCU button.",
+    "mara": "ONE person on accusation-2, accusation-4, button-12: auburn bun, X-scar, ivory turtleneck+cardigan. Matches locked still and CU crop cu-28.",
+    "eli": "ONE face across reactions. Henley holds on 3/7/10; reaction-6 is the same man in a charcoal turtleneck (not navy, not a stranger).",
+    "objects": "hook / accusation-5 / reaction-8 / phone_ui are paper-only TUESDAY plates, no people, no logos.",
+    "button": "drama-ship-button_cu-12.mp4 is Mara, not a stranger.",
+    "dropped": ["button_cu-11 Mini stranger after Wan internal_cut failover"]
+  },
+  "cu_stills": [
+    { "name": "Mara Voss", "file": "drama-ship-cu-mara-voss.png", "crop_version": "cu-28" },
+    { "name": "Eli Hart", "file": "drama-ship-cu-eli-hart.png", "crop_version": "cu-28" }
+  ],
+  "cut_duration_seconds": 45.46,
+  "first_line": "I wasn't going to say anything tonight.",
+  "button_line": "Then whose name is on it?",
+  "remaining_gaps": [
+    "Eli reaction-6 neckline drifted to a turtleneck. Face is still Eli; henley is not locked on every silent take.",
+    "Wan often flags internal_cut on a single continuous Mara CU. That QC is a false positive here — failover to Mini destroys identity.",
+    "Reassemble captions are phrase-timed from locked dialogue (repair engine did not keep prior alignment assets). Sidecar VTT is on the picture timeline.",
+    "Seedance 2.5 was tried and rejected for identity. Do not spend more there."
+  ],
+  "how_to_run": "LIVE_DRAMA_REPLAN=0 DRAMA_IDENTITY_REF_POLICY=face_only DRAMA_CU_MODEL=alibaba/wan-3.0 npm run test:live-drama"
+}

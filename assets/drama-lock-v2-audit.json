@@ -1,0 +1,58 @@
+{
+  "ship": false,
+  "reason": "Frame audit failed. Do not watch this as the fix.",
+  "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v2.mp4",
+  "sha256": "91fa79e9078a9146b06cc38969f2b24e0c990b6a28648c9719f9afa7b8c25014",
+  "md5": "49f248c5d6195122c2f6779bf176607d",
+  "duration_seconds": 21.267,
+  "size_bytes": 4475429,
+  "slate": "0.5s LOCK V2 at t=0 (f001). Different file than the 35.6s / 38.2s cuts.",
+  "spend_this_pass_usd": 1.79,
+  "spend_estimate_cumulative_usd": 53.92,
+  "residual_usd": 96.08,
+  "soft_cap_usd": 20,
+  "takes_new": [
+    {
+      "function": "accusation_cu",
+      "speaker": "Mara Voss",
+      "first_frame": "drama-id-cu-mara-voss.png via drama-lock-v2-cu-mara-voss",
+      "heard_audio": "native",
+      "cost_usd": 0.51,
+      "audit": "FAIL",
+      "voice_onset_s": 5.3,
+      "first_mouth_open_s": 7.3,
+      "lag_ms": 2000,
+      "limit_ms": 80,
+      "wardrobe": "locked ivory still still reads sheer / undergarment line"
+    },
+    {
+      "function": "accusation_cu",
+      "speaker": "Eli Hart",
+      "first_frame": "drama-id-cu-eli-hart.png via drama-lock-v2-cu-eli-hart",
+      "heard_audio": "native",
+      "cost_usd": 0.51,
+      "audit": "FAIL",
+      "voice_onset_s": 11.5,
+      "mouth": "closed / idle at 11.8s and 12.2s while caption is up",
+      "invented_extra": "ghost / double-exposure figure at CU start (~11.0–11.3s, f023, eli_01)",
+      "lag_ms": ">80"
+    },
+    {
+      "function": "button_cu",
+      "speaker": "Mara Voss",
+      "heard_audio": "native",
+      "cost_usd": 0.51,
+      "audit": "FAIL",
+      "voice_onset_s": 18.0,
+      "ghosting": "double face at take start (mara2_01 / mara2_03)",
+      "mouth_open_s": 17.8
+    }
+  ],
+  "omitted": ["establishing", "stacked_two", "hook_cu", "reaction", "insert_evidence", "Then say who signed Tuesday"],
+  "name_plants": ["Mara Voss", "Eli Hart", "Jules Renner"],
+  "copied_old_dialogue_mp4s": false,
+  "kitchen_wide": false,
+  "frames_dir": "assets/drama-lock-v2-frames/",
+  "mouth_dir": "assets/drama-lock-v2-mouth/",
+  "waveform": "assets/drama-lock-v2-audio/waveform-0.1s.json"
+}
