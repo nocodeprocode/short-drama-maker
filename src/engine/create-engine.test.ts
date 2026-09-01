@@ -5,6 +5,7 @@ import { DuplicateStripeEventError } from "./ledger/budget.ts";
 import { createEngine, RenderIncompleteError } from "./create-engine.ts";
 import { RenderFailedError } from "./media/render.ts";
 import type { MuxAuditFn } from "./media/mux-audit.ts";
+import type { TakeAnalysis } from "./pipeline/take-analysis.ts";
 import { buildEpisodeVtt, renderEpisodeBytes, type RenderFn } from "./media/render.ts";
 import { concatBytes, decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
 import type { AlignmentTrack, EpisodePlan, StoryBible, VoiceCandidate } from "./domain.ts";
@@ -597,6 +598,88 @@ describe("engine phase 0", () => {
     expect(rendered.episode.status).toBe("complete");
     expect(app.store.shots.get(first.id)?.selected_generation_id).toBeTruthy();
     expect(app.store.shots.get(first.id)?.selected_generation_id).not.toBe(takeId);
+  });
+
+  it("drops a blocked take, spends one more attempt on it, and cuts with the best clean take", async () => {
+    let calls = 0;
+    const app = engine({
+      analyze: async (input) => {
+        calls += 1;
+        const base: TakeAnalysis = {
+          version: 2,
+          duration_seconds: 5,
+          has_audio: true,
+          settle_in_seconds: 0.4,
+          settle_hop_seconds: 0.1,
+          settle_diffs: [],
+          mouth_open_seconds: 1.2,
+          voice_onset_seconds: 1.22,
+          sync_lag_ms: 20,
+          viseme_pad_seconds: 0,
+          internal_cut_count: 0,
+          second_body: false,
+          chest_skin_fraction: 0.05,
+          modest_reference_fraction: 0.05,
+          sheer_or_bra: false,
+          face_similarity: null,
+          face_count: null,
+          measured_at: `t${calls}`,
+        };
+        // The very first dialogue take of the run grows a second body; the retry is clean.
+        if (input.dialogueCu && calls === 1) return { ...base, second_body: true };
+        return base;
+      },
+    });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_1",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const analyzed = await app.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of analyzed.characters) {
+      await app.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    }
+    const episode = await app.createEpisode({ owner_id: "user-1", series_id: series.id, episode_number: 1, title: "You Knew" });
+    const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    const dialogue = planned.shots.find((shot) => shot.shot_data.dialogue && shot.shot_data.audio_role !== "offscreen")!;
+    await app.generateDialogue({ owner_id: "user-1", shot_id: dialogue.id });
+    const { job } = await app.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
+    await app.tick();
+
+    const first = app.getJob(job.id)!;
+    expect(first.status).toBe("needs_review");
+    expect(first.result_metadata.take_blockers).toContain("invented_people");
+    expect(typeof first.result_metadata.auto_regenerated_job_id).toBe("string");
+    const retryId = String(first.result_metadata.auto_regenerated_job_id);
+    await app.tick();
+    const retry = app.getJob(retryId)!;
+    expect(retry.status).toBe("completed");
+    expect(retry.result_metadata.take_blockers).toEqual([]);
+
+    const shot = app.store.shots.get(dialogue.id)!;
+    expect(shot.shot_data.identity_reject).toBe(false);
+    expect(shot.selected_generation_id).toBe(retry.result_metadata.asset_id);
+
+    // Force the stale (blocked) take back onto the shot; the cut must still pick the clean one.
+    app.store.shots.set(dialogue.id, { ...shot, selected_generation_id: String(first.result_metadata.asset_id) });
+    for (const other of planned.shots) {
+      if (other.id !== dialogue.id) await app.generateVideo({ owner_id: "user-1", shot_id: other.id });
+    }
+    await app.tick();
+    const rendered = await app.renderEpisode({ owner_id: "user-1", episode_id: episode.id });
+    expect(rendered.episode.status).toBe("complete");
+    expect(app.store.shots.get(dialogue.id)?.selected_generation_id).toBe(retry.result_metadata.asset_id);
+    const manifestShot = rendered.episode.render_manifest?.shots.find((row) => row.shot_id === dialogue.id);
+    expect(manifestShot?.in_point_seconds).toBe(0.4);
   });
 
   it("refuses to ship an episode around an identity_reject take unless the caller allows a partial cut", async () => {

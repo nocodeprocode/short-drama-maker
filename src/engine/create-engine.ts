@@ -54,7 +54,7 @@ import {
 } from "./pipeline/wardrobe.ts";
 import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
 import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
-import { analyzeTake, scoreTake } from "./pipeline/take-analysis.ts";
+import { analyzeTake, pickBestTake, scoreTake, type TakeAnalysis, type TakeVerdict } from "./pipeline/take-analysis.ts";
 import { wordErrorRate } from "./media/qc.ts";
 import { objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
 import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
@@ -100,6 +100,10 @@ export type EngineDeps = {
   render?: RenderFn;
   /** Override the post-mux audit gate (tests). Defaults to the ffmpeg frame audit. */
   audit?: MuxAuditFn;
+  /** Spend another attempt immediately when a take is dropped at ingest. Default true. */
+  autoRegenerate?: boolean;
+  /** Override the per-take measurement (tests). Defaults to the ffmpeg take analysis. */
+  analyze?: typeof analyzeTake;
 };
 
 export type StripeWebhookInput = {
@@ -151,6 +155,8 @@ export function createEngine(deps: EngineDeps = {}) {
   const identityRefPolicy = resolveIdentityRefPolicy(deps.identityRefPolicy);
   const render = deps.render ?? renderEpisodeBytes;
   const audit = deps.audit ?? auditMux;
+  const autoRegenerate = deps.autoRegenerate ?? true;
+  const measureTake = deps.analyze ?? analyzeTake;
   const clock = deps.clock ?? systemClock();
   const ids = deps.ids ?? cryptoIds();
   store.dailyCap = deps.dailyCap ?? DEFAULT_DAILY_SPEND_CAP;
@@ -2066,7 +2072,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const stillBody = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
     const modestId = shot.shot_data.modest_still_asset_id ?? (await modestStillForShot(shot));
     const modestBody = modestId ? (await assets.get(modestId).catch(() => null))?.body ?? null : null;
-    const analysis = await analyzeTake({
+    const analysis = await measureTake({
       video: downloaded.bytes,
       still: stillBody,
       modestStill: modestBody,
@@ -2161,25 +2167,102 @@ export function createEngine(deps: EngineDeps = {}) {
       });
     }
 
+    // Every take carries its own measurements so the cut can rank all takes of a
+    // shot, not just the last one written onto shot_data.
+    const takeRecord = {
+      asset_id: asset.id,
+      qc,
+      take_analysis: analysis,
+      take_score: verdict.score,
+      take_blockers: verdict.blockers,
+      take_warnings: verdict.warnings,
+    };
+
     if (blockingQcReasons(qc.reasons).length > 0 || !qc.pass) {
       current = transitionJob(current, "needs_review", iso(clock), {
-        result_metadata: { asset_id: asset.id, qc },
+        result_metadata: takeRecord,
         actual_cost: status.actual_cost,
       });
       store.jobs.set(job.id, current);
       if (!dropTake) bindShotTake(store.shots.get(shot.id)!, asset.id, "needs_review");
       settle(current, status.actual_cost ?? job.estimated_cost);
+      if (dropTake) await autoRegenerateAfterDrop(current, shot);
       return current;
     }
 
     current = transitionJob(current, "completed", iso(clock), {
-      result_metadata: { asset_id: asset.id, qc },
+      result_metadata: takeRecord,
       actual_cost: status.actual_cost ?? job.estimated_cost,
     });
     store.jobs.set(job.id, current);
-    bindShotTake(store.shots.get(shot.id)!, asset.id, "complete");
+    const accepted = store.shots.get(shot.id)!;
+    store.shots.set(accepted.id, {
+      ...accepted,
+      status: "complete",
+      selected_generation_id: asset.id,
+      shot_data: { ...accepted.shot_data, identity_reject: false },
+    });
     settle(current, status.actual_cost ?? job.estimated_cost);
     return current;
+  }
+
+  /**
+   * A dropped take (stranger, extra body, sheer wardrobe, speech inside the
+   * morph) is not something a reviewer can approve, so spend one more attempt
+   * on it right away while retries and budget remain. Budget or cap errors
+   * leave the shot in review for a human instead of failing the ingest.
+   */
+  async function autoRegenerateAfterDrop(job: GenerationJob, shot: Shot) {
+    if (!autoRegenerate) return;
+    const terminalAttempts = [...store.jobs.values()].filter(
+      (row) => row.shot_id === shot.id && row.job_type === "video" && isTerminal(row.status),
+    ).length;
+    if (terminalAttempts >= RETRY_CAP) return;
+    try {
+      const next = await regenerateShot({ owner_id: job.owner_id, shot_id: shot.id });
+      store.jobs.set(job.id, {
+        ...store.jobs.get(job.id)!,
+        result_metadata: { ...store.jobs.get(job.id)!.result_metadata, auto_regenerated_job_id: next.job.id },
+        updated_at: iso(clock),
+      });
+    } catch (error) {
+      store.jobs.set(job.id, {
+        ...store.jobs.get(job.id)!,
+        result_metadata: {
+          ...store.jobs.get(job.id)!.result_metadata,
+          auto_regenerate_error: redactTaskError(error instanceof Error ? error.message : String(error)),
+        },
+        updated_at: iso(clock),
+      });
+    }
+  }
+
+  type RankedTake = { assetId: string; job: GenerationJob; analysis: TakeAnalysis | null; verdict: TakeVerdict };
+
+  /** Every live take of a shot that was measured at ingest, with its verdict. */
+  async function rankedTakesForShot(shot: Shot, seriesId: string): Promise<RankedTake[]> {
+    const live = new Set((await liveAssetsForSeries(seriesId)).map((asset) => asset.id));
+    const ranked: RankedTake[] = [];
+    for (const job of store.jobs.values()) {
+      if (job.shot_id !== shot.id || job.job_type !== "video") continue;
+      const meta = job.result_metadata;
+      const assetId = meta.asset_id;
+      if (typeof assetId !== "string" || !live.has(assetId)) continue;
+      if (typeof meta.take_score !== "number" || !Array.isArray(meta.take_blockers)) continue;
+      ranked.push({
+        assetId,
+        job,
+        analysis: (meta.take_analysis as TakeAnalysis | undefined) ?? null,
+        verdict: {
+          score: meta.take_score,
+          blockers: meta.take_blockers.filter((row): row is string => typeof row === "string"),
+          warnings: Array.isArray(meta.take_warnings)
+            ? meta.take_warnings.filter((row): row is string => typeof row === "string")
+            : [],
+        },
+      });
+    }
+    return ranked;
   }
 
   function markCallbackUsed(job: GenerationJob) {
@@ -2353,6 +2436,25 @@ export function createEngine(deps: EngineDeps = {}) {
   }
 
   async function resolveTakeAssetId(shot: Shot, seriesId: string): Promise<string | null> {
+    // Measured takes are ranked; the best blocker-free one wins even over a
+    // previously selected take, and its analysis becomes the shot's so the
+    // manifest trims by the settle of the take that actually plays.
+    const ranked = await rankedTakesForShot(shot, seriesId);
+    if (ranked.length) {
+      const best = pickBestTake(ranked);
+      if (best) {
+        const live = store.shots.get(shot.id) ?? shot;
+        if (live.shot_data.take_analysis?.measured_at !== best.analysis?.measured_at || live.shot_data.identity_reject) {
+          store.shots.set(live.id, {
+            ...live,
+            shot_data: { ...live.shot_data, take_analysis: best.analysis, identity_reject: false },
+          });
+        }
+        return best.assetId;
+      }
+      // Every measured take is blocked: nothing below may resurrect one of them.
+      return null;
+    }
     const listed = await liveAssetsForSeries(seriesId);
     const live = new Set(listed.map((asset) => asset.id));
     if (shot.selected_generation_id && live.has(shot.selected_generation_id)) {
