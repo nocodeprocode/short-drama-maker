@@ -143,6 +143,12 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // After the plate-judging fix: drop the location plates so lock_locations regenerates judged ones.
+    if (process.argv.includes("--relock-locations")) {
+      await client.from("series").update({ location_refs: {} }).eq("id", seriesId);
+      await client.from("engine_tasks").insert({ owner_id: ownerId, series_id: seriesId, production_id: productionId, action: "lock_locations", payload: {}, status: "queued" });
+      process.stdout.write("location plates cleared; lock_locations queued\n");
+    }
     // After a QC fix: re-judge every shot whose takes were all blocked, on the same bytes.
     if (process.argv.includes("--rejudge") || process.argv.includes("--rejudge-all")) {
       const { data: blocked } = await client

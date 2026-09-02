@@ -452,13 +452,14 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
         }
       }
       base.face_box = face;
+      // Each probe fails on its own; one odd container must not erase the others.
+      base.speech_checked = probe.has_audio;
       const [darkMouth, levelVoice] = await Promise.all([
-        firstMouthOpenSecond(input.video, face),
-        probe.has_audio ? firstVoicedSecondFromBytes(input.video) : Promise.resolve(null),
+        firstMouthOpenSecond(input.video, face).catch(() => null),
+        probe.has_audio ? firstVoicedSecondFromBytes(input.video).catch(() => null) : Promise.resolve(null),
       ]);
       let voice = levelVoice;
       base.voice_onset_source = levelVoice == null ? null : "level";
-      base.speech_checked = probe.has_audio;
       if (input.transcribe && probe.has_audio) {
         try {
           const mp3 = await extractAudioMp3(input.video);
@@ -483,14 +484,14 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       const mouth =
         darkMouth != null && darkMouth >= searchFrom
           ? darkMouth
-          : await mouthMotionOnsetSecond(take, searchFrom, probe.duration_seconds, face);
+          : await mouthMotionOnsetSecond(take, searchFrom, probe.duration_seconds, face).catch(() => null);
       base.mouth_open_seconds = mouth;
       base.voice_onset_seconds = voice;
       base.sync_lag_ms = syncLagMs(voice, mouth);
       base.viseme_pad_seconds = padFromSync({ voice, mouth, wanDialogue: input.wanDialogue ?? true });
       base.audio_slip_seconds = slipFromSync({ voice, mouth });
 
-      base.second_body = await inventedSecondBody(input.video, input.still ?? null);
+      base.second_body = await inventedSecondBody(input.video, input.still ?? null).catch(() => false);
 
       const modest = input.modestStill ?? input.still ?? null;
       if (modest && modest.byteLength > 32) {

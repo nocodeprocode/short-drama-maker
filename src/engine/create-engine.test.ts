@@ -248,8 +248,9 @@ function testGateway(): AIGateway {
   return createAiGateway({
     // Synthetic takes have no decodable frames; the stage skips before any judge call.
     vision: {
-      async judgeIdentity() {
-        return { same_person: 0.95, face_count: 1, notes: "test", model: "test" };
+      // Answers the question asked: an empty-room check sees no one, a single sees one.
+      async judgeIdentity(input) {
+        return { same_person: input.expectedFaces === 0 ? 0 : 0.95, face_count: input.expectedFaces === 0 ? 0 : 1, notes: "test", model: "test" };
       },
     },
     llm: {
