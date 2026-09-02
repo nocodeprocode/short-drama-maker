@@ -319,6 +319,14 @@ export async function commitSeriesStore(
   const series = store.series.get(seriesId);
   if (!series) throw new Error("Series missing from store");
 
+  // series.cover_asset_id references assets, and assets reference series. Write
+  // the series first with a cover only if that asset row already exists; a
+  // cover generated in this run is attached after the assets are committed.
+  let coverNow: string | null = series.cover_asset_id ?? null;
+  if (coverNow) {
+    const { data: coverRow } = await client.from("assets").select("id").eq("id", coverNow).maybeSingle();
+    if (!coverRow) coverNow = null;
+  }
   const { error: seriesError } = await client.from("series").upsert({
     id: series.id,
     owner_id: series.owner_id,
@@ -329,7 +337,7 @@ export async function commitSeriesStore(
     target_episode_count: series.target_episode_count,
     sku: series.sku,
     location_refs: series.location_refs,
-    cover_asset_id: series.cover_asset_id,
+    cover_asset_id: coverNow,
     status: series.status,
     deleted_at: series.deleted_at,
     created_at: series.created_at,
@@ -410,6 +418,11 @@ export async function commitSeriesStore(
         deleted_at: asset.deleted_at,
       })),
     );
+    if (error) throw new Error(error.message);
+  }
+
+  if (series.cover_asset_id && series.cover_asset_id !== coverNow) {
+    const { error } = await client.from("series").update({ cover_asset_id: series.cover_asset_id }).eq("id", series.id);
     if (error) throw new Error(error.message);
   }
 
