@@ -268,6 +268,8 @@ export type ShotData = {
   take_analysis?: import("./pipeline/take-analysis.ts").TakeAnalysis | null;
   /** Reference still used for the modesty gate (per character, modest wardrobe). */
   modest_still_asset_id?: string | null;
+  /** When the line was last rewritten; video attempts before this do not count against the retry cap. */
+  line_revised_at?: string | null;
   /** Reviewer decisions per take; an approval overrides ranking, a rejection excludes the take. */
   take_reviews?: Array<{ asset_id: string; decision: "approve" | "reject"; note: string | null; reviewed_at: string; reviewer_id: string }>;
 };

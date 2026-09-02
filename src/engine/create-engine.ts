@@ -3576,10 +3576,42 @@ export function createEngine(deps: EngineDeps = {}) {
     return store.series.get(series.id)!;
   }
 
+  /**
+   * A line that keeps producing unshippable takes is a writing problem, not a
+   * dice problem. Revising the line resets the shot: new TTS, new alignment,
+   * a fresh retry budget, and any rejection from the old line cleared.
+   */
+  async function reviseLine(input: { owner_id: string; shot_id: string; dialogue: string }) {
+    const { shot, series } = requireShot(input.shot_id, input.owner_id);
+    const dialogue = input.dialogue.replace(/\s+/g, " ").trim();
+    if (!dialogue) throw new Error("A revised line cannot be empty");
+    if (dialogue.split(" ").length > 14) throw new Error("A revised line must be 14 words or fewer");
+    await moderate(dialogue, "shot_submit", series.id, null);
+    const revised: Shot = {
+      ...shot,
+      status: "planned",
+      selected_generation_id: null,
+      shot_data: {
+        ...shot.shot_data,
+        dialogue,
+        dialogue_audio_asset_id: null,
+        dialogue_alignment_asset_id: null,
+        duration_seconds: null,
+        identity_reject: false,
+        take_analysis: null,
+        line_revised_at: iso(clock),
+      },
+    };
+    store.shots.set(revised.id, revised);
+    return revised;
+  }
+
   async function regenerateShot(input: { owner_id: string; shot_id: string }) {
     const { shot } = requireShot(input.shot_id, input.owner_id);
+    // Attempts made on a previous version of the line do not count against this one.
+    const since = shot.shot_data.line_revised_at ?? "";
     const prior = [...store.jobs.values()]
-      .filter((job) => job.shot_id === shot.id && job.job_type === "video")
+      .filter((job) => job.shot_id === shot.id && job.job_type === "video" && job.created_at >= since)
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     if (prior.length >= RETRY_CAP) {
       throw new Error("Retry cap reached for this shot");
@@ -3666,6 +3698,7 @@ export function createEngine(deps: EngineDeps = {}) {
     renderEpisode,
     regenerateShot,
     reviewTake,
+    reviseLine,
     rejudgeShot,
     gc,
     estimateEpisode,

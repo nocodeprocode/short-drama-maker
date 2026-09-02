@@ -31,6 +31,7 @@ export type EngineAction =
   | "generate_video"
   | "regenerate_shot"
   | "review_take"
+  | "revise_line"
   | "rejudge_shot"
   | "render_episode"
   | "advance_production"
@@ -331,6 +332,9 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       break;
     case "rejudge_shot":
       result = await engine.rejudgeShot({ owner_id, shot_id: String(payload.shot_id) });
+      break;
+    case "revise_line":
+      result = await engine.reviseLine({ owner_id, shot_id: String(payload.shot_id), dialogue: String(payload.dialogue ?? "") });
       break;
     case "review_take":
       result = await engine.reviewTake({

@@ -143,6 +143,22 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // A line that kept failing QC: rewrite it and give the shot a fresh retry budget.
+    //   --revise-line "<shot_id>::<new line>"
+    const revise = process.argv[process.argv.indexOf("--revise-line") + 1];
+    if (process.argv.includes("--revise-line") && revise?.includes("::")) {
+      const [shotId, ...rest] = revise.split("::");
+      const dialogue = rest.join("::").trim();
+      await client.from("engine_tasks").insert({
+        owner_id: ownerId,
+        series_id: seriesId,
+        production_id: productionId,
+        action: "revise_line",
+        payload: { shot_id: shotId, dialogue },
+        status: "queued",
+      });
+      process.stdout.write(`revise_line queued for ${shotId}: "${dialogue}"\n`);
+    }
     // After the plate-judging fix: drop the location plates so lock_locations regenerates judged ones.
     if (process.argv.includes("--relock-locations")) {
       await client.from("series").update({ location_refs: {} }).eq("id", seriesId);

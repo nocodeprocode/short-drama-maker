@@ -38,9 +38,28 @@ function uniqueNames(plan: EpisodePlan, shots: PlanShot[]): string[] {
   return [...new Set(names)];
 }
 
-function isNarrationLine(text: string | null | undefined): boolean {
+/**
+ * Stage direction is not dialogue. Outline text like "Callum says: 'It doesn't
+ * mean what you think.' His phone buzzes on the counter." must never be put in
+ * an actor's mouth; either the quoted speech is lifted out or a real button
+ * line replaces it.
+ */
+export function isNarrationLine(text: string | null | undefined): boolean {
   if (!text) return true;
-  return /\b(mouth opens|camera holds|we see|the camera|opens — and closes)\b/i.test(text);
+  return (
+    /\b(mouth opens|camera holds|we see|the camera|opens — and closes)\b/i.test(text) ||
+    /\b\w+ (says|said|whispers|whispered|shouts|shouted|asks|asked|replies|replied|mutters|snaps)\b\s*[:,]?\s*['"“‘]/i.test(text) ||
+    /\b(his|her|their) (phone|glass|hand|hands|voice|eyes|face|door|jaw)\b/i.test(text) ||
+    /\b(buzzes|rings|slams|shatters|enters|exits|walks (in|out|away)|turns away|looks up|cuts? to|hold on|we hear)\b/i.test(text)
+  );
+}
+
+/** The spoken part of a stage direction, if it quotes one. */
+export function quotedSpeech(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const match = /['"“‘]([^'"”’]{3,})['"”’]/.exec(text);
+  const line = match?.[1]?.trim();
+  return line && !isNarrationLine(line) ? line : null;
 }
 
 const FALLBACK_BUTTONS = [
@@ -489,9 +508,15 @@ function sealBlock(shots: PlanShot[], plan: EpisodePlan, lastBlock: boolean, fir
 function blockButtonLine(plan: EpisodePlan, blockIndex: number | null): string {
   const outline = (plan as { outline?: { blocks?: Array<{ index: number; button?: string; opens_hook?: string }> } }).outline;
   const block = outline?.blocks?.find((row) => row.index === blockIndex);
-  const raw = (block?.button || block?.opens_hook || "").replace(/\s+/g, " ").trim();
-  const words = raw.split(" ").filter(Boolean);
-  if (words.length >= 3) {
+  for (const candidate of [block?.button, block?.opens_hook]) {
+    const raw = (candidate ?? "").replace(/\s+/g, " ").trim();
+    if (!raw) continue;
+    // Prefer the speech the outline quotes; never speak the stage direction around it.
+    const quoted = quotedSpeech(raw);
+    const source = quoted ?? (isNarrationLine(raw) ? null : raw);
+    if (!source) continue;
+    const words = source.split(" ").filter(Boolean);
+    if (words.length < 3) continue;
     const line = words.slice(0, DIALOGUE_MAX_WORDS).join(" ").replace(/[.,;:]+$/, "");
     return /[?!]$/.test(line) ? line : `${line}?`;
   }
