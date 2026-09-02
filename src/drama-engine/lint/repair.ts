@@ -447,6 +447,23 @@ function sealBlock(shots: PlanShot[], plan: EpisodePlan, lastBlock: boolean, fir
       first.function = first.function === "hook_cu" ? "hook_cu" : "accusation_cu";
     }
   }
+  // Only the episode's first take is a hook_cu. A later "hook" is either an
+  // accusation (spoken) or a mute-readable insert (silent); a silent face held
+  // for four seconds under the hook label is the stare the lint forbids.
+  for (const [index, shot] of shots.entries()) {
+    if (shot.function !== "hook_cu") continue;
+    if (firstBlock && index === 0) continue;
+    if (shot.dialogue) {
+      shot.function = "accusation_cu";
+      shot.type = shot.type === "hero" ? "hero" : "dialogue";
+    } else {
+      shot.function = "insert_evidence";
+      shot.type = "broll";
+      shot.audio_role = "silent";
+      shot.mouth_visibility_required = false;
+      shot.camera = objectPlateCamera("insert_evidence", shot.camera);
+    }
+  }
   const last = shots[shots.length - 1]!;
   last.function = lastBlock ? "button_cu" : "block_button";
   last.eyeline = last.eyeline ?? "lens_forbidden";
