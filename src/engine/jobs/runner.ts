@@ -1069,23 +1069,30 @@ async function playableTakesByShot(client: SupabaseClient, seriesId: string): Pr
     .eq("series_id", seriesId)
     .eq("job_type", "video")
     .order("updated_at", { ascending: true });
-  // A take with blockers is not playable; a shot whose every take is blocked has none.
-  const blockedShots = new Set<string>();
-  const cleanShots = new Set<string>();
+  // Only a measured, blocker-free take is playable. An unmeasured take (fetched
+  // before analysis ran) counts only for shots that have no measured take at
+  // all; a shot whose every measured take is blocked has none.
+  const measuredClean = new Map<string, string>();
+  const unmeasured = new Map<string, string>();
+  const measuredBlocked = new Set<string>();
   for (const job of jobs ?? []) {
     const meta = (job.result_metadata as Record<string, unknown> | null) ?? {};
     const assetId = meta.asset_id;
     if (!job.shot_id || typeof assetId !== "string" || !live.has(assetId)) continue;
-    const blockers = Array.isArray(meta.take_blockers) ? meta.take_blockers : [];
-    if (blockers.length) {
-      blockedShots.add(job.shot_id);
+    if (!Array.isArray(meta.take_blockers)) {
+      unmeasured.set(job.shot_id, assetId);
       continue;
     }
-    cleanShots.add(job.shot_id);
-    takes.set(job.shot_id, assetId);
+    if (meta.take_blockers.length) {
+      measuredBlocked.add(job.shot_id);
+      continue;
+    }
+    measuredClean.set(job.shot_id, assetId);
   }
-  for (const shotId of blockedShots) {
-    if (!cleanShots.has(shotId)) takes.delete(shotId);
+  takes.clear();
+  for (const [shotId, assetId] of measuredClean) takes.set(shotId, assetId);
+  for (const [shotId, assetId] of unmeasured) {
+    if (!measuredClean.has(shotId) && !measuredBlocked.has(shotId)) takes.set(shotId, assetId);
   }
   return takes;
 }

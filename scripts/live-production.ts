@@ -156,7 +156,7 @@ async function main() {
         const meta = (job.result_metadata ?? {}) as Record<string, unknown>;
         if (typeof meta.asset_id !== "string") continue;
         const row = byShot.get(job.shot_id) ?? { blocked: 0, clean: 0 };
-        if (Array.isArray(meta.take_blockers) && meta.take_blockers.length) row.blocked += 1;
+        if (!Array.isArray(meta.take_blockers) || meta.take_blockers.length) row.blocked += 1;
         else row.clean += 1;
         byShot.set(job.shot_id, row);
       }

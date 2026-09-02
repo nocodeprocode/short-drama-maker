@@ -2138,7 +2138,10 @@ export function createEngine(deps: EngineDeps = {}) {
     const shot = store.shots.get(job.shot_id ?? "");
     if (!shot) throw new Error("Shot missing for ingest");
     const reused = await existingTakeForJob(current);
-    if (reused) {
+    // A take that was fetched before (re-download, replay) but never measured
+    // goes through the full pipeline on its stored bytes; only a take that
+    // already carries its analysis short-circuits.
+    if (reused && current.result_metadata.take_analysis) {
       if (current.result_metadata.asset_id !== reused.id) {
         current = { ...current, result_metadata: { ...current.result_metadata, asset_id: reused.id }, updated_at: iso(clock) };
         store.jobs.set(current.id, current);
@@ -2169,29 +2172,34 @@ export function createEngine(deps: EngineDeps = {}) {
       );
       return current;
     }
-    const downloaded = await ai.video.download(job);
     const scene = store.scenes.get(shot.scene_id);
     const episode = scene ? store.episodes.get(scene.episode_id) : undefined;
     const episodeShots = scene ? store.shotsForEpisode(scene.episode_id) : [shot];
     const shotPosition = episodeShots.findIndex((row) => row.id === shot.id) + 1;
-    const asset = await putAsset({
-      owner_id: job.owner_id,
-      series_id: job.series_id,
-      kind: "shot_video",
-      bucket: "private-generation",
-      mime_type: downloaded.mime_type,
-      body: downloaded.bytes,
-      metadata: {
-        shot_id: shot.id,
-        generation_job_id: job.id,
-        duration_seconds: shot.shot_data.duration_seconds,
-        output_url: status.output_url,
-        downloaded_via: "openrouter_content",
-        episode_number: episode?.episode_number ?? null,
-        shot_position: shotPosition > 0 ? shotPosition : shot.position,
-        speaker: shot.shot_data.speaker,
-      },
-    });
+    const stored = reused ? await assets.get(reused.id).catch(() => null) : null;
+    const downloaded = stored
+      ? { bytes: stored.body, mime_type: stored.asset.mime_type }
+      : await ai.video.download(job);
+    const asset = stored
+      ? stored.asset
+      : await putAsset({
+          owner_id: job.owner_id,
+          series_id: job.series_id,
+          kind: "shot_video",
+          bucket: "private-generation",
+          mime_type: downloaded.mime_type,
+          body: downloaded.bytes,
+          metadata: {
+            shot_id: shot.id,
+            generation_job_id: job.id,
+            duration_seconds: shot.shot_data.duration_seconds,
+            output_url: status.output_url,
+            downloaded_via: "openrouter_content",
+            episode_number: episode?.episode_number ?? null,
+            shot_position: shotPosition > 0 ? shotPosition : shot.position,
+            speaker: shot.shot_data.speaker,
+          },
+        });
 
     current = transitionJob(store.jobs.get(job.id)!, "qc", iso(clock));
     store.jobs.set(job.id, current);
@@ -2742,7 +2750,7 @@ export function createEngine(deps: EngineDeps = {}) {
   async function rejudgeShot(input: { owner_id: string; shot_id: string }) {
     const { shot, series } = requireShot(input.shot_id, input.owner_id);
     const jobs = [...store.jobs.values()].filter(
-      (job) => job.shot_id === shot.id && job.job_type === "video" && typeof job.result_metadata.asset_id === "string" && job.result_metadata.take_analysis,
+      (job) => job.shot_id === shot.id && job.job_type === "video" && typeof job.result_metadata.asset_id === "string",
     );
     const live = new Set((await liveAssetsForSeries(series.id)).map((asset) => asset.id));
     const dialogueCu =
@@ -2761,10 +2769,18 @@ export function createEngine(deps: EngineDeps = {}) {
       if (!live.has(assetId)) continue;
       const take = await assets.get(assetId).catch(() => null);
       if (!take) continue;
-      let analysis = job.result_metadata.take_analysis as TakeAnalysis;
+      const stillId = job.request_metadata.first_frame_asset_id;
+      const still = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
+      // A take that was never measured (fetched before analysis existed) is measured now.
+      let analysis = (job.result_metadata.take_analysis as TakeAnalysis | undefined) ??
+        (await measureTake({
+          video: take.body,
+          still,
+          modestStill: (await modestStillForShot(shot).then((id) => (id ? assets.get(id).catch(() => null) : null)))?.body ?? still,
+          dialogueCu,
+          wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
+        }));
       if (ai.vision && expectedFaces != null) {
-        const stillId = job.request_metadata.first_frame_asset_id;
-        const still = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
         const identity = await runIdentityStage({
           video: take.body,
           reference: expectedFaces === 1 ? still : null,
