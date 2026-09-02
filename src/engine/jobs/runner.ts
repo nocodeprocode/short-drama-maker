@@ -70,16 +70,59 @@ export const TASK_MAX_ATTEMPTS = 6;
 
 let warnedLegacyClaim = false;
 
-async function claimTasks(client: SupabaseClient, limit: number): Promise<TaskRow[]> {
-  // FOR UPDATE SKIP LOCKED in the database: two runners can never claim the same row.
-  const { data, error } = await client.rpc("claim_engine_tasks", { p_limit: limit });
+/**
+ * What this runner is allowed to do. Ingest and render need ffmpeg; the
+ * Cloudflare cron has none, so it runs as `orchestrator` and leaves media work
+ * (render_episode, and the sweep that ingests finished takes) to a `media` or
+ * `all` runner on a host with ffmpeg.
+ */
+export type RunnerRole = "all" | "orchestrator" | "media";
+
+export function runnerRole(env: NodeJS.ProcessEnv = process.env): RunnerRole {
+  const raw = env.RUNNER_ROLE?.trim();
+  return raw === "orchestrator" || raw === "media" ? raw : "all";
+}
+
+const MEDIA_ACTIONS: EngineAction[] = ["render_episode"];
+const ORCHESTRATION_ACTIONS: EngineAction[] = [
+  "analyze",
+  "generate_appearance",
+  "generate_actor",
+  "generate_wardrobe",
+  "design_voice",
+  "lock_character",
+  "lock_locations",
+  "generate_cover",
+  "create_episode",
+  "plan_episode",
+  "generate_dialogue",
+  "generate_video",
+  "regenerate_shot",
+  "review_take",
+  "advance_production",
+  "tick",
+  "reconcile",
+];
+
+export function excludedActionsFor(role: RunnerRole): EngineAction[] | null {
+  if (role === "orchestrator") return MEDIA_ACTIONS;
+  if (role === "media") return ORCHESTRATION_ACTIONS;
+  return null;
+}
+
+async function claimTasks(client: SupabaseClient, limit: number, role: RunnerRole = runnerRole()): Promise<TaskRow[]> {
+  // FOR UPDATE SKIP LOCKED in the database, one task per series, and only the
+  // actions this role can perform: two runners never claim the same row and
+  // never work the same series at once.
+  const { data, error } = await client.rpc("claim_engine_tasks", { p_limit: limit, p_exclude_actions: excludedActionsFor(role) });
   if (!error) return (data ?? []) as TaskRow[];
   if (!isMissingFunction(error.message)) throw new Error(error.message);
   if (!warnedLegacyClaim) {
     warnedLegacyClaim = true;
     console.warn(JSON.stringify(publicLog({ event: "engine_claim_legacy", reason: "claim_engine_tasks RPC missing; apply the runner_hardening migration" })));
   }
-  return claimTasksLegacy(client, limit);
+  const excluded = new Set(excludedActionsFor(role) ?? []);
+  return (await claimTasksLegacy(client, limit)).filter((task) => !excluded.has(task.action));
 }
 
 /** Select-then-update; racy under concurrency. Only used until the claim RPC exists. */
@@ -577,7 +620,9 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
       }
     }
   }
-  await sweepActiveJobs(client);
+  // The sweep ingests finished takes, which measures them with ffmpeg; an
+  // orchestrator has none and leaves that to the media runner.
+  if (runnerRole() !== "orchestrator") await sweepActiveJobs(client);
   return completed;
 }
 

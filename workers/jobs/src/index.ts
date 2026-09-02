@@ -38,7 +38,7 @@ async function tick() {
 export default {
   async fetch(request: Request, env: JobsEnv, ctx: ExecutionContext) {
     if (request.method === "GET" && new URL(request.url).pathname === "/health") {
-      return Response.json({ ok: true, role: "jobs" });
+      return Response.json({ ok: true, role: "jobs", runner_role: env.RUNNER_ROLE ?? "all" });
     }
     if (request.method !== "POST") {
       return new Response("Not found", { status: 404 });

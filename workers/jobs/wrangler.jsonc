@@ -12,6 +12,11 @@
   "triggers": {
     "crons": ["* * * * *"]
   },
+  // No ffmpeg on Workers: this runner orchestrates only. Ingest and render run
+  // on a media runner (worker/ container or `RUNNER_ROLE=media npm run jobs`).
+  "vars": {
+    "RUNNER_ROLE": "orchestrator"
+  },
   "services": [
     {
       "binding": "MEDIA_STORE",
