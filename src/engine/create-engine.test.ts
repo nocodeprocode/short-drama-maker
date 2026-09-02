@@ -780,6 +780,12 @@ describe("engine phase 0", () => {
     }
     await app.tick();
     const stranger = app.store.shotsForEpisode(episode.id)[0]!;
+    // The only take of this shot was dropped at ingest: its verdict carries a blocker.
+    for (const job of app.store.jobs.values()) {
+      if (job.shot_id === stranger.id && job.job_type === "video") {
+        app.store.jobs.set(job.id, { ...job, result_metadata: { ...job.result_metadata, take_blockers: ["invented_people"] } });
+      }
+    }
     app.store.shots.set(stranger.id, {
       ...stranger,
       shot_data: { ...stranger.shot_data, identity_reject: true },

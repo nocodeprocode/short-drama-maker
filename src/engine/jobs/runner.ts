@@ -1064,9 +1064,26 @@ async function playableTakesByShot(client: SupabaseClient, seriesId: string): Pr
     .eq("kind", "shot_video")
     .is("deleted_at", null)
     .order("created_at", { ascending: true });
+  // Reviewer decisions: a rejected take is never playable; an approved one always is.
+  const sceneIds = await seriesSceneIds(client, seriesId);
+  const { data: reviewedShots } = sceneIds.length
+    ? await client.from("shots").select("id, shot_data").in("scene_id", sceneIds)
+    : { data: [] as Array<{ id: string; shot_data: Record<string, unknown> }> };
+  const rejected = new Set<string>();
+  const approved = new Map<string, string>();
+  for (const shot of reviewedShots ?? []) {
+    const reviews = ((shot.shot_data ?? {}) as Record<string, unknown>).take_reviews;
+    if (!Array.isArray(reviews)) continue;
+    for (const review of reviews as Array<{ asset_id?: string; decision?: string }>) {
+      if (typeof review.asset_id !== "string") continue;
+      if (review.decision === "reject") rejected.add(review.asset_id);
+      if (review.decision === "approve") approved.set(shot.id, review.asset_id);
+    }
+  }
   const takes = new Map<string, string>();
   const live = new Set<string>();
   for (const row of rows ?? []) {
+    if (rejected.has(row.id)) continue;
     live.add(row.id);
     const shotId = (row.metadata as Record<string, unknown> | null)?.shot_id;
     if (typeof shotId === "string" && shotId) takes.set(shotId, row.id);
@@ -1101,6 +1118,9 @@ async function playableTakesByShot(client: SupabaseClient, seriesId: string): Pr
   for (const [shotId, assetId] of measuredClean) takes.set(shotId, assetId);
   for (const [shotId, assetId] of unmeasured) {
     if (!measuredClean.has(shotId) && !measuredBlocked.has(shotId)) takes.set(shotId, assetId);
+  }
+  for (const [shotId, assetId] of approved) {
+    if (live.has(assetId)) takes.set(shotId, assetId);
   }
   return takes;
 }

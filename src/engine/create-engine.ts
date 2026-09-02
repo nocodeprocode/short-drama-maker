@@ -3008,13 +3008,11 @@ export function createEngine(deps: EngineDeps = {}) {
     const takes: Array<{ shot: Shot; assetId: string }> = [];
     const missing: string[] = [];
     for (const shot of shots) {
-      if (shot.shot_data.identity_reject) {
-        missing.push(`${shot.id} (identity_reject, no replacement take)`);
-        continue;
-      }
+      // Ranking already excludes blocked and rejected takes, so a shot whose
+      // last take was dropped still cuts if a clean replacement has landed.
       const assetId = await recoverTakeAssetId(shot, episode.series_id);
       if (!assetId) {
-        missing.push(`${shot.id} (no playable take)`);
+        missing.push(`${shot.id} (${shot.shot_data.identity_reject ? "identity_reject, " : ""}no playable take)`);
         continue;
       }
       takes.push({ shot, assetId });
