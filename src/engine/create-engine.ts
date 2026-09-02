@@ -1465,11 +1465,16 @@ export function createEngine(deps: EngineDeps = {}) {
 
   async function generateDialogue(input: { owner_id: string; shot_id: string }) {
     const { shot, series, episode } = requireShot(input.shot_id, input.owner_id);
+    // Who says the line: the off-camera speaker for an off-screen line, else the
+    // speaker; empty strings and missing names fall through to the scene's cast.
+    const sceneCast = store.scenes.get(shot.scene_id)?.scene_data.characters ?? [];
+    const offCamera = (shot.shot_data.speakers_off_camera ?? []).find((name) => Boolean(name?.trim()));
     const talker =
-      shot.shot_data.audio_role === "offscreen"
-        ? (shot.shot_data.speakers_off_camera?.[0] ?? shot.shot_data.speaker)
-        : shot.shot_data.speaker;
-    if (!shot.shot_data.dialogue || !talker) {
+      (shot.shot_data.audio_role === "offscreen" ? offCamera || shot.shot_data.speaker : shot.shot_data.speaker || offCamera) ||
+      shot.shot_data.speaker_on_camera ||
+      sceneCast.find((name) => Boolean(name?.trim())) ||
+      null;
+    if (!shot.shot_data.dialogue?.trim() || !talker) {
       throw new Error("Shot has no dialogue");
     }
     const character = characterBySpeaker(series.id, talker);
