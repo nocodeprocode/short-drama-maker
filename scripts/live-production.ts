@@ -143,6 +143,31 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // After a QC fix: re-judge every shot whose takes were all blocked, on the same bytes.
+    if (process.argv.includes("--rejudge")) {
+      const { data: blocked } = await client
+        .from("generation_jobs")
+        .select("shot_id, result_metadata")
+        .eq("series_id", seriesId)
+        .eq("job_type", "video");
+      const byShot = new Map<string, { blocked: number; clean: number }>();
+      for (const job of blocked ?? []) {
+        if (!job.shot_id) continue;
+        const meta = (job.result_metadata ?? {}) as Record<string, unknown>;
+        if (typeof meta.asset_id !== "string") continue;
+        const row = byShot.get(job.shot_id) ?? { blocked: 0, clean: 0 };
+        if (Array.isArray(meta.take_blockers) && meta.take_blockers.length) row.blocked += 1;
+        else row.clean += 1;
+        byShot.set(job.shot_id, row);
+      }
+      let queued = 0;
+      for (const [shotId, row] of byShot) {
+        if (row.blocked === 0 || row.clean > 0) continue;
+        await client.from("engine_tasks").insert({ owner_id: ownerId, series_id: seriesId, production_id: productionId, action: "rejudge_shot", payload: { shot_id: shotId }, status: "queued" });
+        queued += 1;
+      }
+      process.stdout.write(`queued rejudge for ${queued} shot(s)\n`);
+    }
     // Same as the Resume button: clear the stop and queue the next advance.
     if (production.status === "needs_user" || production.paused) {
       await client

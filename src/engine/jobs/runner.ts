@@ -31,6 +31,7 @@ export type EngineAction =
   | "generate_video"
   | "regenerate_shot"
   | "review_take"
+  | "rejudge_shot"
   | "render_episode"
   | "advance_production"
   | "tick"
@@ -101,6 +102,7 @@ const ORCHESTRATION_ACTIONS: EngineAction[] = [
   "generate_video",
   "regenerate_shot",
   "review_take",
+  "rejudge_shot",
   "advance_production",
   "tick",
   "reconcile",
@@ -309,6 +311,9 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       break;
     case "regenerate_shot":
       result = await engine.regenerateShot({ owner_id, shot_id: String(payload.shot_id) });
+      break;
+    case "rejudge_shot":
+      result = await engine.rejudgeShot({ owner_id, shot_id: String(payload.shot_id) });
       break;
     case "review_take":
       result = await engine.reviewTake({

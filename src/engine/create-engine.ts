@@ -2734,6 +2734,95 @@ export function createEngine(deps: EngineDeps = {}) {
     return next;
   }
 
+  /**
+   * Re-runs the identity judge and scoring on a shot's stored takes. Used after
+   * a QC fix so takes that were blocked by a since-corrected check are judged
+   * again on the same bytes instead of being regenerated.
+   */
+  async function rejudgeShot(input: { owner_id: string; shot_id: string }) {
+    const { shot, series } = requireShot(input.shot_id, input.owner_id);
+    const jobs = [...store.jobs.values()].filter(
+      (job) => job.shot_id === shot.id && job.job_type === "video" && typeof job.result_metadata.asset_id === "string" && job.result_metadata.take_analysis,
+    );
+    const live = new Set((await liveAssetsForSeries(series.id)).map((asset) => asset.id));
+    const dialogueCu =
+      Boolean(shot.shot_data.dialogue) &&
+      shot.shot_data.audio_role !== "offscreen" &&
+      shot.shot_data.audio_role !== "silent" &&
+      !isObjectInsert(shot.shot_data);
+    const emptyWide =
+      (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
+      !shot.shot_data.dialogue &&
+      !shot.shot_data.group_still_asset_id;
+    const expectedFaces = isObjectInsert(shot.shot_data) ? null : emptyWide ? 0 : 1;
+    const results: Array<{ job_id: string; before: string[]; after: string[] }> = [];
+    for (const job of jobs) {
+      const assetId = job.result_metadata.asset_id as string;
+      if (!live.has(assetId)) continue;
+      const take = await assets.get(assetId).catch(() => null);
+      if (!take) continue;
+      let analysis = job.result_metadata.take_analysis as TakeAnalysis;
+      if (ai.vision && expectedFaces != null) {
+        const stillId = job.request_metadata.first_frame_asset_id;
+        const still = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
+        const identity = await runIdentityStage({
+          video: take.body,
+          reference: expectedFaces === 1 ? still : null,
+          analysis,
+          expectedFaces,
+          vision: ai.vision,
+        });
+        analysis = identity.analysis;
+        store.jobs.set(job.id, {
+          ...store.jobs.get(job.id)!,
+          request_metadata: { ...job.request_metadata, identity_judgement: identity.judgement, identity_skipped: identity.skipped, rejudged_at: iso(clock) },
+        });
+      }
+      const verdict = scoreTake(analysis, {
+        dialogueCu,
+        lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
+        expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
+        expectedFaces,
+      });
+      const before = Array.isArray(job.result_metadata.take_blockers) ? (job.result_metadata.take_blockers as string[]) : [];
+      store.jobs.set(job.id, {
+        ...store.jobs.get(job.id)!,
+        result_metadata: {
+          ...store.jobs.get(job.id)!.result_metadata,
+          take_analysis: analysis,
+          take_score: verdict.score,
+          take_blockers: verdict.blockers,
+          take_warnings: verdict.warnings,
+        },
+        updated_at: iso(clock),
+      });
+      results.push({ job_id: job.id, before, after: verdict.blockers });
+    }
+    // Let ranking pick the best clean take (or none) with the new verdicts.
+    const chosen = await resolveTakeAssetId(store.shots.get(shot.id)!, series.id);
+    const current = store.shots.get(shot.id)!;
+    store.shots.set(current.id, {
+      ...current,
+      status: chosen ? "complete" : "needs_review",
+      selected_generation_id: chosen,
+      shot_data: { ...current.shot_data, identity_reject: !chosen },
+    });
+    // The side costs of re-judging are real spend on this series.
+    const metered = ai.meter.take();
+    if (metered.usd > 0) {
+      writeLedger({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        entry_type: "settle",
+        amount: metered.usd,
+        generation_job_id: null,
+        stripe_event_id: null,
+        price_snapshot_version: store.priceSnapshotVersion,
+      });
+    }
+    return { shot: store.shots.get(shot.id)!, results, chosen };
+  }
+
   function reviewFor(shot: Shot, assetId: string): "approve" | "reject" | null {
     return shot.shot_data.take_reviews?.find((row) => row.asset_id === assetId)?.decision ?? null;
   }
@@ -3460,6 +3549,7 @@ export function createEngine(deps: EngineDeps = {}) {
     renderEpisode,
     regenerateShot,
     reviewTake,
+    rejudgeShot,
     gc,
     estimateEpisode,
     estimateSeries(episodeCount: SeasonSku, length?: EpisodeLength) {
