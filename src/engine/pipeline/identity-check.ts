@@ -76,6 +76,24 @@ export async function sampleJpegFrames(video: Uint8Array, atSeconds: number[]): 
   }
 }
 
+/**
+ * The reference still is a full-resolution generation (often 2K PNG, several
+ * MB); vision providers reject oversized images. Send it at the same size as
+ * the sampled frames, as JPEG.
+ */
+export async function shrinkReference(image: Uint8Array): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  if (!(await ffmpegAvailable())) return null;
+  const dir = await mkdtemp(join(tmpdir(), "sdm-ref-"));
+  try {
+    const input = join(dir, "ref.img");
+    await writeFile(input, image);
+    const raw = await run("ffmpeg", ["-y", "-i", input, "-frames:v", "1", "-vf", `scale=${FRAME_W}:${FRAME_H}:force_original_aspect_ratio=decrease`, "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1"]);
+    return raw.ok && raw.stdout.byteLength > 512 ? { bytes: new Uint8Array(raw.stdout), mime: "image/jpeg" } : null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function runIdentityStage(input: IdentityStageInput): Promise<IdentityStageResult> {
   const sample = input.sampleFrames ?? sampleJpegFrames;
   if (input.video.byteLength < 2_000) return { analysis: input.analysis, judgement: null, skipped: "take_too_small" };
@@ -86,10 +104,19 @@ export async function runIdentityStage(input: IdentityStageInput): Promise<Ident
     return { analysis: input.analysis, judgement: null, skipped: "frame_sampling_failed" };
   }
   if (!frames.length) return { analysis: input.analysis, judgement: null, skipped: "no_frames" };
+  let reference = input.reference;
+  let referenceMime = input.referenceMime;
+  if (reference && !input.sampleFrames) {
+    const small = await shrinkReference(reference).catch(() => null);
+    if (small) {
+      reference = small.bytes;
+      referenceMime = small.mime;
+    }
+  }
   try {
     const judgement = await input.vision.judgeIdentity({
-      reference: input.reference,
-      referenceMime: input.referenceMime,
+      reference,
+      referenceMime,
       frames,
       expectedFaces: input.expectedFaces,
       description: input.description,

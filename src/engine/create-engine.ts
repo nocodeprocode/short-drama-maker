@@ -17,6 +17,7 @@ import { concatMp4Segments, mergeManifests, mergeVtt } from "./media/concat.ts";
 import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
+import { plateMoveFor, plateTake } from "./media/plate-take.ts";
 import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
@@ -115,6 +116,8 @@ export type EngineDeps = {
   reframe?: typeof reframeMp4;
   /** Override block concatenation (tests). Defaults to an ffmpeg stream-copy concat. */
   concat?: typeof concatMp4Segments;
+  /** Override the plate-to-take synthesiser (tests). Defaults to ffmpeg zoompan. */
+  plateTake?: typeof plateTake;
   /** Episodes with at least this many takes render per block. */
   blockRenderMinShots?: number;
 };
@@ -175,6 +178,7 @@ export function createEngine(deps: EngineDeps = {}) {
   const measureTake = deps.analyze ?? analyzeTake;
   const reframe = deps.reframe ?? reframeMp4;
   const concat = deps.concat ?? concatMp4Segments;
+  const plateFn = deps.plateTake ?? plateTake;
   const blockRenderMinShots = deps.blockRenderMinShots ?? BLOCK_RENDER_MIN_SHOTS;
   const clock = deps.clock ?? systemClock();
   const ids = deps.ids ?? cryptoIds();
@@ -1559,6 +1563,18 @@ export function createEngine(deps: EngineDeps = {}) {
     const live = store.shots.get(shot.id)!;
     const scene = store.scenes.get(live.scene_id);
     const location = scene?.location || scene?.scene_data.location;
+
+    // Empty establishing wides are cut from the location plate, not generated:
+    // the plate has nobody in it by construction and matches the scene's light.
+    const emptyWide =
+      (live.shot_data.function === "establishing" || live.shot_data.type === "establishing") &&
+      !live.shot_data.dialogue &&
+      !live.shot_data.group_still_asset_id &&
+      !isObjectInsert(live.shot_data);
+    if (emptyWide) {
+      const fromPlate = await plateTakeForShot(live, series, location);
+      if (fromPlate) return fromPlate;
+    }
     const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
     const partner =
       live.shot_data.audio_role === "offscreen"
@@ -1643,6 +1659,101 @@ export function createEngine(deps: EngineDeps = {}) {
     reserve(job);
     await submitVideoJob(job);
     return { job: store.jobs.get(job.id)!, route: decision };
+  }
+
+  /**
+   * Synthesises an establishing take from the scene's location plate and
+   * records it like any other take (job, asset, analysis, ledger at zero cost).
+   * Returns null when there is no plate or no ffmpeg, so the caller falls back
+   * to generation.
+   */
+  async function plateTakeForShot(
+    shot: Shot,
+    series: Series,
+    location: string | null | undefined,
+  ): Promise<{ job: GenerationJob; route: { route: { model: string; provider: string }; reason: string } } | null> {
+    const plateId = locationRefForScene(series.location_refs ?? {}, location);
+    if (!plateId) return null;
+    const plate = await assets.get(plateId).catch(() => null);
+    if (!plate) return null;
+    const seconds = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds ?? 4;
+    const move = plateMoveFor(shot.id);
+    const body = await plateFn(plate.body, seconds, move);
+    if (!body) return null;
+
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: store.scenes.get(shot.scene_id)?.episode_id ?? null,
+      scene_id: shot.scene_id,
+      shot_id: shot.id,
+      job_type: "video",
+      model: "plate/zoompan",
+      provider: "local",
+      upstream_job_id: null,
+      idempotency_key: `video:${shot.id}:plate:${jobAttemptKey(shot.id)}`,
+      status: "queued",
+      request_metadata: { reason: "empty establishing from location plate", plate_asset_id: plateId, move, first_frame_asset_id: plateId },
+      estimated_cost: 0,
+      expected_ready_at: iso(clock),
+    });
+    reserve(job);
+    const asset = await putAsset({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      kind: "shot_video",
+      bucket: "private-generation",
+      mime_type: "video/mp4",
+      body,
+      metadata: { shot_id: shot.id, generation_job_id: job.id, duration_seconds: seconds, source: "location_plate", move },
+    });
+    const analysis: TakeAnalysis = {
+      version: 2,
+      duration_seconds: probeVideoBytes(body).duration_seconds || seconds,
+      has_audio: false,
+      settle_in_seconds: 0,
+      settle_hop_seconds: 0.1,
+      settle_diffs: [],
+      mouth_open_seconds: null,
+      voice_onset_seconds: null,
+      sync_lag_ms: null,
+      viseme_pad_seconds: 0,
+      audio_slip_seconds: 0,
+      internal_cut_count: 0,
+      second_body: false,
+      chest_skin_fraction: null,
+      modest_reference_fraction: null,
+      sheer_or_bra: false,
+      face_similarity: null,
+      face_count: 0,
+      measured_at: iso(clock),
+    };
+    const verdict = scoreTake(analysis, { dialogueCu: false, lockedTake: true, expectedFaces: 0 });
+    let current = transitionJob(store.jobs.get(job.id)!, "submitting", iso(clock));
+    current = transitionJob(current, "generating", iso(clock));
+    current = transitionJob(current, "ingesting", iso(clock));
+    current = transitionJob(current, "qc", iso(clock));
+    current = transitionJob(current, "completed", iso(clock), {
+      actual_cost: 0,
+      result_metadata: {
+        asset_id: asset.id,
+        qc: { pass: true, reasons: [] },
+        take_analysis: analysis,
+        take_score: verdict.score,
+        take_blockers: verdict.blockers,
+        take_warnings: verdict.warnings,
+      },
+    });
+    store.jobs.set(job.id, current);
+    const live = store.shots.get(shot.id)!;
+    store.shots.set(live.id, {
+      ...live,
+      status: "complete",
+      selected_generation_id: asset.id,
+      shot_data: { ...live.shot_data, take_analysis: analysis, identity_reject: false, heard_audio: "silent", first_frame_asset_id: plateId },
+    });
+    settle(current, 0);
+    return { job: current, route: { route: { model: "plate/zoompan", provider: "local" }, reason: "empty establishing from location plate" } };
   }
 
   function jobAttemptKey(shotId: string): number {

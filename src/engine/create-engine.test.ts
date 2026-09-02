@@ -386,6 +386,7 @@ function engine(overrides: Partial<Parameters<typeof createEngine>[0]> = {}) {
     assets: new MemoryAssetStore(),
     render: fakeRender,
     audit: passingAudit,
+    plateTake: async (_plate, seconds) => buildPortraitMp4(seconds),
     ...overrides,
   });
 }
@@ -973,7 +974,7 @@ describe("engine phase 0", () => {
     );
   });
 
-  it("sends only the location plate on an empty establishing — never a face", async () => {
+  it("cuts an empty establishing from the location plate and never sends it to a video model", async () => {
     const submits: Array<{ urls: string[]; prompt: string }> = [];
     const ai = testGateway();
     const inner = ai.video.submit;
@@ -981,7 +982,7 @@ describe("engine phase 0", () => {
       submits.push({ urls: request.visual_reference_urls, prompt: request.prompt });
       return inner(request);
     };
-    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore(), plateTake: async (_plate, seconds) => buildPortraitMp4(seconds) });
     const series = await app.createSeries({
       owner_id: "user-1",
       title: "Forbidden Billionaire",
@@ -1014,15 +1015,20 @@ describe("engine phase 0", () => {
         !shot.shot_data.dialogue,
     );
     if (!wide) return;
+    const before = submits.length;
+    const balanceBefore = app.balance(series.id);
     await app.generateVideo({ owner_id: "user-1", shot_id: wide.id });
     const job = [...app.store.jobs.values()].find((row) => row.shot_id === wide.id && row.job_type === "video");
     expect(job).toBeTruthy();
-    expect(String(job!.request_metadata.prompt)).toMatch(/EMPTY ROOM|NO people/i);
-    expect(["wardrobe", "object"]).toContain(job!.request_metadata.first_frame_kind);
-    expect(job!.request_metadata.first_frame_kind).not.toBe("face");
-    expect(job!.request_metadata.first_frame_kind).not.toBe("cu");
-    const sent = submits.at(-1);
-    expect(sent?.urls.length).toBeLessThanOrEqual(1);
+    expect(job!.model).toBe("plate/zoompan");
+    expect(job!.status).toBe("completed");
+    expect(job!.actual_cost).toBe(0);
+    expect(submits.length).toBe(before);
+    expect(app.balance(series.id)).toBe(balanceBefore);
+    const shot = app.store.shots.get(wide.id)!;
+    expect(shot.status).toBe("complete");
+    expect(shot.shot_data.take_analysis?.face_count).toBe(0);
+    expect(job!.result_metadata.take_blockers).toEqual([]);
   });
 
   it("derives a CU first_frame from a full-body still instead of sending the plate", async () => {
@@ -1124,7 +1130,10 @@ describe("engine phase 0", () => {
       title: "You Knew",
     });
     const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
-    const silent = planned.shots.find((shot) => !shot.shot_data.dialogue)!;
+    // A silent shot that is generated (not an empty wide, which is cut from the plate).
+    const silent = planned.shots.find(
+      (shot) => !shot.shot_data.dialogue && shot.shot_data.function !== "establishing" && shot.shot_data.type !== "establishing",
+    )!;
     const { job } = await app.generateVideo({ owner_id: "user-1", shot_id: silent.id });
     expect(job.status).toBe("generating");
     expect(job.upstream_job_id).toBeTruthy();

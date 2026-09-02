@@ -13,6 +13,8 @@ import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 
 export const VIDEO_CONCURRENCY = 3;
+/** Generated attempts per shot before the production stops for a human. */
+export const VIDEO_RETRY_CAP = 3;
 
 export type EngineAction =
   | "analyze"
@@ -920,11 +922,43 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     });
     const { data: videoJobs } = await client
       .from("generation_jobs")
-      .select("shot_id, job_type, status")
+      .select("shot_id, job_type, status, model")
       .eq("series_id", series_id)
       .eq("job_type", "video");
     const playable = await playableTakesByShot(client, series_id);
     const unfinishedVideo = (shots ?? []).filter((shot) => !playable.has(shot.id));
+    // A shot with no clean take after RETRY_CAP generated attempts stops the
+    // production for a human instead of buying a fourth, fifth, sixth take.
+    const attemptsByShot = new Map<string, number>();
+    for (const job of videoJobs ?? []) {
+      if (!job.shot_id || job.model === "plate/zoompan") continue;
+      if (["completed", "needs_review", "failed", "cancelled"].includes(job.status)) {
+        attemptsByShot.set(job.shot_id, (attemptsByShot.get(job.shot_id) ?? 0) + 1);
+      }
+    }
+    const exhausted = unfinishedVideo.filter((shot) => {
+      const data = (shot.shot_data ?? {}) as Record<string, unknown>;
+      const isWide = data.function === "establishing" || data.type === "establishing";
+      return !isWide && (attemptsByShot.get(shot.id) ?? 0) >= VIDEO_RETRY_CAP;
+    });
+    if (exhausted.length) {
+      await client
+        .from("productions")
+        .update({
+          status: "needs_user",
+          ui_phase: "needs_you",
+          intervention_type: "quality_budget",
+          intervention: {
+            kind: "quality",
+            message: `${exhausted.length} shot(s) did not produce a clean take in ${VIDEO_RETRY_CAP} attempts.`,
+            shot_ids: exhausted.map((shot) => shot.id),
+          },
+          agent_decision: "Every attempt on these shots was rejected by QC. Review the takes, use the best, or reshoot with a different line.",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", productionId);
+      return { queued, complete: false, exhausted: exhausted.map((shot) => shot.id) };
+    }
     const missingVideo = unfinishedVideo.filter((shot) =>
       shotNeedsVideo(shot, videoJobs ?? [], { hasTake: playable.has(shot.id) }),
     );
@@ -1030,9 +1064,23 @@ async function playableTakesByShot(client: SupabaseClient, seriesId: string): Pr
     .eq("series_id", seriesId)
     .eq("job_type", "video")
     .order("updated_at", { ascending: true });
+  // A take with blockers is not playable; a shot whose every take is blocked has none.
+  const blockedShots = new Set<string>();
+  const cleanShots = new Set<string>();
   for (const job of jobs ?? []) {
-    const assetId = (job.result_metadata as Record<string, unknown> | null)?.asset_id;
-    if (job.shot_id && typeof assetId === "string" && live.has(assetId)) takes.set(job.shot_id, assetId);
+    const meta = (job.result_metadata as Record<string, unknown> | null) ?? {};
+    const assetId = meta.asset_id;
+    if (!job.shot_id || typeof assetId !== "string" || !live.has(assetId)) continue;
+    const blockers = Array.isArray(meta.take_blockers) ? meta.take_blockers : [];
+    if (blockers.length) {
+      blockedShots.add(job.shot_id);
+      continue;
+    }
+    cleanShots.add(job.shot_id);
+    takes.set(job.shot_id, assetId);
+  }
+  for (const shotId of blockedShots) {
+    if (!cleanShots.has(shotId)) takes.delete(shotId);
   }
   return takes;
 }

@@ -466,7 +466,9 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
   let score = 100;
 
   if (context.dialogueCu && !analysis.has_audio) blockers.push("native_audio_missing");
-  if (analysis.second_body) blockers.push("invented_people");
+  // The vision judge's face count is authoritative when it ran; the skin-blob
+  // heuristic only decides when no judgement exists.
+  if (analysis.second_body && analysis.face_count == null) blockers.push("invented_people");
   if (analysis.sheer_or_bra) blockers.push("modest_dress");
   if (context.lockedTake && analysis.internal_cut_count > 0) blockers.push("internal_cut");
   if (analysis.face_similarity != null && analysis.face_similarity < (context.faceSimilarityFloor ?? FACE_SIMILARITY_FLOOR)) {
@@ -514,6 +516,10 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     }
     if (analysis.mouth_open_seconds != null && analysis.mouth_open_seconds < analysis.settle_in_seconds) {
       // The mouth opened while the room was still morphing: the trimmed cut loses the first syllable.
+      blockers.push("speaks_before_settle");
+    }
+    if (analysis.voice_onset_seconds != null && analysis.voice_onset_seconds < analysis.settle_in_seconds - 0.2) {
+      // The voice starts inside the morph: trimming the settle would cut the line's head.
       blockers.push("speaks_before_settle");
     }
   }
