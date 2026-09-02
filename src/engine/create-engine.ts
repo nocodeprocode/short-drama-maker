@@ -364,6 +364,12 @@ export function createEngine(deps: EngineDeps = {}) {
   }
 
   function reserve(job: GenerationJob) {
+    // A task that failed after reserving and was persisted keeps its hold; the
+    // retry reuses the job and must not reserve twice (or be refused for it).
+    if (hasLedgerPair(store.ledger, job.id, "reserve") && !hasLedgerPair(store.ledger, job.id, "release") && !hasLedgerPair(store.ledger, job.id, "settle")) {
+      ai.meter.take();
+      return;
+    }
     assertCanReserve(
       store.ledger.filter((row) => row.series_id === job.series_id),
       job.id,

@@ -75,7 +75,7 @@ export function reservedForJob(
 export function hasLedgerPair(
   entries: readonly LedgerEntry[],
   generationJobId: string,
-  entryType: "reserve" | "settle",
+  entryType: "reserve" | "settle" | "release",
 ): boolean {
   return entries.some(
     (entry) =>
