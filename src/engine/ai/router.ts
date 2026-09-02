@@ -81,6 +81,15 @@ export const router: AIRouter = {
     const identity = isIdentityCuShot(shot) ? identityCuDecision(duration) : null;
     if (identity) return identity;
 
+    // Any on-camera spoken line needs a route that returns speech with the
+    // picture. A "hero" button on Seedance came back silent and muted the
+    // cliffhanger; the hero route is for picture-only beats.
+    const spokenOnCamera =
+      Boolean(shot.shot_data.dialogue) && shot.shot_data.audio_role !== "offscreen" && shot.shot_data.audio_role !== "silent";
+    if (spokenOnCamera && VIDEO_ROUTES.dialogue_default.audio_conditioning_verified) {
+      return pick("dialogue_default", duration, "spoken on camera — audio-capable route");
+    }
+
     if (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") {
       return pick(
         "visual_default",

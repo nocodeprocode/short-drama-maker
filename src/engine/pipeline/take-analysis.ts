@@ -179,8 +179,13 @@ export function settleInPointFromSteps(
   if (!steps.length) return 0;
   const total = drift.length ? Math.max(...drift) : 0;
   if (drift.length && total <= SETTLE_NO_MORPH_THRESHOLD) return 0;
+  // A morph shows as a velocity spike. A take whose velocity never exceeds the
+  // calm ceiling is a steady performance (natural head motion drifts too), and
+  // must not be trimmed at all.
+  const spikeAt = steps.findIndex((step) => step > SETTLE_STEP_MAX);
+  if (spikeAt < 0) return 0;
   const needed = drift.length ? total * SETTLE_DRIFT_SHARE : 0;
-  for (let i = 0; i < steps.length; i += 1) {
+  for (let i = spikeAt; i < steps.length; i += 1) {
     const calm = (steps[i] ?? 999) <= SETTLE_STEP_MAX && (steps[i + 1] ?? 0) <= SETTLE_STEP_MAX + 2;
     const moved = !drift.length || (drift[i] ?? 0) >= needed;
     if (calm && moved) return Math.min(I2V_SETTLE_MAX_SECONDS, Number((i * hop).toFixed(2)));
@@ -568,6 +573,10 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     if (analysis.viseme_pad_seconds > 0) {
       warnings.push("voice_leads_mouth_padded");
       score -= Math.min(15, analysis.viseme_pad_seconds * 10);
+    }
+    if (analysis.sync_lag_ms != null && analysis.sync_lag_ms < -VOICE_LEAD_PAD_MAX_SECONDS * 1000 - SYNC_SHIP_LIMIT_MS) {
+      // The voice starts so far before the lips that no pad can hide it.
+      blockers.push("voice_leads_mouth_unfixable");
     }
     if (analysis.audio_slip_seconds > 0) {
       warnings.push("mouth_leads_voice_slipped");

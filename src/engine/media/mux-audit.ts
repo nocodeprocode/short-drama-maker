@@ -280,7 +280,9 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.35);
         const word = words.find((row) => row.start >= searchFrom && row.start < pictureStart + pictureLength);
         voice = word ? Number(word.start.toFixed(3)) : null;
-      } else if (samples && expectedVoice != null) {
+      }
+      if (voice == null && samples && expectedVoice != null) {
+        // No transcribed word in the window (a lone name can be missed): level onset.
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.25);
         const at = firstVoicedSecond(samples, 16000, searchFrom);
         voice = at != null && at < pictureStart + pictureLength ? at : null;
@@ -290,7 +292,11 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       const limitMs = input.limitMs ?? (analysis.mouth_open_seconds != null && analysis.sync_lag_ms != null && Math.abs(analysis.sync_lag_ms) <= MUX_SYNC_LIMIT_MS
         ? MUX_SYNC_LIMIT_MS
         : MUX_SYNC_SOFT_LIMIT_MS);
-      const passSync = lagMs != null && Math.abs(lagMs) <= limitMs;
+      // With a known mouth the gate is lip sync; without one it is placement:
+      // the voice must land where the manifest put it.
+      const placementMs = voice != null && expectedVoice != null ? Math.round((voice - expectedVoice) * 1000) : null;
+      const passSync =
+        lagMs != null ? Math.abs(lagMs) <= limitMs : placementMs != null && Math.abs(placementMs) <= MUX_SYNC_SOFT_LIMIT_MS;
 
       const open = await grayFrameAt(file, pictureStart + 0.05);
       const later = await grayFrameAt(file, pictureStart + 0.05 + HEAD_STEP_WINDOW_SECONDS);

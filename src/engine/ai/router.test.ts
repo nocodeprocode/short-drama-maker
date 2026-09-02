@@ -32,7 +32,10 @@ describe("video router", () => {
   it("hides model lists and picks by shot role", () => {
     const dialogue = router.selectVideoRoute(shot({ type: "dialogue" }), "standard", "auto");
     expect(dialogue.route.model).toBe("alibaba/wan-3.0");
-    expect(dialogue.reason).toMatch(/verified audio-conditioned dialogue/);
+    expect(dialogue.reason).toMatch(/verified audio-conditioned dialogue|audio-capable route/);
+    // A hero-flagged spoken line still goes to the audio-capable route, never a silent model.
+    const heroLine = router.selectVideoRoute(shot({ type: "hero", hero: true, dialogue: "Then whose name is on it?", audio_role: "onscreen" }), "standard", "auto");
+    expect(heroLine.route.model).toBe("alibaba/wan-3.0");
 
     const reaction = router.selectVideoRoute(
       shot({ type: "reaction", dialogue: null, speaker: null, duration_seconds: 4 }),

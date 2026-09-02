@@ -675,8 +675,10 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     // whole episode. A spike scene keeps the bed lower throughout.
     const spiked = localManifest.shots.some((shot) => shot.spike);
     const { thresholdLinear, ratio, attackMs, releaseMs } = LOUDNESS.duck;
+    // The dialogue bus runs the full programme length; otherwise the sidechain
+    // (and with it the bed and the whole mix under -shortest) ends at the last line.
     const duckGraph =
-      `[dlgraw]asplit=2[dlg][dlgsc];` +
+      `[dlgraw]apad=whole_dur=${(total + 0.5).toFixed(3)},atrim=0:${(total + 0.5).toFixed(3)},asplit=2[dlg][dlgsc];` +
       `[bedmix][dlgsc]sidechaincompress=threshold=${thresholdLinear}:ratio=${ratio}:attack=${attackMs}:release=${releaseMs}:makeup=1` +
       (spiked ? ",volume=0.6" : "") +
       `[bed]`;

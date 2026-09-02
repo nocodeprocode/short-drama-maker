@@ -30,7 +30,8 @@ export { pickTransition };
  */
 export function pictureInPointFor(shot: Shot): number {
   const settle = shot.shot_data.take_analysis?.settle_in_seconds;
-  if (settle != null && settle > 0) return Number(settle.toFixed(2));
+  // A measured take starts where its measurement says, including at 0.
+  if (settle != null) return Number(Math.max(0, settle).toFixed(2));
   if (shot.shot_data.function === "hook_cu" || shot.shot_data.heard_audio === "native") return 0;
   return HEAD_HANDLE_SECONDS;
 }

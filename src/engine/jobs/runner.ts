@@ -229,6 +229,27 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
   }
 
   let result: unknown;
+  try {
+    result = await runAction();
+  } catch (error) {
+    // A refused render or a dropped take is state the engine recorded (audit
+    // asset, needs_review, ledger release). Persist it before surfacing the error.
+    if (task.action !== "advance_production") {
+      const snapshot = "snapshot" in assets && typeof assets.snapshot === "function" ? assets.snapshot() : assetRows;
+      await commitSeriesStore(client, engine.store, task.series_id, snapshot).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  if (task.action !== "advance_production") {
+    const snapshot =
+      "snapshot" in assets && typeof assets.snapshot === "function" ? assets.snapshot() : assetRows;
+    await commitSeriesStore(client, engine.store, task.series_id, snapshot);
+  }
+  return result;
+
+  async function runAction(): Promise<unknown> {
+  let result: unknown;
   switch (task.action) {
     case "analyze":
       result = await engine.analyze({ owner_id, series_id: task.series_id });
@@ -340,13 +361,8 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
     default:
       throw new Error(`Unknown engine action ${task.action}`);
   }
-
-  if (task.action !== "advance_production") {
-    const snapshot =
-      "snapshot" in assets && typeof assets.snapshot === "function" ? assets.snapshot() : assetRows;
-    await commitSeriesStore(client, engine.store, task.series_id, snapshot);
-  }
   return result;
+  }
 }
 
 async function sweepActiveJobs(client: SupabaseClient): Promise<void> {

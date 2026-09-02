@@ -195,6 +195,35 @@ async function main() {
       }
       process.stdout.write(`queued ${queued} rejection(s) of non-CU-seeded takes\n`);
     }
+    // After the routing fix: a spoken line whose take has no audio must be reshot on an audio route.
+    if (process.argv.includes("--reshoot-silent-dialogue")) {
+      const { data: jobs } = await client.from("generation_jobs").select("shot_id, result_metadata, model").eq("series_id", seriesId).eq("job_type", "video");
+      const { data: shotRows } = await client.from("shots").select("id, shot_data").in("id", [...new Set((jobs ?? []).map((job) => job.shot_id).filter((id): id is string => Boolean(id)))]);
+      const spoken = new Set(
+        (shotRows ?? [])
+          .filter((row) => {
+            const data = (row.shot_data ?? {}) as Record<string, unknown>;
+            return Boolean(data.dialogue) && data.audio_role !== "offscreen" && data.audio_role !== "silent";
+          })
+          .map((row) => row.id),
+      );
+      let queued = 0;
+      for (const job of jobs ?? []) {
+        const res = (job.result_metadata ?? {}) as Record<string, unknown>;
+        const analysis = res.take_analysis as { has_audio?: boolean } | undefined;
+        if (!job.shot_id || !spoken.has(job.shot_id) || typeof res.asset_id !== "string" || analysis?.has_audio !== false) continue;
+        await client.from("engine_tasks").insert({
+          owner_id: ownerId,
+          series_id: seriesId,
+          production_id: productionId,
+          action: "review_take",
+          payload: { shot_id: job.shot_id, asset_id: res.asset_id, decision: "reject", note: `no native audio from ${job.model}; reshoot on an audio route` },
+          status: "queued",
+        });
+        queued += 1;
+      }
+      process.stdout.write(`queued ${queued} rejection(s) of silent dialogue takes\n`);
+    }
     // Reviewer pass: formally reject every blocked take so the retry cap resets and the shot reshoots.
     if (process.argv.includes("--reject-blocked")) {
       const { data: jobs } = await client.from("generation_jobs").select("shot_id, result_metadata").eq("series_id", seriesId).eq("job_type", "video");
