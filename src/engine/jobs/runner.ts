@@ -974,11 +974,27 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
         attemptsByShot.set(job.shot_id, (attemptsByShot.get(job.shot_id) ?? 0) + 1);
       }
     }
+    // Work already queued on a shot (a re-judge, a reviewer decision, a rewritten
+    // line, a reshoot) is a verdict in progress; the shot is not exhausted until
+    // that work has run. This matters with two runners: the orchestrator must
+    // not stop the production while the media runner still owns the shot.
+    const { data: pendingShotTasks } = await client
+      .from("engine_tasks")
+      .select("payload")
+      .eq("series_id", series_id)
+      .in("action", ["rejudge_shot", "review_take", "revise_line", "regenerate_shot", "generate_video", "generate_dialogue"])
+      .in("status", ["queued", "running"]);
+    const pendingShots = new Set(
+      (pendingShotTasks ?? [])
+        .map((row) => (row.payload as Record<string, unknown> | null)?.shot_id)
+        .filter((id): id is string => typeof id === "string"),
+    );
     const exhausted = unfinishedVideo.filter((shot) => {
       const data = (shot.shot_data ?? {}) as Record<string, unknown>;
       const isWide = data.function === "establishing" || data.type === "establishing";
-      return !isWide && (attemptsByShot.get(shot.id) ?? 0) >= VIDEO_RETRY_CAP;
+      return !isWide && !pendingShots.has(shot.id) && (attemptsByShot.get(shot.id) ?? 0) >= VIDEO_RETRY_CAP;
     });
+    if (pendingShots.size) waitingOnVideo = true;
     if (exhausted.length) {
       await client
         .from("productions")
