@@ -3213,19 +3213,19 @@ export function createEngine(deps: EngineDeps = {}) {
         return scene ? { location: scene.location || scene.scene_data.location, time: scene.scene_data.time } : null;
       },
       durationFor: (shot) => {
-        const licensedSilence =
-          !shot.shot_data.dialogue &&
-          (shot.shot_data.silence_license === "post_nuke" || shot.shot_data.silence_license === "post_slap");
-        if (licensedSilence) {
-          return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
-        }
+        const planned = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
         const take = takeDuration.get(shot.id);
         // The settle trim removes the I2V morph from the head of the take, so the
         // playable picture is what remains after it.
         const settle = shot.shot_data.take_analysis?.settle_in_seconds ?? 0;
         const slip = shot.shot_data.take_analysis?.audio_slip_seconds ?? 0;
-        if (take != null) return Math.max(0.4, take - settle - slip);
-        return shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+        const playable = take != null ? Math.max(0.4, take - settle - slip) : null;
+        const licensedSilence =
+          !shot.shot_data.dialogue &&
+          (shot.shot_data.silence_license === "post_nuke" || shot.shot_data.silence_license === "post_slap");
+        // A licensed hold keeps its planned length, but never past the end of the take.
+        if (licensedSilence) return playable != null ? Math.min(planned, playable) : planned;
+        return playable ?? planned;
       },
     });
     const alignments: Array<AlignmentTrack | null> = [];

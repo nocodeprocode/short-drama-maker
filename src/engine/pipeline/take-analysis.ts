@@ -54,6 +54,8 @@ export type TakeAnalysis = {
   /** Native transcript when STT ran; the voice onset came from its first word. */
   transcript?: string | null;
   voice_onset_source?: "stt" | "level" | null;
+  /** True when the audio was actually probed for speech (level and/or transcript). */
+  speech_checked?: boolean;
   measured_at: string;
 };
 
@@ -456,6 +458,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       ]);
       let voice = levelVoice;
       base.voice_onset_source = levelVoice == null ? null : "level";
+      base.speech_checked = probe.has_audio;
       if (input.transcribe && probe.has_audio) {
         try {
           const mp3 = await extractAudioMp3(input.video);
@@ -534,6 +537,8 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
   let score = 100;
 
   if (context.dialogueCu && !analysis.has_audio) blockers.push("native_audio_missing");
+  // An audio track with no voice on it is a silent line, not a performance.
+  if (context.dialogueCu && analysis.has_audio && analysis.voice_onset_seconds == null && analysis.speech_checked) blockers.push("no_speech");
   // The vision judge's face count is authoritative when it ran; the skin-blob
   // heuristic only decides when no judgement exists.
   if (analysis.second_body && analysis.face_count == null) blockers.push("invented_people");
