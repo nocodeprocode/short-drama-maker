@@ -596,6 +596,48 @@ function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {
       shot.silence_license = shot.silence_license ?? "post_nuke";
     }
   }
+  // An emotion node (reaction, insert, question, block edge) every 30 s: where
+  // a run of statements would exceed it, cut to the listener for 2.5 s.
+  {
+    let clock = 0;
+    let lastNode = 0;
+    for (const scene of scenes) {
+      const out: PlanShot[] = [];
+      for (const [index, shot] of scene.shots.entries()) {
+        const node =
+          ["insert_evidence", "phone_ui", "slap_peak", "doorway_reveal", "block_button", "button_cu", "reaction"].includes(shot.function ?? "") ||
+          index === 0 ||
+          index === scene.shots.length - 1 ||
+          Boolean(shot.dialogue && /\?/.test(shot.dialogue));
+        if (!node && clock + shot.duration_hint_seconds - lastNode > 28) {
+          const listener = scene.characters.find((name) => name !== shot.speaker) ?? scene.characters[0] ?? null;
+          out.push({
+            type: "reaction",
+            speaker: listener,
+            dialogue: null,
+            emotion: "absorbing the blow",
+            delivery: null,
+            pace: null,
+            camera: `Medium close-up of ${listener ?? "the listener"}'s face, listening, eyes down then up`,
+            mouth_visibility_required: false,
+            duration_hint_seconds: 2.5,
+            function: "reaction",
+            audio_role: "silent",
+            edit_mode: "locked_take",
+            eyeline: "lens_forbidden",
+            silence_license: "post_nuke",
+            block_index: shot.block_index,
+          });
+          clock += 2.5;
+          lastNode = clock;
+        }
+        out.push(shot);
+        clock += shot.duration_hint_seconds;
+        if (node) lastNode = clock;
+      }
+      scene.shots = out;
+    }
+  }
   flat = scenes.flatMap((scene) => scene.shots);
   // Episode-level backstop: if the blocks still sum under the floor, lengthen
   // the shortest growable shots across the episode, spread evenly.
