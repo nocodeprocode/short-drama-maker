@@ -954,7 +954,11 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     // count: a rejection is an instruction to shoot again.
     const reviewedAt = new Map<string, number>();
     for (const shot of shots ?? []) {
-      const reviews = ((shot.shot_data ?? {}) as Record<string, unknown>).take_reviews;
+      const data = (shot.shot_data ?? {}) as Record<string, unknown>;
+      // A rewritten line resets the budget the same way a reviewer decision does.
+      const revised = typeof data.line_revised_at === "string" ? Date.parse(data.line_revised_at) : NaN;
+      if (Number.isFinite(revised)) reviewedAt.set(shot.id, Math.max(reviewedAt.get(shot.id) ?? 0, revised));
+      const reviews = data.take_reviews;
       if (!Array.isArray(reviews)) continue;
       for (const review of reviews as Array<{ reviewed_at?: string }>) {
         const at = review.reviewed_at ? Date.parse(review.reviewed_at) : NaN;
