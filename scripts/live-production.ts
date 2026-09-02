@@ -143,6 +143,21 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // Same as the Resume button: clear the stop and queue the next advance.
+    if (production.status === "needs_user" || production.paused) {
+      await client
+        .from("productions")
+        .update({ status: "queued", paused: false, intervention_type: null, intervention: {}, ui_phase: "preparing", agent_decision: "Resumed by live driver.", updated_at: new Date().toISOString() })
+        .eq("id", productionId);
+      await client.from("engine_tasks").insert({
+        owner_id: ownerId,
+        series_id: seriesId,
+        production_id: productionId,
+        action: "advance_production",
+        payload: { production_id: productionId },
+        status: "queued",
+      });
+    }
   }
 
   const started = Date.now();
