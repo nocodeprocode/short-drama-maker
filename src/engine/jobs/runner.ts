@@ -12,7 +12,8 @@ import { voiceSexRepair } from "../ai/voice-sex.ts";
 import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 
-export const VIDEO_CONCURRENCY = 3;
+/** Takes kept in flight per series; the provider renders them concurrently. */
+export const VIDEO_CONCURRENCY = Math.min(12, Math.max(1, Number(process.env.VIDEO_CONCURRENCY ?? 3) || 3));
 /** Generated attempts per shot before the production stops for a human. */
 export const VIDEO_RETRY_CAP = 3;
 
