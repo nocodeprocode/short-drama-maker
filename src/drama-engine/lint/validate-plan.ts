@@ -133,6 +133,18 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     ),
   );
 
+  // Dialogue-first: a short drama is spoken. Under half spoken is a montage.
+  const spokenShare = shots.length ? shots.filter((shot) => Boolean(shot.dialogue)).length / shots.length : 0;
+  reports.push(
+    qc(
+      "DIALOGUE_SHARE",
+      shots.length === 0 || spokenShare >= 0.45,
+      `${Math.round(spokenShare * 100)}% spoken`,
+      "≥45% of takes carry a line",
+      "warn",
+    ),
+  );
+
   const hookIndex = Math.max(0, shots.findIndex((shot) => !shot.recap));
   const first = shots[hookIndex] ?? shots[0];
   const firstFn = first ? inferFunction(first, hookIndex, shots.length) : undefined;

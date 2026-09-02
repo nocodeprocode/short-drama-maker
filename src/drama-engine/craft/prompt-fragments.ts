@@ -153,6 +153,7 @@ Write 12–18 scene-blocks. Each block is a full 50–75s Beat Engine. Mid-repri
 
 export function writeBlockBatchShape(): string {
   return `Plan shots for the given scene-blocks only (a batch of 3–4). Each block: 8–12 locked takes, 4–8s, hook → friction → spike → block_button. Coverage: one establishing/wide of the locked location, one silent two-shot/group when 2+ people, singles for dialogue, one insert, one comic/stun cutaway + SFX. Last block of the episode uses function=button_cu. Dialogue ≤12 words. No Cut to.
+DIALOGUE-FIRST: at least 6 of every block's takes carry a spoken line (dialogue non-null, speaker from the locked cast, audio_role onscreen or offscreen). The block_button is always a spoken line. Silent takes are only the establishing, the insert, the two-shot and at most two priced reactions. Two or more different speakers per block.
 JSON shape:
 {
   "scenes": [{

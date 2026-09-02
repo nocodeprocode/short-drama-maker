@@ -38,6 +38,7 @@ export type DramaQcId =
   | "CONTINUITY_JUMP"
   | "LIGHT_JUMP"
   | "BUTTON_QUESTION"
+  | "DIALOGUE_SHARE"
   | "COMIC_STING";
 
 export type QcReport = {

@@ -193,10 +193,24 @@ function growToWindow(shots: PlanShot[], budget: LengthBudget): PlanShot[] {
         shot.silence_license !== "post_nuke" &&
         shot.silence_license !== "post_slap",
     );
-    const bump = growable.length ? deficit / growable.length : 0;
-    for (const shot of growable) {
-      const cap = isSpokenLine(shot) ? budget.max_dialogue_s : budget.max_shot_s;
-      shot.duration_hint_seconds = Math.min(cap, shot.duration_hint_seconds + bump);
+    // Silent shots have a legal ceiling of their own: an insert or wide can read
+    // for six seconds, a silent face for three. Growing them to the shot cap
+    // manufactures the stares the lint forbids.
+    const capFor = (shot: PlanShot) => {
+      if (isSpokenLine(shot)) return budget.max_dialogue_s;
+      const readable = shot.function === "insert_evidence" || shot.function === "phone_ui" || shot.function === "establishing" || shot.function === "stacked_two" || shot.type === "broll" || shot.type === "establishing";
+      return Math.min(budget.max_shot_s, readable ? 6 : 3);
+    };
+    let remaining = deficit;
+    for (let pass = 0; pass < 4 && remaining > 0.05; pass += 1) {
+      const room = growable.filter((shot) => shot.duration_hint_seconds < capFor(shot));
+      if (!room.length) break;
+      const bump = remaining / room.length;
+      for (const shot of room) {
+        const before = shot.duration_hint_seconds;
+        shot.duration_hint_seconds = Math.min(capFor(shot), before + bump);
+        remaining -= shot.duration_hint_seconds - before;
+      }
     }
     sum = all.reduce((acc, shot) => acc + shot.duration_hint_seconds, 0);
   }
@@ -437,14 +451,34 @@ function sealBlock(shots: PlanShot[], plan: EpisodePlan, lastBlock: boolean, fir
   last.function = lastBlock ? "button_cu" : "block_button";
   last.eyeline = last.eyeline ?? "lens_forbidden";
   last.edit_mode = last.edit_mode ?? "locked_take";
-  if (lastBlock && (!last.dialogue || isNarrationLine(last.dialogue))) {
-    last.dialogue = cliffLine(plan);
+  if (!last.dialogue || isNarrationLine(last.dialogue)) {
+    // A button is a spoken turn. The episode's last block takes the
+    // cliffhanger; every other block takes its outline button line.
+    last.dialogue = lastBlock ? cliffLine(plan) : blockButtonLine(plan, last.block_index ?? null);
     last.speaker = last.speaker ?? last.speaker_on_camera ?? shots.find((shot) => shot.speaker)?.speaker ?? "Lead";
-    last.type = "hero";
+    last.speaker_on_camera = last.speaker;
+    last.type = lastBlock ? "hero" : "dialogue";
     last.audio_role = "onscreen";
     last.mouth_visibility_required = true;
+    last.silence_license = null;
+    if (cameraIsObjectPlate(last.camera) || !cameraDescribesFace(last.camera)) {
+      last.camera = `Tight single on ${last.speaker}'s face, eyes to the off-screen partner, one held breath before the line`;
+    }
   }
   return shots;
+}
+
+/** The outline's button for a block, cut to a speakable line; a generic turn when the outline has none. */
+function blockButtonLine(plan: EpisodePlan, blockIndex: number | null): string {
+  const outline = (plan as { outline?: { blocks?: Array<{ index: number; button?: string; opens_hook?: string }> } }).outline;
+  const block = outline?.blocks?.find((row) => row.index === blockIndex);
+  const raw = (block?.button || block?.opens_hook || "").replace(/\s+/g, " ").trim();
+  const words = raw.split(" ").filter(Boolean);
+  if (words.length >= 3) {
+    const line = words.slice(0, DIALOGUE_MAX_WORDS).join(" ").replace(/[.,;:]+$/, "");
+    return /[?!]$/.test(line) ? line : `${line}?`;
+  }
+  return "Then who signed it?";
 }
 
 function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {

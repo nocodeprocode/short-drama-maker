@@ -35,5 +35,6 @@ export const LINT_RULES: LintRule[] = [
   { id: "CONTINUITY_JUMP", severity: "warn", threshold: "a location change opens on a wide or insert" },
   { id: "LIGHT_JUMP", severity: "warn", threshold: "a time-of-day change opens on a wide or insert" },
   { id: "BUTTON_QUESTION", severity: "warn", threshold: "button line or cliffhanger is an unpaid question or reversal" },
+  { id: "DIALOGUE_SHARE", severity: "warn", threshold: "at least 45% of takes carry a spoken line" },
   { id: "COMIC_STING", severity: "block", threshold: "≥1 comic/stun cutaway + SFX" },
 ];
