@@ -165,7 +165,7 @@ export class RenderIncompleteError extends Error {
 /** Below this many takes an episode renders in one pass; above it, per block with reuse. */
 export const BLOCK_RENDER_MIN_SHOTS = 24;
 /** Image attempts for an empty location plate before the lock fails loudly. */
-export const LOCATION_PLATE_ATTEMPTS = 3;
+export const LOCATION_PLATE_ATTEMPTS = 4;
 
 function emptyAppearance(): AppearanceProfile {
   return { age_look: "", ethnicity_notes: "", hair: "", face: "", body: "", default_wardrobe: "" };
@@ -1250,13 +1250,18 @@ export function createEngine(deps: EngineDeps = {}) {
       let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
       let peoplePresent: boolean | null = null;
       let notes: Record<string, unknown> = {};
+      // The physical description only; a name like "wall of household files"
+      // reads as a household and the model staffs it.
+      const physical = location.split(/\s[—–-]\s/).slice(1).join(", ").trim() || location;
       for (let attempt = 0; attempt < LOCATION_PLATE_ATTEMPTS; attempt += 1) {
         const candidate = await ai.image.generateReference({
           characterName: location,
           description:
-            `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. ` +
-            `EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person, no silhouettes, no figures with their back to camera, no reflections of people, no portraits or photographs of people on the walls.` +
-            (attempt > 0 ? " The previous attempt contained a human figure; this frame must show furniture and architecture only, with nobody in it in any form." : ""),
+            attempt === 0
+              ? `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. ` +
+                `EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person, no silhouettes, no figures with their back to camera, no reflections of people, no portraits or photographs of people on the walls.`
+              : `Unoccupied interior, architectural photography for a design magazine: ${physical}. Vacant, nobody present, no staff, no figures, no silhouettes, no reflections of people, no portraits or photographs of people on the walls, no mannequins. ` +
+                `Wide 9:16 frame, one key light and grade, cinematic colour. The room is empty and still.`,
           kind: "location",
         });
         image = candidate;
