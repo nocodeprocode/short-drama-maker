@@ -1,6 +1,12 @@
 import { LOCKED_TAKE_CLAUSE } from "../craft/prompt-fragments.ts";
 
 const TWO_SHOT_PHRASES = [
+  // Over-the-shoulder language puts a second body in a "single"; the model draws it.
+  /\bOTS\b(?:\s+single)?/g,
+  /\bover[- ]the[- ]shoulder\b/gi,
+  /\bfrom (?:just )?behind [A-Z][a-z]+(?:'s)? (?:left |right )?shoulder\b/g,
+  /\b(?:with )?[A-Z][a-z]+(?:'s)? (?:blurred |soft )?(?:shoulder|back|silhouette|profile) (?:in|fills?|frames?) (?:the )?(?:foreground|frame edge|left|right)\b/g,
+  /\b[A-Z][a-z]+ in (?:the )?(?:soft )?foreground\b/g,
   /\btwo-shot\b/gi,
   /\btwo shot\b/gi,
   /\bboth of them\b/gi,

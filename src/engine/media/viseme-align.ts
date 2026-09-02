@@ -191,7 +191,24 @@ const MOUTH_H = 28;
 /** Lower-center of the face still region (mouth), not a mid-face crop that misses visemes. */
 const MOUTH_CROP = `crop=iw*0.30:ih*0.12:(iw-iw*0.30)/2:ih*0.54,scale=${MOUTH_W}:${MOUTH_H},format=gray`;
 
-export async function firstMouthOpenSecond(video: Uint8Array): Promise<number | null> {
+/** Normalised face box (0–1) from the vision model; the mouth is its lower third. */
+export type NormalizedFaceBox = { x: number; y: number; width: number; height: number };
+
+/**
+ * Crop filter for the mouth region. With a face box the region follows the
+ * face (an ECU puts the mouth near 78% of frame height, an MCU near 55%);
+ * without one the historical centre band is used.
+ */
+export function mouthCropFilter(face?: NormalizedFaceBox | null): string {
+  if (!face) return MOUTH_CROP;
+  const w = Math.min(1, Math.max(0.05, face.width * 0.6));
+  const h = Math.min(1, Math.max(0.03, face.height * 0.3));
+  const x = Math.min(1 - w, Math.max(0, face.x + face.width * 0.2));
+  const y = Math.min(1 - h, Math.max(0, face.y + face.height * 0.62));
+  return `crop=iw*${w.toFixed(4)}:ih*${h.toFixed(4)}:iw*${x.toFixed(4)}:ih*${y.toFixed(4)},scale=${MOUTH_W}:${MOUTH_H},format=gray`;
+}
+
+export async function firstMouthOpenSecond(video: Uint8Array, face?: NormalizedFaceBox | null): Promise<number | null> {
   if (video.byteLength < 2_000 || !(await ffmpegAvailable())) return null;
   const dir = await mkdtemp(join(tmpdir(), "sdm-mouth-"));
   const input = join(dir, "take.mp4");
@@ -202,7 +219,7 @@ export async function firstMouthOpenSecond(video: Uint8Array): Promise<number | 
       "-i",
       input,
       "-vf",
-      `fps=10,${MOUTH_CROP}`,
+      `fps=10,${mouthCropFilter(face)}`,
       "-f",
       "rawvideo",
       "pipe:1",

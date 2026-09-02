@@ -212,6 +212,14 @@ describe("assertPlan.hook", () => {
   });
 });
 
+describe("sanitizeCamera.ots", () => {
+  it("removes over-the-shoulder language and the partner's body from a single", () => {
+    const out = sanitizeCamera("OTS single on Mara from behind Petra's right shoulder: Mara's face fully in frame", { single: true });
+    expect(out).not.toMatch(/OTS|shoulder|Petra/);
+    expect(out).toMatch(/Mara's face fully in frame/);
+  });
+});
+
 describe("sanitizeCamera", () => {
   it("strips Cut to and keeps the locked-take clause", () => {
     const out = sanitizeCamera("Cut to tight reaction");

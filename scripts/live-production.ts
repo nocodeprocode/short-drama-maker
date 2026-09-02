@@ -194,6 +194,25 @@ async function main() {
       }
       process.stdout.write(`queued ${queued} rejection(s) of non-CU-seeded takes\n`);
     }
+    // Reviewer pass: formally reject every blocked take so the retry cap resets and the shot reshoots.
+    if (process.argv.includes("--reject-blocked")) {
+      const { data: jobs } = await client.from("generation_jobs").select("shot_id, result_metadata").eq("series_id", seriesId).eq("job_type", "video");
+      let queued = 0;
+      for (const job of jobs ?? []) {
+        const res = (job.result_metadata ?? {}) as Record<string, unknown>;
+        if (!job.shot_id || typeof res.asset_id !== "string" || !Array.isArray(res.take_blockers) || !res.take_blockers.length) continue;
+        await client.from("engine_tasks").insert({
+          owner_id: ownerId,
+          series_id: seriesId,
+          production_id: productionId,
+          action: "review_take",
+          payload: { shot_id: job.shot_id, asset_id: res.asset_id, decision: "reject", note: `blocked: ${(res.take_blockers as string[]).join(",")}` },
+          status: "queued",
+        });
+        queued += 1;
+      }
+      process.stdout.write(`queued ${queued} rejection(s) of blocked takes\n`);
+    }
     // Same as the Resume button: clear the stop and queue the next advance.
     if (production.status === "needs_user" || production.paused) {
       await client

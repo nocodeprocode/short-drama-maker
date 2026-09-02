@@ -10,8 +10,10 @@ import {
   firstMouthOpenSecond,
   firstVoicedSecondFromBytes,
   I2V_SETTLE_MAX_SECONDS,
+  mouthCropFilter,
   visemeAudioPadSeconds,
   VOICE_LEAD_PAD_MAX_SECONDS,
+  type NormalizedFaceBox,
 } from "../media/viseme-align.ts";
 
 /**
@@ -46,6 +48,8 @@ export type TakeAnalysis = {
   /** Set by the identity stage (face embedding); null until it runs. */
   face_similarity: number | null;
   face_count: number | null;
+  /** Face position on a settled frame, when located; the mouth probes used it. */
+  face_box?: NormalizedFaceBox | null;
   measured_at: string;
 };
 
@@ -60,6 +64,12 @@ export type TakeAnalysisInput = {
   wanDialogue?: boolean;
   /** Skip the picture probes (tests, non-ffmpeg environments). */
   skipPixels?: boolean;
+  /**
+   * Finds the face in a JPEG frame sampled after the settle; the mouth probes
+   * follow it. Without this the probes use a fixed centre band, which misses
+   * on extreme close-ups where the mouth sits low in frame.
+   */
+  locateFace?: (frame: Uint8Array) => Promise<NormalizedFaceBox | null>;
   now?: () => string;
 };
 
@@ -202,7 +212,12 @@ const MOUTH_FPS = 20;
  * crop after the settle point. Wardrobe- and lighting-agnostic, unlike the
  * darkness-based probe in viseme-align, which misses on dark-knit takes.
  */
-export async function mouthMotionOnsetSecond(path: string, fromSeconds: number, durationSeconds: number): Promise<number | null> {
+export async function mouthMotionOnsetSecond(
+  path: string,
+  fromSeconds: number,
+  durationSeconds: number,
+  face?: NormalizedFaceBox | null,
+): Promise<number | null> {
   const span = Math.max(0.5, durationSeconds - fromSeconds);
   const raw = await run("ffmpeg", [
     "-y",
@@ -213,7 +228,7 @@ export async function mouthMotionOnsetSecond(path: string, fromSeconds: number, 
     "-i",
     path,
     "-vf",
-    `fps=${MOUTH_FPS},crop=iw*0.30:ih*0.12:(iw-iw*0.30)/2:ih*0.54,scale=${MOUTH_W}:${MOUTH_H},format=gray`,
+    `fps=${MOUTH_FPS},${mouthCropFilter(face).replace(/scale=\d+:\d+/, `scale=${MOUTH_W}:${MOUTH_H}`)}`,
     "-f",
     "rawvideo",
     "pipe:1",
@@ -242,6 +257,14 @@ export async function mouthMotionOnsetSecond(path: string, fromSeconds: number, 
     }
   }
   return null;
+}
+
+async function jpegFrameAt(path: string, seconds: number): Promise<Uint8Array | null> {
+  const raw = await run("ffmpeg", [
+    "-y", "-ss", Math.max(0, seconds).toFixed(2), "-i", path,
+    "-frames:v", "1", "-vf", "scale=360:640", "-q:v", "4", "-f", "image2", "-c:v", "mjpeg", "pipe:1",
+  ]);
+  return raw.ok && raw.stdout.byteLength > 512 ? new Uint8Array(raw.stdout) : null;
 }
 
 export async function measureSettle(
@@ -399,8 +422,18 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
     base.internal_cut_count = cuts.internal_cut_count;
 
     if (input.dialogueCu) {
+      let face: NormalizedFaceBox | null = null;
+      if (input.locateFace) {
+        try {
+          const frame = await jpegFrameAt(take, Math.min(probe.duration_seconds - 0.2, base.settle_in_seconds + 0.3));
+          face = frame ? await input.locateFace(frame) : null;
+        } catch {
+          face = null;
+        }
+      }
+      base.face_box = face;
       const [darkMouth, voice] = await Promise.all([
-        firstMouthOpenSecond(input.video),
+        firstMouthOpenSecond(input.video, face),
         probe.has_audio ? firstVoicedSecondFromBytes(input.video) : Promise.resolve(null),
       ]);
       // Speech-driven mouth motion cannot lead the voice by more than the pad ceiling,
@@ -412,7 +445,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       const mouth =
         darkMouth != null && darkMouth >= searchFrom
           ? darkMouth
-          : await mouthMotionOnsetSecond(take, searchFrom, probe.duration_seconds);
+          : await mouthMotionOnsetSecond(take, searchFrom, probe.duration_seconds, face);
       base.mouth_open_seconds = mouth;
       base.voice_onset_seconds = voice;
       base.sync_lag_ms = syncLagMs(voice, mouth);

@@ -18,6 +18,7 @@ import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
 import { plateMoveFor, plateTake } from "./media/plate-take.ts";
+import type { NormalizedFaceBox } from "./media/viseme-align.ts";
 import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
@@ -1889,6 +1890,16 @@ export function createEngine(deps: EngineDeps = {}) {
     return face ?? (seed && seed.kind !== "full_body" ? seed : null);
   }
 
+  /** Face finder for the mouth probes; absent when no vision engine is configured. */
+  function faceLocator(): ((frame: Uint8Array) => Promise<NormalizedFaceBox | null>) | undefined {
+    const locate = ai.vision?.locateFace;
+    if (!locate) return undefined;
+    return async (frame) => {
+      const box = await locate({ image: frame, imageMime: "image/jpeg" });
+      return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null;
+    };
+  }
+
   function seriesGenre(series: Series) {
     return dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`);
   }
@@ -2294,6 +2305,7 @@ export function createEngine(deps: EngineDeps = {}) {
       modestStill: modestBody,
       dialogueCu,
       wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
+      locateFace: faceLocator(),
     });
 
     // Identity stage: how many people are in frame, and is it the locked cast
@@ -2790,6 +2802,7 @@ export function createEngine(deps: EngineDeps = {}) {
           modestStill: (await modestStillForShot(shot).then((id) => (id ? assets.get(id).catch(() => null) : null)))?.body ?? still,
           dialogueCu,
           wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
+          locateFace: faceLocator(),
         }));
       if (ai.vision && expectedFaces != null) {
         const identity = await runIdentityStage({
