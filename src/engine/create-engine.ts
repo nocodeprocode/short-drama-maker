@@ -19,6 +19,7 @@ import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
 import { plateMoveFor, plateTake } from "./media/plate-take.ts";
 import type { NormalizedFaceBox } from "./media/viseme-align.ts";
+import { sameName } from "../drama-engine/editorial/camera-sanitize.ts";
 import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/skus.ts";
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
@@ -1577,10 +1578,11 @@ export function createEngine(deps: EngineDeps = {}) {
       if (fromPlate) return fromPlate;
     }
     const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
+    const others = (scene?.scene_data.characters ?? []).filter((name) => !sameName(name, pictured));
     const partner =
       live.shot_data.audio_role === "offscreen"
         ? live.shot_data.speakers_off_camera?.[0] ?? live.shot_data.speaker
-        : scene?.scene_data.characters.find((name) => name !== pictured) ?? null;
+        : others[0] ?? null;
     const prompt = dramaHooks.buildVideoPrompt({
       location,
       locationNote: await locationNoteFor(series.id, location),
@@ -1588,6 +1590,7 @@ export function createEngine(deps: EngineDeps = {}) {
       shot: live,
       partner,
       peopleCount: allowsTwoShot(live.shot_data.function) ? 2 : 1,
+      otherNames: others,
     });
     await moderate(
       `${prompt}\n${live.shot_data.dialogue ?? ""}`,

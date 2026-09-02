@@ -34,6 +34,8 @@ export type DramaEngineHooks = {
     shot: Shot;
     partner?: string | null;
     peopleCount?: number;
+    /** Everyone else in the scene; a single's camera string may not mention them. */
+    otherNames?: readonly string[];
   }): string;
   allocateDurations(input: {
     wavSeconds: number;
@@ -92,6 +94,8 @@ Do not write a 90-minute movie and slice it.`;
             sanitizeCamera(data.camera, {
               lockedTake: (data.edit_mode ?? "locked_take") !== "already_cut",
               single: !twoShot,
+              onCameraName: data.speaker_on_camera ?? data.speaker,
+              otherNames: input.otherNames,
             }),
           );
       return lockedTakePrompt({

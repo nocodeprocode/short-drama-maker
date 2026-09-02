@@ -40,7 +40,32 @@ export function containsEditVerb(camera: string): boolean {
   });
 }
 
-export function sanitizeCamera(camera: string, opts?: { lockedTake?: boolean; single?: boolean }): string {
+function nameTokens(name: string): string[] {
+  const parts = name.trim().split(/\s+/).filter((part) => part.length > 1);
+  return [...new Set([name.trim(), ...parts])];
+}
+
+/**
+ * Drop every clause of a single's camera string that mentions another cast
+ * member. A "framing element" shoulder or a "chignon at the frame edge" is a
+ * second person to the video model, whatever the prose calls it.
+ */
+export function dropClausesMentioning(camera: string, names: readonly string[]): string {
+  const tokens = names.flatMap(nameTokens).filter(Boolean);
+  if (!tokens.length) return camera;
+  const pattern = new RegExp(`\\b(?:${tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?:'s)?\\b`);
+  return camera
+    .split(/(?<=[.;:])\s+|,\s+/)
+    .filter((clause) => !pattern.test(clause))
+    .join(", ")
+    .replace(/,\s*,/g, ",")
+    .trim();
+}
+
+export function sanitizeCamera(
+  camera: string,
+  opts?: { lockedTake?: boolean; single?: boolean; onCameraName?: string | null; otherNames?: readonly string[] },
+): string {
   let out = camera ?? "";
   for (const pattern of EDIT_VERBS) {
     pattern.lastIndex = 0;
@@ -51,6 +76,10 @@ export function sanitizeCamera(camera: string, opts?: { lockedTake?: boolean; si
       pattern.lastIndex = 0;
       out = out.replace(pattern, " tight single ");
     }
+    if (opts?.otherNames?.length) {
+      const others = opts.otherNames.filter((name) => !opts.onCameraName || !sameName(name, opts.onCameraName));
+      out = dropClausesMentioning(out, others);
+    }
   }
   out = out.replace(/\s{2,}/g, " ").replace(/\s+,/g, ",").trim();
   out = out.replace(/^[,:;.\-\s]+/, "").trim();
@@ -58,6 +87,16 @@ export function sanitizeCamera(camera: string, opts?: { lockedTake?: boolean; si
     out = out ? `${out}. ${LOCKED_TAKE_CLAUSE}` : LOCKED_TAKE_CLAUSE;
   }
   return out;
+}
+
+/** "Mara" and "Mara Voss" are the same person; the planner uses both. */
+export function sameName(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  if (left === right) return true;
+  const first = (name: string) => name.split(/\s+/)[0] ?? name;
+  return first(left) === first(right) || left.startsWith(right) || right.startsWith(left);
 }
 
 export function cameraHasLockedTakeClause(camera: string): boolean {

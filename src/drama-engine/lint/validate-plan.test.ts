@@ -217,6 +217,13 @@ describe("sanitizeCamera.ots", () => {
     const out = sanitizeCamera("OTS single on Mara from behind Petra's right shoulder: Mara's face fully in frame", { single: true });
     expect(out).not.toMatch(/OTS|shoulder|Petra/);
     expect(out).toMatch(/Mara's face fully in frame/);
+    const framed = sanitizeCamera(
+      "Tight single on Mara: Mara's face fully in frame, the envelope held at chest height; Petra's silver-streaked chignon and black blazer shoulder occupy the near-left edge as a framing element only",
+      { single: true, onCameraName: "Mara", otherNames: ["Mara Voss", "Petra Vane"] },
+    );
+    expect(framed).not.toMatch(/Petra|chignon|blazer/);
+    expect(framed).toMatch(/Mara's face fully in frame/);
+    expect(framed).toMatch(/envelope/);
   });
 });
 
