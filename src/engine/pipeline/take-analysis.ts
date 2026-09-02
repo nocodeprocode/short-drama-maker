@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectInternalCuts, ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
 import { extractAudioMp3 } from "../media/extract-audio.ts";
-import { probeVideoBytes } from "../media/probe.ts";
+import { probeVideoBytes, probeVideoBytesAsync } from "../media/probe.ts";
 import { inventedSecondBody } from "../media/second-body.ts";
 import {
   ALIGNED_TAKE_TOLERANCE_SECONDS,
@@ -300,9 +300,13 @@ export async function measureSettle(
   }
   // Velocity + drift is the primary signal; distance-to-reference only when the scan is too short for it.
   const settle = steps.length >= 2 ? settleInPointFromSteps(steps, drift) : settleInPointFromDiffs(diffs);
-  // A take that never settles inside the scan is a slow morph; the cap is the best we can cut.
-  return { settle_in_seconds: Math.min(settle, Math.max(0, durationSeconds - 1.5)), diffs, steps };
+  // A take that never settles inside the scan is a slow morph; the cap is the best we
+  // can cut, and a trim never leaves less than two playable seconds.
+  return { settle_in_seconds: Math.min(settle, Math.max(0, durationSeconds - MIN_PLAYABLE_AFTER_SETTLE_SECONDS)), diffs, steps };
 }
+
+/** A take trimmed below this is not a shot any more; the settle is capped to leave it. */
+export const MIN_PLAYABLE_AFTER_SETTLE_SECONDS = 2.0;
 
 /**
  * Fraction of "skin" pixels in the chest band of a portrait frame. Compared
@@ -397,7 +401,7 @@ export function slipFromSync(input: { voice: number | null; mouth: number | null
 
 export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysis> {
   const now = input.now ?? (() => new Date().toISOString());
-  const probe = probeVideoBytes(input.video);
+  const probe = input.skipPixels ? probeVideoBytes(input.video) : await probeVideoBytesAsync(input.video);
   const base: TakeAnalysis = {
     version: 2,
     duration_seconds: probe.duration_seconds,

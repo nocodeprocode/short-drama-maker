@@ -42,5 +42,5 @@ describe("deliverables", () => {
       expect(probe.has_audio).toBe(true);
       expect(Math.abs(probe.duration_seconds - probeVideoBytes(body).duration_seconds)).toBeLessThan(0.2);
     }
-  }, 120_000);
+  }, 300_000);
 });

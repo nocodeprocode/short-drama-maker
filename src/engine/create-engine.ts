@@ -87,7 +87,7 @@ import {
 } from "./ledger/budget.ts";
 import { chooseHeardLane } from "./pipeline/heard-audio.ts";
 import { blockingQcReasons, mechanicalQc } from "./media/qc.ts";
-import { probeVideoBytes } from "./media/probe.ts";
+import { probeVideoBytes, probeVideoBytesAsync } from "./media/probe.ts";
 import { RenderFailedError, renderEpisodeBytes, type RenderFn } from "./media/render.ts";
 import { auditMux, type MuxAuditFn } from "./media/mux-audit.ts";
 import { createConfiguredAssetStore } from "./storage/create.ts";
@@ -3199,7 +3199,7 @@ export function createEngine(deps: EngineDeps = {}) {
       const row = await assets.get(assetByShot.get(shot.id)!);
       if (!row) throw new Error(`Missing shot asset ${assetByShot.get(shot.id)}`);
       shotBodies.push(row.body);
-      const probed = probeVideoBytes(row.body).duration_seconds;
+      const probed = (await probeVideoBytesAsync(row.body)).duration_seconds;
       if (probed > 0) takeDuration.set(shot.id, probed);
     }
     const series = store.series.get(episode.series_id);

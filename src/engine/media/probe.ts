@@ -1,4 +1,44 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ProbeResult } from "./qc.ts";
+
+/**
+ * Header parse first; ffprobe when the header has no answer (fragmented MP4
+ * from some providers carries no mvhd duration and no tkhd size).
+ */
+export async function probeVideoBytesAsync(bytes: Uint8Array): Promise<ProbeResult> {
+  const quick = probeVideoBytes(bytes);
+  if (quick.duration_seconds > 0 && quick.width > 0) return quick;
+  const dir = await mkdtemp(join(tmpdir(), "sdm-probe-"));
+  try {
+    const file = join(dir, "take.mp4");
+    await writeFile(file, bytes);
+    const out = await new Promise<string>((resolve) => {
+      const child = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", file], { stdio: ["ignore", "pipe", "ignore"] });
+      let text = "";
+      child.stdout?.on("data", (chunk) => {
+        text += String(chunk);
+      });
+      child.on("error", () => resolve(""));
+      child.on("exit", () => resolve(text));
+    });
+    const parsed = JSON.parse(out || "{}") as { format?: { duration?: string }; streams?: Array<{ codec_type?: string; width?: number; height?: number }> };
+    const video = parsed.streams?.find((row) => row.codec_type === "video");
+    return {
+      ...quick,
+      duration_seconds: quick.duration_seconds > 0 ? quick.duration_seconds : Number(parsed.format?.duration ?? 0) || 0,
+      width: quick.width > 0 ? quick.width : video?.width ?? 0,
+      height: quick.height > 0 ? quick.height : video?.height ?? 0,
+      has_audio: quick.has_audio || Boolean(parsed.streams?.some((row) => row.codec_type === "audio")),
+    };
+  } catch {
+    return quick;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 function readAscii(bytes: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(offset, offset + length));

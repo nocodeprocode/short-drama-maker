@@ -733,6 +733,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     // No fallback: a mix that drops the dialogue is not a lesser episode, it is
     // a broken one. Fail so the render is refused and the reason is recorded.
     await run("ffmpeg", args);
+    if (process.env.SDM_MIX_KEEP) process.stderr.write(`mix workdir kept: ${dir}\n`);
     return new Uint8Array(await readFile(mixed));
   } catch (error) {
     if (process.env.SDM_DEBUG_MIX) {
@@ -740,7 +741,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     }
     return null;
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    if (!process.env.SDM_MIX_KEEP) await rm(dir, { recursive: true, force: true });
   }
 }
 
