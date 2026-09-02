@@ -216,8 +216,10 @@ async function main() {
       let queued = 0;
       for (const job of jobs ?? []) {
         const res = (job.result_metadata ?? {}) as Record<string, unknown>;
-        const analysis = res.take_analysis as { has_audio?: boolean } | undefined;
-        if (!job.shot_id || !spoken.has(job.shot_id) || typeof res.asset_id !== "string" || analysis?.has_audio !== false) continue;
+        const analysis = res.take_analysis as { has_audio?: boolean; voice_onset_source?: string | null } | undefined;
+        const audioModel = typeof job.model === "string" && job.model.includes("wan");
+        const silent = analysis?.has_audio === false || (!audioModel && analysis?.voice_onset_source !== "stt");
+        if (!job.shot_id || !spoken.has(job.shot_id) || typeof res.asset_id !== "string" || !silent) continue;
         await client.from("engine_tasks").insert({
           owner_id: ownerId,
           series_id: seriesId,
