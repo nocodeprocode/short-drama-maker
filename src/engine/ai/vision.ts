@@ -47,9 +47,37 @@ export type LocationNotes = {
   model: string;
 };
 
+/** Face position in a still, normalised 0–1 relative to the image. */
+export type FaceBox = { x: number; y: number; width: number; height: number; confidence: number };
+
 export interface VisionEngine {
   judgeIdentity(input: IdentityJudgeInput): Promise<IdentityJudgement>;
   describeLocation?(input: { plate: Uint8Array; plateMime?: string; location: string }): Promise<LocationNotes>;
+  /** Where the (single) face is in a character still; null when none is visible. */
+  locateFace?(input: { image: Uint8Array; imageMime?: string }): Promise<FaceBox | null>;
+}
+
+const FACE_RUBRIC = `You locate the face in a character reference still.
+Answer only with JSON: {"found": true|false, "x": <0..1>, "y": <0..1>, "width": <0..1>, "height": <0..1>, "confidence": <0..1>}.
+x,y is the top-left of the tightest box around the face only: top of the forehead (below the hair) to the bottom of the chin, ear to ear. Exclude hair, neck and shoulders. Fractions of image width and height. If no face is visible, found=false. Never explain.`;
+
+export function parseFaceBox(content: string): FaceBox | null {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const raw = JSON.parse(start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed) as Record<string, unknown>;
+  if (raw.found === false) return null;
+  const num = (key: string) => (typeof raw[key] === "number" ? (raw[key] as number) : Number(raw[key]));
+  const box = { x: num("x"), y: num("y"), width: num("width"), height: num("height"), confidence: clamp01(raw.confidence ?? 0.5) };
+  if (![box.x, box.y, box.width, box.height].every((v) => Number.isFinite(v))) return null;
+  if (box.width <= 0.02 || box.height <= 0.02 || box.width > 1 || box.height > 1) return null;
+  return {
+    x: Math.min(1, Math.max(0, box.x)),
+    y: Math.min(1, Math.max(0, box.y)),
+    width: Math.min(1, box.width),
+    height: Math.min(1, box.height),
+    confidence: box.confidence,
+  };
 }
 
 const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
@@ -172,6 +200,27 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the location note");
       return parseLocationNotes(content, model);
+    },
+
+    async locateFace(input) {
+      const body = await openRouterJson<ChatResponse>("/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          usage: { include: true },
+          provider: openRouterProvider("text"),
+          messages: [
+            { role: "system", content: FACE_RUBRIC },
+            { role: "user", content: [{ type: "image_url", image_url: { url: dataUrl(input.image, input.imageMime ?? "image/jpeg") } }] },
+          ],
+        }),
+      }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter returned no text for the face box");
+      return parseFaceBox(content);
     },
   };
 }

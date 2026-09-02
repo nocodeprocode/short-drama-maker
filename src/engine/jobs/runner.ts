@@ -86,7 +86,8 @@ export function runnerRole(env: NodeJS.ProcessEnv = process.env): RunnerRole {
   return raw === "orchestrator" || raw === "media" ? raw : "all";
 }
 
-const MEDIA_ACTIONS: EngineAction[] = ["render_episode"];
+/** Need ffmpeg: CU crops and plate takes at submit, measurement at ingest, the cut. */
+const MEDIA_ACTIONS: EngineAction[] = ["generate_video", "regenerate_shot", "rejudge_shot", "render_episode", "tick", "reconcile"];
 const ORCHESTRATION_ACTIONS: EngineAction[] = [
   "analyze",
   "generate_appearance",
@@ -99,13 +100,8 @@ const ORCHESTRATION_ACTIONS: EngineAction[] = [
   "create_episode",
   "plan_episode",
   "generate_dialogue",
-  "generate_video",
-  "regenerate_shot",
   "review_take",
-  "rejudge_shot",
   "advance_production",
-  "tick",
-  "reconcile",
 ];
 
 export function excludedActionsFor(role: RunnerRole): EngineAction[] | null {
@@ -927,16 +923,28 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     });
     const { data: videoJobs } = await client
       .from("generation_jobs")
-      .select("shot_id, job_type, status, model")
+      .select("shot_id, job_type, status, model, created_at")
       .eq("series_id", series_id)
       .eq("job_type", "video");
     const playable = await playableTakesByShot(client, series_id);
     const unfinishedVideo = (shots ?? []).filter((shot) => !playable.has(shot.id));
     // A shot with no clean take after RETRY_CAP generated attempts stops the
     // production for a human instead of buying a fourth, fifth, sixth take.
+    // Attempts made before the reviewer's latest decision on the shot do not
+    // count: a rejection is an instruction to shoot again.
+    const reviewedAt = new Map<string, number>();
+    for (const shot of shots ?? []) {
+      const reviews = ((shot.shot_data ?? {}) as Record<string, unknown>).take_reviews;
+      if (!Array.isArray(reviews)) continue;
+      for (const review of reviews as Array<{ reviewed_at?: string }>) {
+        const at = review.reviewed_at ? Date.parse(review.reviewed_at) : NaN;
+        if (Number.isFinite(at)) reviewedAt.set(shot.id, Math.max(reviewedAt.get(shot.id) ?? 0, at));
+      }
+    }
     const attemptsByShot = new Map<string, number>();
     for (const job of videoJobs ?? []) {
       if (!job.shot_id || job.model === "plate/zoompan") continue;
+      if (Date.parse(job.created_at) <= (reviewedAt.get(job.shot_id) ?? 0)) continue;
       if (["completed", "needs_review", "failed", "cancelled"].includes(job.status)) {
         attemptsByShot.set(job.shot_id, (attemptsByShot.get(job.shot_id) ?? 0) + 1);
       }

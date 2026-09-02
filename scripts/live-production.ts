@@ -168,6 +168,32 @@ async function main() {
       }
       process.stdout.write(`queued rejudge for ${queued} shot(s)\n`);
     }
+    // After a first-frame fix: reject every generated single seeded from a
+    // non-CU still so it is reshot from a proper close-up.
+    if (process.argv.includes("--reshoot-non-cu")) {
+      const { data: jobs } = await client
+        .from("generation_jobs")
+        .select("shot_id, request_metadata, result_metadata, model")
+        .eq("series_id", seriesId)
+        .eq("job_type", "video");
+      let queued = 0;
+      for (const job of jobs ?? []) {
+        const req = (job.request_metadata ?? {}) as Record<string, unknown>;
+        const res = (job.result_metadata ?? {}) as Record<string, unknown>;
+        if (!job.shot_id || typeof res.asset_id !== "string" || job.model === "plate/zoompan") continue;
+        if (req.first_frame_kind === "cu" || req.first_frame_kind === "object") continue;
+        await client.from("engine_tasks").insert({
+          owner_id: ownerId,
+          series_id: seriesId,
+          production_id: productionId,
+          action: "review_take",
+          payload: { shot_id: job.shot_id, asset_id: res.asset_id, decision: "reject", note: `first frame was ${String(req.first_frame_kind)}; reshoot from CU` },
+          status: "queued",
+        });
+        queued += 1;
+      }
+      process.stdout.write(`queued ${queued} rejection(s) of non-CU-seeded takes\n`);
+    }
     // Same as the Resume button: clear the stop and queue the next advance.
     if (production.status === "needs_user" || production.paused) {
       await client

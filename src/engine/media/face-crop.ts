@@ -8,7 +8,7 @@ export type ImageSize = { width: number; height: number };
 export type CropBox = { x: number; y: number; width: number; height: number };
 
 const PORTRAIT = 9 / 16;
-export const CU_CROP_VERSION = "cu-28";
+export const CU_CROP_VERSION = "cu-face-v1";
 
 export function probeImageSize(bytes: Uint8Array): ImageSize | null {
   if (bytes.byteLength >= 24 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
@@ -89,23 +89,56 @@ export function firstFrameQc(input: {
   return { ok: true, reason: null };
 }
 
+/**
+ * A 9:16 close-up window around a located face: the face fills ~40% of the
+ * frame height with its eyes near the upper third, which is the framing the
+ * dialogue CUs are prompted for. Clamped to the image.
+ */
+export function cuCropBoxFromFace(
+  width: number,
+  height: number,
+  face: { x: number; y: number; width: number; height: number },
+): CropBox {
+  const faceH = face.height * height;
+  const faceCx = (face.x + face.width / 2) * width;
+  const faceCy = (face.y + face.height / 2) * height;
+  // Face ~55% of the window height; clamped so the result is always a close-up
+  // (never the whole figure) and never smaller than the v9 lock's 28% window.
+  let windowH = Math.round(Math.min(height * 0.5, Math.max(faceH * 1.8, height * 0.28)));
+  let windowW = Math.round(windowH * PORTRAIT);
+  if (windowW > width) {
+    windowW = width;
+    windowH = Math.round(windowW / PORTRAIT);
+  }
+  if (windowH > height) {
+    windowH = height;
+    windowW = Math.round(windowH * PORTRAIT);
+  }
+  // Face centre sits at ~42% of the window height.
+  const x = Math.round(Math.min(Math.max(0, faceCx - windowW / 2), width - windowW));
+  const y = Math.round(Math.min(Math.max(0, faceCy - windowH * 0.42), height - windowH));
+  return { x, y, width: windowW, height: windowH };
+}
+
 export async function cropStillToCu(
   bytes: Uint8Array,
   kind?: string | null,
+  face?: { x: number; y: number; width: number; height: number } | null,
 ): Promise<Uint8Array | null> {
   const size = probeImageSize(bytes);
   if (!size || size.width < 32 || size.height < 32) return null;
-  const box = cuCropBox(size.width, size.height, kind);
+  const box = face ? cuCropBoxFromFace(size.width, size.height, face) : cuCropBox(size.width, size.height, kind);
   if (!(await ffmpegAvailable())) return null;
   const dir = await mkdtemp(join(tmpdir(), "sdm-cu-"));
   const input = join(dir, "still.png");
   const output = join(dir, "cu.png");
   try {
     await writeFile(input, bytes);
+    // Crop, then upscale to the take's frame so the I2V first frame is not a tiny window.
     const ok = await new Promise<boolean>((resolve) => {
       const child = spawn(
         "ffmpeg",
-        ["-y", "-i", input, "-vf", `crop=${box.width}:${box.height}:${box.x}:${box.y}`, output],
+        ["-y", "-i", input, "-vf", `crop=${box.width}:${box.height}:${box.x}:${box.y},scale=720:1280:flags=lanczos`, output],
         { stdio: "ignore" },
       );
       child.on("error", () => resolve(false));

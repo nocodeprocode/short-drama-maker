@@ -61,7 +61,7 @@ import {
 import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
 import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
 import { analyzeTake, pickBestTake, scoreTake, type TakeAnalysis, type TakeVerdict } from "./pipeline/take-analysis.ts";
-import { runIdentityStage } from "./pipeline/identity-check.ts";
+import { runIdentityStage, shrinkReference } from "./pipeline/identity-check.ts";
 import { wordErrorRate } from "./media/qc.ts";
 import { evidenceMotif, objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
 import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
@@ -1826,12 +1826,23 @@ export function createEngine(deps: EngineDeps = {}) {
     const refs = { ...raw, cu: undefined };
     const face = preferredCuFace(refs);
     const seed = seedStillForCu(refs);
-    if (face && face.kind !== "front") return face;
-    if (!seed) return face;
-    const seedAsset = await assets.get(seed.id).catch(() => null);
-    const treatAsBody = seed.kind === "full_body" || !face;
-    if (treatAsBody && seedAsset) {
-      const cropped = await cropStillToCu(seedAsset.body, "full_body");
+    if (face && (face.kind === "cu" || face.kind === "mcu")) return face;
+    // Labels lie: a "front" still is often a full-body figure. Always derive the
+    // CU by locating the face in the best available still and cropping around it.
+    const source = face ?? seed;
+    if (!source) return null;
+    const seedAsset = await assets.get(source.id).catch(() => null);
+    if (seedAsset) {
+      let faceBox: { x: number; y: number; width: number; height: number } | null = null;
+      if (ai.vision?.locateFace) {
+        try {
+          const small = await shrinkReference(seedAsset.body);
+          faceBox = await ai.vision.locateFace({ image: small?.bytes ?? seedAsset.body, imageMime: small?.mime ?? seedAsset.asset.mime_type });
+        } catch {
+          faceBox = null;
+        }
+      }
+      const cropped = await cropStillToCu(seedAsset.body, faceBox ? null : "full_body", faceBox);
       if (cropped && cropped.byteLength > 2_000) {
         const series = store.series.get(character.series_id);
         const asset = await putAsset({
@@ -1842,7 +1853,7 @@ export function createEngine(deps: EngineDeps = {}) {
           bucket: "private-character",
           mime_type: "image/png",
           body: cropped,
-          metadata: { kind: "cu", source_kind: seed.kind, character_id: character.id, crop_version: CU_CROP_VERSION },
+          metadata: { kind: "cu", source_kind: source.kind, character_id: character.id, crop_version: CU_CROP_VERSION, face_box: faceBox },
         });
         await cacheCuOnCharacter(store.characters.get(character.id) ?? character, asset.id);
         return { id: asset.id, kind: "cu" };
@@ -1867,7 +1878,7 @@ export function createEngine(deps: EngineDeps = {}) {
           bucket: "private-character",
           mime_type: image.mime_type,
           body: image.bytes,
-          metadata: { kind: "cu", source_kind: seed.kind, character_id: character.id, crop_version: CU_CROP_VERSION },
+          metadata: { kind: "cu", source_kind: source.kind, character_id: character.id, crop_version: CU_CROP_VERSION },
         });
         await cacheCuOnCharacter(store.characters.get(character.id) ?? character, asset.id);
         return { id: asset.id, kind: "cu" };
@@ -1875,7 +1886,7 @@ export function createEngine(deps: EngineDeps = {}) {
         /* fall through to any face still */
       }
     }
-    return face ?? (seed.kind !== "full_body" ? seed : null);
+    return face ?? (seed && seed.kind !== "full_body" ? seed : null);
   }
 
   function seriesGenre(series: Series) {
