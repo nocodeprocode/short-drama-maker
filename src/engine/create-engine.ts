@@ -292,6 +292,19 @@ export function createEngine(deps: EngineDeps = {}) {
     return [...store.jobs.values()].find((job) => job.idempotency_key === key);
   }
 
+  /**
+   * The base key when no job holds it or the holder is still in flight (a
+   * crashed task replays it); a numbered key when the holder already finished,
+   * so redoing finished work is a new job with its own ledger lines.
+   */
+  function freshJobKey(base: string): string {
+    const holders = [...store.jobs.values()].filter((job) => job.idempotency_key === base || job.idempotency_key.startsWith(`${base}:r`));
+    if (!holders.length) return base;
+    const inFlight = holders.find((job) => job.status !== "completed" && job.status !== "failed" && job.status !== "cancelled");
+    if (inFlight) return inFlight.idempotency_key;
+    return `${base}:r${holders.length}`;
+  }
+
   function createJob(input: Omit<GenerationJob, "id" | "created_at" | "updated_at" | "callback_token" | "callback_token_used" | "attempt" | "actual_cost" | "error_code" | "result_metadata"> & Partial<Pick<GenerationJob, "result_metadata" | "attempt">>): GenerationJob {
     const existing = findJobByKey(input.idempotency_key);
     if (existing) {
@@ -1223,7 +1236,8 @@ export function createEngine(deps: EngineDeps = {}) {
       model: "image/location-pack",
       provider: "openrouter",
       upstream_job_id: null,
-      idempotency_key: `locations:${series.id}:${missing.join(",")}`,
+      // A re-lock (plates cleared for regeneration) is new work, not a replay of the first lock.
+      idempotency_key: freshJobKey(`locations:${series.id}:${missing.join(",")}`),
       status: "queued",
       request_metadata: { locations: missing },
       estimated_cost: ai.pricing.estimateImage() * missing.length,
