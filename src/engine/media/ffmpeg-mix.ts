@@ -540,11 +540,16 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
       const skip =
         heardFileSkipSeconds({
           lane,
-          // Settle in-point trims picture and native audio by the same seconds; a
-          // measured pad is then a delay on top. Only the legacy auto-align trim
-          // (unmeasured pad) leaves the native track unskipped.
+          // A measured take says how much native audio to skip: the settle, but
+          // never past the first voiced sample (the pad then places the voice on
+          // the mouth). Without a measurement the settle in-point is the skip,
+          // except on the legacy auto-align trim, which leaves the track unskipped.
           inPointSeconds:
-            lane === "native" && !measuredPad[index] && (visemePads[index] ?? 0) > 0.02 ? 0 : shot.in_point_seconds,
+            lane === "native" && shot.audio_skip_seconds != null
+              ? shot.audio_skip_seconds
+              : lane === "native" && !measuredPad[index] && (visemePads[index] ?? 0) > 0.02
+                ? 0
+                : shot.in_point_seconds,
           leadingSilenceSeconds: 0,
         }) + (lane === "native" ? Math.max(0, shot.audio_slip_seconds ?? 0) : 0);
       const delay = heardDelaySeconds({

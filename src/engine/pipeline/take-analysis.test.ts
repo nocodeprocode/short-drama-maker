@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
 import {
   analyzeTake,
+  audioPlacement,
   chestSkinFraction,
   padFromSync,
   pickBestTake,
@@ -102,6 +103,33 @@ describe("sync and pad", () => {
     const slipped = scoreTake(analysis({ mouth_open_seconds: 3.54, voice_onset_seconds: 3.84, sync_lag_ms: 300, audio_slip_seconds: 0.24 }), { dialogueCu: true, lockedTake: true });
     expect(slipped.blockers).toEqual([]);
     expect(slipped.warnings).toContain("mouth_leads_voice_slipped");
+  });
+});
+
+describe("audio placement", () => {
+  it("skips native audio by the settle but never past the voice, and pads or slips the remainder", () => {
+    // v9 Mara: settle 3.0, voice 3.38, mouth 3.4 → skip the settle, no correction needed.
+    expect(audioPlacement({ settle: 3, voice: 3.38, mouth: 3.4, duration: 6.04, speechSeconds: 2.2 })).toEqual({ skip: 3, pad: 0, slip: 0, fits: true });
+    // v9 Eli: mouth 3.54 leads voice 3.84 → slip.
+    const eli = audioPlacement({ settle: 0.3, voice: 3.84, mouth: 3.54, duration: 6.04, speechSeconds: 2.0 });
+    expect(eli.skip).toBe(0.3);
+    expect(eli.slip).toBeCloseTo(0.24, 2);
+    expect(eli.fits).toBe(true);
+    // Wan spoke at t=0 while the still was still morphing until 2.1; the mouth opens at 2.5.
+    // The skip must stop at the voice (0) and the audio is delayed onto the mouth.
+    const early = audioPlacement({ settle: 2.1, voice: 0, mouth: 2.5, duration: 6.04, speechSeconds: 2.5 });
+    expect(early.skip).toBe(0);
+    expect(early.pad).toBeCloseTo(0.4, 2);
+    expect(early.fits).toBe(true);
+    // The same take with a long line that would run past the picture does not fit.
+    expect(audioPlacement({ settle: 2.1, voice: 0, mouth: 2.5, duration: 6.04, speechSeconds: 3.8 }).fits).toBe(false);
+  });
+
+  it("blocks only when the delayed line cannot fit the picture", () => {
+    const fits = scoreTake(analysis({ settle_in_seconds: 2.1, voice_onset_seconds: 0, mouth_open_seconds: 2.5, sync_lag_ms: -2500, viseme_pad_seconds: 0.4, audio_skip_seconds: 0, speech_fits: true }), { dialogueCu: true, lockedTake: true });
+    expect(fits.blockers).toEqual([]);
+    const overrun = scoreTake(analysis({ settle_in_seconds: 2.1, voice_onset_seconds: 0, mouth_open_seconds: 2.5, sync_lag_ms: -2500, viseme_pad_seconds: 0.4, audio_skip_seconds: 0, speech_fits: false }), { dialogueCu: true, lockedTake: true });
+    expect(overrun.blockers).toContain("voice_leads_mouth_unfixable");
   });
 });
 

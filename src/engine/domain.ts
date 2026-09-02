@@ -320,6 +320,8 @@ export type RenderManifestShot = {
    * loses the same seconds off its tail.
    */
   audio_slip_seconds?: number;
+  /** Native audio skipped at the head (settle, capped at the first voiced sample). */
+  audio_skip_seconds?: number;
   scene_index?: number;
   scene_kind?: "recap" | "dialogue" | "evidence" | "button";
   transition_in?: RenderTransitionType;

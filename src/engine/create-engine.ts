@@ -1973,6 +1973,12 @@ export function createEngine(deps: EngineDeps = {}) {
     };
   }
 
+  /** Spoken length of a line from its TTS alignment (last character end), if known. */
+  function speechSecondsFrom(alignment: AlignmentTrack | null | undefined): number | null {
+    const end = alignment?.characters?.at(-1)?.end ?? alignment?.words?.at(-1)?.end;
+    return typeof end === "number" && end > 0 ? end : null;
+  }
+
   function seriesGenre(series: Series) {
     return dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`);
   }
@@ -2380,6 +2386,7 @@ export function createEngine(deps: EngineDeps = {}) {
       wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
       locateFace: faceLocator(),
       transcribe: speechTranscriber(),
+      speechSeconds: speechSecondsFrom(alignment),
     });
 
     // Identity stage: how many people are in frame, and is it the locked cast
@@ -2880,6 +2887,11 @@ export function createEngine(deps: EngineDeps = {}) {
           wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
           locateFace: faceLocator(),
           transcribe: speechTranscriber(),
+          speechSeconds: speechSecondsFrom(
+            shot.shot_data.dialogue_alignment_asset_id
+              ? await assets.get(shot.shot_data.dialogue_alignment_asset_id).then((row) => (row ? decodeJson<AlignmentTrack>(row.body) : null)).catch(() => null)
+              : null,
+          ),
         }));
       if (ai.vision && expectedFaces != null) {
         const identity = await runIdentityStage({

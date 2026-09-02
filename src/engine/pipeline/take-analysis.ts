@@ -41,6 +41,10 @@ export type TakeAnalysis = {
   viseme_pad_seconds: number;
   /** Audio advance (slip) the mixer should apply when the lips opened before the voice. */
   audio_slip_seconds: number;
+  /** Seconds of native audio the mixer skips: the settle, but never past the first voiced sample. */
+  audio_skip_seconds?: number;
+  /** Whether the spoken line, placed on the mouth, ends before the picture does. Null when unknown. */
+  speech_fits?: boolean | null;
   internal_cut_count: number;
   second_body: boolean;
   chest_skin_fraction: number | null;
@@ -81,6 +85,8 @@ export type TakeAnalysisInput = {
    * ambience before the line, so a level detector alone fires on room tone.
    */
   transcribe?: (mp3: Uint8Array) => Promise<{ text: string; speech_onset_seconds: number | null } | null>;
+  /** Length of the spoken line from the TTS alignment; decides whether a pad still fits the take. */
+  speechSeconds?: number | null;
   now?: () => string;
 };
 
@@ -391,6 +397,48 @@ export function padFromSync(input: {
 }
 
 /**
+ * How the mixer places a native take's sound against its trimmed picture.
+ *
+ * The picture starts at the settle. The audio is skipped by the same amount
+ * UNLESS the voice starts earlier than that, in which case the skip stops at
+ * the voice so no syllable is cut; whatever offset remains between the voice
+ * and the first mouth-open is then a delay (pad) or an advance (slip). The
+ * line fits when its last word still lands before the picture ends.
+ */
+export function audioPlacement(input: {
+  settle: number;
+  voice: number | null;
+  mouth: number | null;
+  duration: number;
+  /** Length of the spoken line (TTS alignment or transcript), when known. */
+  speechSeconds?: number | null;
+}): { skip: number; pad: number; slip: number; fits: boolean | null } {
+  const settle = Math.max(0, input.settle);
+  if (input.voice == null) return { skip: settle, pad: 0, slip: 0, fits: null };
+  const voice = Math.max(0, input.voice);
+  const skip = Math.min(settle, voice);
+  if (input.mouth == null) {
+    const fits = input.speechSeconds == null ? null : voice - skip + input.speechSeconds <= input.duration - settle - 0.15;
+    return { skip: Number(skip.toFixed(3)), pad: 0, slip: 0, fits };
+  }
+  // Where the voice lands on the cut before any correction, versus where the mouth opens.
+  const voiceOnCut = voice - skip;
+  const mouthOnCut = input.mouth - settle;
+  const offset = mouthOnCut - voiceOnCut;
+  let pad = 0;
+  let slip = 0;
+  if (offset > SYNC_PAD_TRIGGER_MS / 1000) pad = Number(offset.toFixed(3));
+  else if (-offset * 1000 > MOUTH_LEAD_SLIP_TRIGGER_MS && -offset * 1000 <= MOUTH_LEAD_MAX_MS) {
+    slip = Number((-offset - MOUTH_LEAD_RESIDUAL_MS / 1000).toFixed(3));
+  }
+  const fits =
+    input.speechSeconds == null
+      ? null
+      : voiceOnCut + pad - slip + input.speechSeconds <= input.duration - settle - 0.15;
+  return { skip: Number(skip.toFixed(3)), pad, slip, fits };
+}
+
+/**
  * Slip (audio earlier) when the mouth measurably leads the voice. Zero inside
  * the natural lip-part window and zero past the reject threshold (the score
  * blocks those takes instead of pretending a slip could save them).
@@ -436,6 +484,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
     base.settle_in_seconds = settle.settle_in_seconds;
     base.settle_diffs = settle.diffs;
     base.settle_steps = settle.steps;
+    base.audio_skip_seconds = base.settle_in_seconds;
 
     // Scene-change detection must start after the morph, or the settle itself counts as a cut.
     const cuts = await detectInternalCuts(input.video, 0.3, { skipSeconds: base.settle_in_seconds + 0.2 });
@@ -488,8 +537,17 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       base.mouth_open_seconds = mouth;
       base.voice_onset_seconds = voice;
       base.sync_lag_ms = syncLagMs(voice, mouth);
-      base.viseme_pad_seconds = padFromSync({ voice, mouth, wanDialogue: input.wanDialogue ?? true });
-      base.audio_slip_seconds = slipFromSync({ voice, mouth });
+      const placement = audioPlacement({
+        settle: base.settle_in_seconds,
+        voice,
+        mouth,
+        duration: probe.duration_seconds,
+        speechSeconds: input.speechSeconds ?? null,
+      });
+      base.audio_skip_seconds = placement.skip;
+      base.viseme_pad_seconds = placement.pad;
+      base.audio_slip_seconds = placement.slip;
+      base.speech_fits = placement.fits;
 
       base.second_body = await inventedSecondBody(input.video, input.still ?? null).catch(() => false);
 
@@ -584,8 +642,12 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
       warnings.push("voice_leads_mouth_padded");
       score -= Math.min(15, analysis.viseme_pad_seconds * 10);
     }
-    if (analysis.sync_lag_ms != null && analysis.sync_lag_ms < -VOICE_LEAD_PAD_MAX_SECONDS * 1000 - SYNC_SHIP_LIMIT_MS) {
-      // The voice starts so far before the lips that no pad can hide it.
+    // A voice that leads the lips is delayed onto them; that only fails when the
+    // delayed line would run past the end of the picture.
+    if (analysis.speech_fits === false) {
+      blockers.push("voice_leads_mouth_unfixable");
+    } else if (analysis.speech_fits == null && analysis.viseme_pad_seconds > VOICE_LEAD_PAD_MAX_SECONDS + 1) {
+      // No line length to check against: a very large pad is more than a take can absorb.
       blockers.push("voice_leads_mouth_unfixable");
     }
     if (analysis.audio_slip_seconds > 0) {
@@ -596,10 +658,8 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
       // The mouth opened while the room was still morphing: the trimmed cut loses the first syllable.
       blockers.push("speaks_before_settle");
     }
-    if (analysis.voice_onset_seconds != null && analysis.voice_onset_seconds < analysis.settle_in_seconds - 0.2) {
-      // The voice starts inside the morph: trimming the settle would cut the line's head.
-      blockers.push("speaks_before_settle");
-    }
+    // The voice starting inside the morph is only a problem if the settle skip
+    // would cut it; the placement stops the skip at the voice, so it does not.
   }
   if (analysis.face_similarity != null) {
     score -= Math.round((1 - analysis.face_similarity) * 30);

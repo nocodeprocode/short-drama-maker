@@ -179,13 +179,16 @@ export function projectOnsets(input: {
   padSeconds: number;
   /** Native audio advanced relative to picture (slip edit). */
   slipSeconds?: number;
+  /** Native audio skipped at the head; defaults to the picture in-point. */
+  skipSeconds?: number;
   voiceOnTake: number | null;
   mouthOnTake: number | null;
 }): { expectedVoice: number | null; mouthOnMux: number | null } {
+  const skip = input.skipSeconds ?? input.inPoint;
   const expectedVoice =
     input.voiceOnTake == null
       ? null
-      : input.pictureStart + (input.voiceOnTake - input.inPoint) + input.padSeconds - (input.slipSeconds ?? 0);
+      : input.pictureStart + (input.voiceOnTake - skip) + input.padSeconds - (input.slipSeconds ?? 0);
   const mouthOnMux = input.mouthOnTake == null ? null : input.pictureStart + (input.mouthOnTake - input.inPoint);
   return { expectedVoice, mouthOnMux };
 }
@@ -271,6 +274,7 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
         inPoint: shot.in_point_seconds,
         padSeconds: analysis.viseme_pad_seconds,
         slipSeconds: shot.audio_slip_seconds ?? analysis.audio_slip_seconds ?? 0,
+        skipSeconds: shot.audio_skip_seconds ?? analysis.audio_skip_seconds,
         voiceOnTake: analysis.voice_onset_seconds,
         mouthOnTake: analysis.mouth_open_seconds,
       });
