@@ -1248,46 +1248,35 @@ export function createEngine(deps: EngineDeps = {}) {
       // The plate seeds every wide in this location; a person in it is a
       // person in every wide. Judge it and regenerate until the room is empty.
       let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
-      let plateFaces: number | null = null;
+      let peoplePresent: boolean | null = null;
+      let notes: Record<string, unknown> = {};
       for (let attempt = 0; attempt < LOCATION_PLATE_ATTEMPTS; attempt += 1) {
         const candidate = await ai.image.generateReference({
           characterName: location,
           description:
             `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. ` +
-            `EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person, no silhouettes, no reflections of people, no portraits or photographs of people on the walls.` +
-            (attempt > 0 ? " The previous attempt contained a person; this frame must show furniture and architecture only, with nobody in it." : ""),
+            `EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person, no silhouettes, no figures with their back to camera, no reflections of people, no portraits or photographs of people on the walls.` +
+            (attempt > 0 ? " The previous attempt contained a human figure; this frame must show furniture and architecture only, with nobody in it in any form." : ""),
           kind: "location",
         });
         image = candidate;
-        if (!ai.vision) break;
+        if (!ai.vision?.describeLocation) break;
+        // One vision call does both jobs: the lighting note every close-up will
+        // carry, and a strict "is anyone in this room" check (silhouettes and
+        // back-to-camera figures have no face and would pass a face count).
         try {
           const small = await shrinkReference(candidate.bytes);
-          const judged = await ai.vision.judgeIdentity({
-            reference: null,
-            frames: [small?.bytes ?? candidate.bytes],
-            expectedFaces: 0,
-            description: `Location plate for ${location}: an empty room is required.`,
-          });
-          plateFaces = judged.face_count;
-          if (judged.face_count === 0) break;
+          const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
+          peoplePresent = described.people_present;
+          notes = { lighting_lock: described.lighting_lock, palette: described.palette, key_light: described.key_light, dressing: described.dressing, people_present: described.people_present };
+          if (!described.people_present) break;
         } catch {
           break;
         }
       }
       if (!image) throw new Error(`Could not generate a location plate for ${location}`);
-      if (plateFaces != null && plateFaces > 0) {
-        throw new Error(`Location plate for ${location} still shows a person after ${LOCATION_PLATE_ATTEMPTS} attempts`);
-      }
-      // The plate's lighting, in words. Every close-up in this location carries
-      // this note so the video model holds the room without a second image ref.
-      let notes: Record<string, unknown> = {};
-      if (ai.vision?.describeLocation) {
-        try {
-          const described = await ai.vision.describeLocation({ plate: image.bytes, plateMime: image.mime_type, location });
-          notes = { lighting_lock: described.lighting_lock, palette: described.palette, key_light: described.key_light, dressing: described.dressing };
-        } catch {
-          notes = {};
-        }
+      if (peoplePresent) {
+        throw new Error(`Location plate for ${location} still shows a human figure after ${LOCATION_PLATE_ATTEMPTS} attempts`);
       }
       const asset = await putAsset({
         owner_id: series.owner_id,

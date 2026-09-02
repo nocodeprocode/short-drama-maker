@@ -44,6 +44,8 @@ export type LocationNotes = {
   palette: string;
   key_light: string;
   dressing: string[];
+  /** Any human figure at all: face, silhouette, back to camera, reflection, portrait on a wall. */
+  people_present: boolean;
   model: string;
 };
 
@@ -81,8 +83,9 @@ export function parseFaceBox(content: string): FaceBox | null {
 }
 
 const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
-Answer only with JSON: {"palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact room and light>"}.
-Rules: name real visible things only; no people; no brands or readable text; keep lighting_lock under 40 words.`;
+Answer only with JSON: {"people_present": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact room and light>"}.
+people_present is true if ANY human figure is visible in any form: a face, a body, a silhouette, someone with their back to camera, a reflection, a mannequin, or a person in a painting or photograph on the wall. Be strict.
+Rules: name real visible things only; no brands or readable text; keep lighting_lock under 40 words.`;
 
 export function parseLocationNotes(content: string, model: string): LocationNotes {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -97,6 +100,7 @@ export function parseLocationNotes(content: string, model: string): LocationNote
     palette: typeof raw.palette === "string" ? raw.palette.slice(0, 80) : "",
     key_light: typeof raw.key_light === "string" ? raw.key_light.slice(0, 120) : "",
     dressing,
+    people_present: raw.people_present === true || raw.people_present === "true",
     model,
   };
 }
