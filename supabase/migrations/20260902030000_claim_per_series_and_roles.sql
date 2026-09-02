@@ -14,8 +14,8 @@ set search_path = ''
 as $$
 begin
   return query
-  with due as (
-    select distinct on (t.series_id) t.id
+  with candidates as (
+    select t.id, row_number() over (partition by t.series_id order by t.created_at) as rn
     from public.engine_tasks t
     where ((t.status = 'queued' and t.visible_at <= now())
        or (t.status = 'running' and t.lease_until is not null and t.lease_until < now()))
@@ -27,7 +27,12 @@ begin
           and r.lease_until is not null
           and r.lease_until >= now()
       )
-    order by t.series_id, t.created_at
+  ),
+  due as (
+    select t.id
+    from public.engine_tasks t
+    join candidates c on c.id = t.id and c.rn = 1
+    order by t.created_at
     limit p_limit
     for update of t skip locked
   )
