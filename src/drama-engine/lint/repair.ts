@@ -450,16 +450,24 @@ function sealBlock(shots: PlanShot[], plan: EpisodePlan, lastBlock: boolean, fir
 function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {
   const episodeBudget = LENGTH_BUDGETS["900_1080"];
   const plan = applyShotBudget(input.plan, episodeBudget);
+  // Twelve blocks at the 56 s block floor is 672 s, under the episode floor;
+  // each block's floor is the episode floor shared across the blocks it has.
+  const blockCount = Math.max(1, plan.scenes.length);
+  const blockFloor = Math.min(
+    BLOCK_CRAFT.duration_sum_max - 2,
+    Math.max(BLOCK_CRAFT.duration_sum_min, Math.ceil(episodeBudget.duration_sum_min / blockCount) + 1),
+  );
+  const blockBudget: LengthBudget = { ...BLOCK_CRAFT, duration_sum_min: blockFloor, target_episode_seconds: Math.max(BLOCK_CRAFT.target_episode_seconds, blockFloor + 4) };
   const scenes: ShotPlanScene[] = plan.scenes.map((scene, sceneIndex) => {
     const lastBlock = sceneIndex === plan.scenes.length - 1;
     const firstBlock = sceneIndex === 0;
     let shots = scene.shots.map((shot, index, all) => craftShot(shot, index, all.length));
-    shots = applyPads(shots, BLOCK_CRAFT);
-    if (shots.length > BLOCK_CRAFT.max_shots) shots = collapseToShotBudget(shots, BLOCK_CRAFT);
-    shots = growToWindow(shots, BLOCK_CRAFT);
+    shots = applyPads(shots, blockBudget);
+    if (shots.length > blockBudget.max_shots) shots = collapseToShotBudget(shots, blockBudget);
+    shots = growToWindow(shots, blockBudget);
     shots = sealBlock(shots, plan, lastBlock, firstBlock);
-    shots = injectCoverage(shots, plan, BLOCK_CRAFT);
-    shots = growToWindow(shots, BLOCK_CRAFT);
+    shots = injectCoverage(shots, plan, blockBudget);
+    shots = growToWindow(shots, blockBudget);
     shots = sealBlock(shots, plan, lastBlock, firstBlock);
     return {
       ...scene,
@@ -515,6 +523,23 @@ function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {
     scenes[0] = { ...scenes[0]!, shots: [flash, ...scenes[0]!.shots] };
   }
   flat = scenes.flatMap((scene) => scene.shots);
+  // Episode-level backstop: if the blocks still sum under the floor, lengthen
+  // the shortest growable shots across the episode, spread evenly.
+  let total = flat.reduce((acc, shot) => acc + shot.duration_hint_seconds, 0);
+  if (total < episodeBudget.duration_sum_min) {
+    let deficit = episodeBudget.duration_sum_min - total + 1;
+    for (let pass = 0; pass < 6 && deficit > 0; pass += 1) {
+      for (const shot of flat) {
+        if (deficit <= 0) break;
+        const cap = isSpokenLine(shot) ? episodeBudget.max_dialogue_s : episodeBudget.max_shot_s;
+        if (shot.recap || shot.duration_hint_seconds >= cap) continue;
+        const add = Math.min(0.5, cap - shot.duration_hint_seconds, deficit);
+        shot.duration_hint_seconds = Number((shot.duration_hint_seconds + add).toFixed(2));
+        deficit -= add;
+      }
+    }
+    total = flat.reduce((acc, shot) => acc + shot.duration_hint_seconds, 0);
+  }
   return {
     ...plan,
     hook: plan.hook?.trim() || flat[0]?.dialogue || "The turn is already happening.",
