@@ -92,6 +92,19 @@ export function createOpenRouterImages(): ImageEngine {
           ].join(" "),
         );
       }
+      if (input.kind === "location") {
+        // A plate is a room, not a character: the character template's "ONE
+        // person only" put a figure in every location still.
+        return requestImage(
+          [
+            "Photorealistic vertical 9:16 interior location plate for a film: an UNOCCUPIED room.",
+            input.description,
+            "Architectural photography framing, one motivated key light, cinematic colour grade.",
+            "NOBODY is in the room: no people, no faces, no bodies, no silhouettes, no figures with their back to camera, no reflections of people, no mannequins, no portraits or photographs of people on the walls.",
+            "Furniture, architecture and light only. No text, no signage, no logos, no captions, no watermark.",
+          ].join(" "),
+        );
+      }
       const tight = input.kind === "cu" || input.kind === "front" || input.kind === "three_quarter" || input.kind === "profile";
       return requestImage(
         [
