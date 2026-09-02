@@ -336,6 +336,13 @@ export async function commitSeriesStore(
   });
   if (seriesError) throw new Error(seriesError.message);
 
+  // Actors before characters: characters.actor_id references actors.
+  const actors = [...store.actors.values()].filter((actor) => actor.owner_id === series.owner_id);
+  if (actors.length > 0) {
+    const { error } = await client.from("actors").upsert(actors);
+    if (error) throw new Error(error.message);
+  }
+
   const characters = store.charactersFor(seriesId).map(characterToRow);
   if (characters.length > 0) {
     const { data: existingRows, error: existingError } = await client
@@ -346,12 +353,6 @@ export async function commitSeriesStore(
     const existingById = new Map((existingRows ?? []).map((row) => [row.id, row]));
     const merged = characters.map((row) => mergeCharacterCommit(row, existingById.get(row.id) ?? null));
     const { error } = await client.from("characters").upsert(merged);
-    if (error) throw new Error(error.message);
-  }
-
-  const actors = [...store.actors.values()].filter((actor) => actor.owner_id === series.owner_id);
-  if (actors.length > 0) {
-    const { error } = await client.from("actors").upsert(actors);
     if (error) throw new Error(error.message);
   }
 
