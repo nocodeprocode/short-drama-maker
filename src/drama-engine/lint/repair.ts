@@ -614,6 +614,27 @@ function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {
     }
     total = flat.reduce((acc, shot) => acc + shot.duration_hint_seconds, 0);
   }
+  // And the symmetric ceiling: trim the longest shots first, never below the
+  // length a line or a read needs.
+  if (total > episodeBudget.duration_sum_max) {
+    let excess = total - episodeBudget.duration_sum_max + 1;
+    const floorFor = (shot: PlanShot) => {
+      if (isSpokenLine(shot)) return Math.max(episodeBudget.min_shot_s, Math.min(shot.duration_hint_seconds, 3 + wordCount(shot.dialogue) * 0.35));
+      const readable = shot.function === "insert_evidence" || shot.function === "phone_ui" || shot.function === "establishing" || shot.function === "stacked_two" || shot.type === "broll" || shot.type === "establishing";
+      return readable ? 3 : 2.5;
+    };
+    for (let pass = 0; pass < 12 && excess > 0.05; pass += 1) {
+      const room = flat.filter((shot) => !shot.recap && shot.duration_hint_seconds > floorFor(shot) + 0.05).sort((a, b) => b.duration_hint_seconds - a.duration_hint_seconds);
+      if (!room.length) break;
+      for (const shot of room) {
+        if (excess <= 0) break;
+        const cut = Math.min(0.5, shot.duration_hint_seconds - floorFor(shot), excess);
+        shot.duration_hint_seconds = Number((shot.duration_hint_seconds - cut).toFixed(2));
+        excess -= cut;
+      }
+    }
+    total = flat.reduce((acc, shot) => acc + shot.duration_hint_seconds, 0);
+  }
   return {
     ...plan,
     hook: plan.hook?.trim() || flat[0]?.dialogue || "The turn is already happening.",
