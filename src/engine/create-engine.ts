@@ -2971,7 +2971,8 @@ export function createEngine(deps: EngineDeps = {}) {
           job.job_type === "video" &&
           Boolean(job.upstream_job_id) &&
           (job.status === "completed" || job.status === "needs_review") &&
-          !(typeof job.result_metadata.asset_id === "string" && rejected.has(job.result_metadata.asset_id)),
+          !(typeof job.result_metadata.asset_id === "string" && rejected.has(job.result_metadata.asset_id)) &&
+          !(Array.isArray(job.result_metadata.take_blockers) && job.result_metadata.take_blockers.length > 0),
       )
       .sort((left, right) => right.updated_at.localeCompare(left.updated_at));
     for (const job of jobs) {
