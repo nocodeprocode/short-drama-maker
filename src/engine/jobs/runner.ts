@@ -995,7 +995,12 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
       return !isWide && !pendingShots.has(shot.id) && (attemptsByShot.get(shot.id) ?? 0) >= VIDEO_RETRY_CAP;
     });
     if (pendingShots.size) waitingOnVideo = true;
-    if (exhausted.length) {
+    // Exhausted shots are set aside, not a reason to stop the other hundred
+    // and fifty. The production keeps shooting everything else and asks for a
+    // human only when nothing else is left to do.
+    const exhaustedIds = new Set(exhausted.map((shot) => shot.id));
+    const stillShooting = unfinishedVideo.filter((shot) => !exhaustedIds.has(shot.id));
+    if (exhausted.length && stillShooting.length === 0 && missingAudio.length === 0) {
       await client
         .from("productions")
         .update({
@@ -1013,7 +1018,7 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
         .eq("id", productionId);
       return { queued, complete: false, exhausted: exhausted.map((shot) => shot.id) };
     }
-    const missingVideo = unfinishedVideo.filter((shot) =>
+    const missingVideo = stillShooting.filter((shot) =>
       shotNeedsVideo(shot, videoJobs ?? [], { hasTake: playable.has(shot.id) }),
     );
     // Submits are quick and the provider renders concurrently, so keep up to
@@ -1043,7 +1048,7 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
           payload: { shot_id: shot.id },
         });
       }
-    } else if (unfinishedVideo.length) {
+    } else if (stillShooting.length) {
       waitingOnVideo = true;
     } else if ((shots ?? []).length > 0) {
       queued.push("render_episode");
