@@ -1478,6 +1478,16 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!shot.shot_data.dialogue?.trim() || !talker) {
       throw new Error("Shot has no dialogue");
     }
+    // Already voiced (a duplicate or stale task): nothing to synthesise, nothing to charge.
+    if (shot.shot_data.dialogue_audio_asset_id && shot.shot_data.dialogue_alignment_asset_id) {
+      const existing = [...store.jobs.values()].find((job) => job.shot_id === shot.id && job.job_type === "dialogue_tts" && job.status === "completed");
+      return {
+        job: existing ?? null,
+        shot,
+        duration: { duration_seconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds, needs_reaction_pad: Boolean(shot.shot_data.needs_reaction_pad) },
+        reused: true as const,
+      };
+    }
     const character = characterBySpeaker(series.id, talker);
     if (!character.locked || !character.voice_profile.elevenlabs_voice_id) {
       throw new Error("Character voice is not locked");
