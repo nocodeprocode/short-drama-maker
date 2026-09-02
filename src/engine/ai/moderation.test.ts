@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { moderateText } from "./moderation.ts";
 
+describe("moderation.adult_reference", () => {
+  it("lets adults talk about their past in dialogue, still blocks a depicted or explicit minor", () => {
+    expect(moderateText("I went to school with a girl named Voss.", "dialogue").verdict).toBe("allow");
+    expect(moderateText("When I was a boy the kitchen was warmer.", "dialogue").verdict).toBe("allow");
+    expect(moderateText("Good girl. Sit.", "dialogue").verdict).toBe("allow");
+    expect(moderateText("She is 14 years old.", "dialogue").verdict).toBe("block");
+    expect(moderateText("A teenager in the doorway", "dialogue").verdict).toBe("block");
+    expect(moderateText("Tight single on a girl in the doorway", "shot_submit").verdict).toBe("block");
+    expect(moderateText("Tight single on Mara, who went to school with a girl named Voss", "shot_submit").verdict).toBe("allow");
+  });
+});
+
 describe("moderation gate", () => {
   it("allows fictional adult drama", () => {
     const verdict = moderateText(

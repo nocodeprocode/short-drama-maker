@@ -34,6 +34,7 @@ import type {
   Episode,
   GenerationJob,
   LedgerEntry,
+  ModerationCheckpoint,
   PrivacyProfile,
   QualityProfile,
   RenderManifest,
@@ -345,7 +346,7 @@ export function createEngine(deps: EngineDeps = {}) {
     return job;
   }
 
-  async function moderate(content: string, checkpoint: "story_input" | "character_create" | "shot_submit", seriesId: string | null, jobId: string | null) {
+  async function moderate(content: string, checkpoint: ModerationCheckpoint, seriesId: string | null, jobId: string | null) {
     const verdict = await ai.moderation.check(content, checkpoint);
     store.moderation.push({
       id: ids.id(),
@@ -1481,7 +1482,7 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!character.locked || !character.voice_profile.elevenlabs_voice_id) {
       throw new Error("Character voice is not locked");
     }
-    await moderate(shot.shot_data.dialogue, "shot_submit", series.id, null);
+    await moderate(shot.shot_data.dialogue, "dialogue", series.id, null);
     const job = createJob({
       owner_id: series.owner_id,
       series_id: series.id,

@@ -76,7 +76,9 @@ export type AssetBucket =
 export type ModerationCheckpoint =
   | "story_input"
   | "character_create"
-  | "shot_submit";
+  | "shot_submit"
+  /** A spoken line on its way to TTS: adults talking, not a pictured subject. */
+  | "dialogue";
 
 export type ModerationCategory =
   | "ok"
