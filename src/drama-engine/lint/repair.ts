@@ -9,7 +9,7 @@ import {
   collapseToShotBudget,
   defaultCraftForShot,
 } from "../editorial/shot-budget.ts";
-import { consumeReactionPad } from "../pacing/reaction-pad.ts";
+import { consumeReactionPad, silenceLegal } from "../pacing/reaction-pad.ts";
 import { DIALOGUE_MAX_WORDS, dialogueTooClose, wordCount } from "../types/dialogue.ts";
 import { LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
 import { isLongFormLength } from "../../engine/config/catalog.ts";
@@ -572,6 +572,29 @@ function repairLongEpisodePlan(input: ValidatePlanInput): EpisodePlan {
       block_index: 0,
     };
     scenes[0] = { ...scenes[0]!, shots: [flash, ...scenes[0]!.shots] };
+  }
+  // Every silence must be legal by the lint's own rule before the plan leaves
+  // repair: readable inserts and wides may run to 8 s, anything else silent is
+  // a priced 2.5 s reaction. The writer's stray silent singles never ship as
+  // four-second stares, and a plan never dead-letters on ILLEGAL_SILENCE.
+  for (const scene of scenes) {
+    for (const [index, shot] of scene.shots.entries()) {
+      if (shot.dialogue) continue;
+      const prev = index > 0 ? scene.shots[index - 1] : undefined;
+      if (silenceLegal(shot, prev)) continue;
+      const readable =
+        shot.function === "insert_evidence" || shot.function === "phone_ui" || shot.function === "establishing" || shot.function === "stacked_two" || shot.function === "name_plant" || shot.type === "broll" || shot.type === "establishing";
+      if (readable) {
+        shot.duration_hint_seconds = Math.min(8, shot.duration_hint_seconds);
+        continue;
+      }
+      shot.type = "reaction";
+      shot.function = "reaction";
+      shot.audio_role = "silent";
+      shot.mouth_visibility_required = false;
+      shot.duration_hint_seconds = 2.5;
+      shot.silence_license = shot.silence_license ?? "post_nuke";
+    }
   }
   flat = scenes.flatMap((scene) => scene.shots);
   // Episode-level backstop: if the blocks still sum under the floor, lengthen
