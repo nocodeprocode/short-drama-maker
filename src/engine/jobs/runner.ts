@@ -9,7 +9,7 @@ import type { AssetStore } from "../storage/types.ts";
 import { configuredRender } from "../media/remote-render.ts";
 import { publicLog } from "../logging.ts";
 import { voiceSexRepair } from "../ai/voice-sex.ts";
-import { shotNeedsVideo } from "./queue-policy.ts";
+import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 
 export const VIDEO_CONCURRENCY = 3;
@@ -455,8 +455,22 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
   const tasks = await claimTasks(client, limit);
   let completed = 0;
   const videoSlots = { active: 0 };
+  // Each task loads and commits the whole series snapshot, so tasks on the same
+  // series must run one after another; different series run in parallel.
+  const bySeries = new Map<string, TaskRow[]>();
+  for (const task of tasks) {
+    const list = bySeries.get(task.series_id) ?? [];
+    list.push(task);
+    bySeries.set(task.series_id, list);
+  }
   await Promise.all(
-    tasks.map(async (task) => {
+    [...bySeries.values()].map(async (seriesTasks) => {
+      for (const task of seriesTasks) await runTask(task);
+    }),
+  );
+
+  async function runTask(task: TaskRow): Promise<void> {
+    {
       const isVideo = task.action === "generate_video" || task.action === "regenerate_shot";
       if (isVideo) {
         while (videoSlots.active >= VIDEO_CONCURRENCY) {
@@ -561,8 +575,8 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
         stopHeartbeat();
         if (isVideo) videoSlots.active -= 1;
       }
-    }),
-  );
+    }
+  }
   await sweepActiveJobs(client);
   return completed;
 }
@@ -869,24 +883,33 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     const missingVideo = unfinishedVideo.filter((shot) =>
       shotNeedsVideo(shot, videoJobs ?? [], { hasTake: playable.has(shot.id) }),
     );
+    // Submits are quick and the provider renders concurrently, so keep up to
+    // VIDEO_CONCURRENCY takes in flight instead of one at a time. Tasks on one
+    // series still execute serially in runOnce, so the snapshot commits never race.
+    const inFlightVideo = (videoJobs ?? []).filter((job) => BUSY_VIDEO_STATUSES.includes(job.status as (typeof BUSY_VIDEO_STATUSES)[number])).length;
+    const videoSlotsOpen = Math.max(0, VIDEO_CONCURRENCY - inFlightVideo);
     if (missingAudio.length) {
-      queued.push("generate_dialogue");
-      await queueTask(client, {
-        owner_id,
-        series_id,
-        production_id: productionId,
-        action: "generate_dialogue",
-        payload: { shot_id: missingAudio[0]!.id },
-      });
-    } else if (missingVideo.length) {
-      queued.push("generate_video");
-      await queueTask(client, {
-        owner_id,
-        series_id,
-        production_id: productionId,
-        action: "generate_video",
-        payload: { shot_id: missingVideo[0]!.id },
-      });
+      for (const shot of missingAudio.slice(0, VIDEO_CONCURRENCY)) {
+        queued.push("generate_dialogue");
+        await queueTask(client, {
+          owner_id,
+          series_id,
+          production_id: productionId,
+          action: "generate_dialogue",
+          payload: { shot_id: shot.id },
+        });
+      }
+    } else if (missingVideo.length && videoSlotsOpen > 0) {
+      for (const shot of missingVideo.slice(0, videoSlotsOpen)) {
+        queued.push("generate_video");
+        await queueTask(client, {
+          owner_id,
+          series_id,
+          production_id: productionId,
+          action: "generate_video",
+          payload: { shot_id: shot.id },
+        });
+      }
     } else if (unfinishedVideo.length) {
       waitingOnVideo = true;
     } else if ((shots ?? []).length > 0) {
