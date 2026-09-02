@@ -1493,7 +1493,7 @@ export function createEngine(deps: EngineDeps = {}) {
       model: "elevenlabs/tts",
       provider: "elevenlabs",
       upstream_job_id: null,
-      idempotency_key: `tts:${shot.id}:${character.voice_profile.voice_version}`,
+      idempotency_key: `tts:${shot.id}:${character.voice_profile.voice_version}${shot.shot_data.line_revision ? `:r${shot.shot_data.line_revision}` : ""}`,
       status: "queued",
       request_metadata: { speaker: character.id },
       estimated_cost: ai.pricing.estimateDialogue(),
@@ -3600,6 +3600,7 @@ export function createEngine(deps: EngineDeps = {}) {
         identity_reject: false,
         take_analysis: null,
         line_revised_at: iso(clock),
+        line_revision: (shot.shot_data.line_revision ?? 0) + 1,
       },
     };
     store.shots.set(revised.id, revised);
