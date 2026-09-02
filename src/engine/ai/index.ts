@@ -12,7 +12,11 @@ import * as privacy from "./privacy.ts";
 import type { ImageEngine, LLMEngine, VideoEngine, VoiceEngine } from "./types.ts";
 
 export type SttEngine = {
-  transcribe(input: { bytes: Uint8Array; format: string }): Promise<{ text: string }>;
+  transcribe(input: { bytes: Uint8Array; format: string }): Promise<{
+    text: string;
+    words?: Array<{ word: string; start: number; end: number }>;
+    speech_onset_seconds?: number | null;
+  }>;
 };
 
 export type AIGateway = {

@@ -144,7 +144,7 @@ async function main() {
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
     // After a QC fix: re-judge every shot whose takes were all blocked, on the same bytes.
-    if (process.argv.includes("--rejudge")) {
+    if (process.argv.includes("--rejudge") || process.argv.includes("--rejudge-all")) {
       const { data: blocked } = await client
         .from("generation_jobs")
         .select("shot_id, result_metadata")
@@ -161,8 +161,9 @@ async function main() {
         byShot.set(job.shot_id, row);
       }
       let queued = 0;
+      const all = process.argv.includes("--rejudge-all");
       for (const [shotId, row] of byShot) {
-        if (row.blocked === 0 || row.clean > 0) continue;
+        if (!all && (row.blocked === 0 || row.clean > 0)) continue;
         await client.from("engine_tasks").insert({ owner_id: ownerId, series_id: seriesId, production_id: productionId, action: "rejudge_shot", payload: { shot_id: shotId }, status: "queued" });
         queued += 1;
       }

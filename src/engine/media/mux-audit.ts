@@ -54,6 +54,12 @@ export type MuxAuditInput = {
   heardLanes: Array<"native" | "tts" | "silent" | null | undefined>;
   /** Per-shot lag limit in ms; defaults to the v9 ship limit. */
   limitMs?: number;
+  /**
+   * Word timings for the final's audio. Native takes carry ambience, so the
+   * level detector alone would place the "voice" on room tone; with a
+   * transcript the onset is the first word inside each shot's window.
+   */
+  transcribe?: (mp3: Uint8Array) => Promise<{ words: Array<{ start: number; end: number }> } | null>;
   now?: () => string;
 };
 
@@ -226,10 +232,23 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
     if (audit.black_frames > 0) audit.reasons.push("black_frames");
 
     let samples: Int16Array | null = null;
+    let words: Array<{ start: number; end: number }> | null = null;
     if (probe.has_audio) {
       const wav = join(dir, "mux.wav");
       const ok = await run("ffmpeg", ["-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", wav]);
       if (ok.ok) samples = pcmFromWav(await readFile(wav));
+      if (input.transcribe) {
+        try {
+          const mp3 = join(dir, "mux.mp3");
+          const made = await run("ffmpeg", ["-y", "-i", file, "-vn", "-ac", "1", "-ar", "44100", "-b:a", "128k", mp3]);
+          if (made.ok) {
+            const spoken = await input.transcribe(new Uint8Array(await readFile(mp3)));
+            words = spoken?.words?.length ? spoken.words : null;
+          }
+        } catch {
+          words = null;
+        }
+      }
 
       // Delivery loudness, measured on the encoded file rather than trusted from the normaliser.
       const measure = parseEbur128Summary(await runStderr("ffmpeg", ["-hide_banner", "-nostats", "-i", file, "-af", "ebur128=peak=true", "-f", "null", "-"]));
@@ -257,7 +276,11 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       });
 
       let voice: number | null = null;
-      if (samples && expectedVoice != null) {
+      if (words && expectedVoice != null) {
+        const searchFrom = Math.max(pictureStart, expectedVoice - 0.35);
+        const word = words.find((row) => row.start >= searchFrom && row.start < pictureStart + pictureLength);
+        voice = word ? Number(word.start.toFixed(3)) : null;
+      } else if (samples && expectedVoice != null) {
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.25);
         const at = firstVoicedSecond(samples, 16000, searchFrom);
         voice = at != null && at < pictureStart + pictureLength ? at : null;

@@ -1903,6 +1903,16 @@ export function createEngine(deps: EngineDeps = {}) {
     };
   }
 
+  /** Transcript with word timings for speech onset; absent when no STT is configured. */
+  function speechTranscriber(): ((mp3: Uint8Array) => Promise<{ text: string; speech_onset_seconds: number | null } | null>) | undefined {
+    const stt = ai.stt;
+    if (!stt) return undefined;
+    return async (mp3) => {
+      const spoken = await stt.transcribe({ bytes: mp3, format: "mp3" });
+      return { text: spoken.text, speech_onset_seconds: spoken.speech_onset_seconds ?? null };
+    };
+  }
+
   function seriesGenre(series: Series) {
     return dramaHooks.inferGenre(`${series.title} ${series.description ?? ""} ${series.story_bible?.logline ?? ""}`);
   }
@@ -2309,6 +2319,7 @@ export function createEngine(deps: EngineDeps = {}) {
       dialogueCu,
       wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
       locateFace: faceLocator(),
+      transcribe: speechTranscriber(),
     });
 
     // Identity stage: how many people are in frame, and is it the locked cast
@@ -2378,10 +2389,12 @@ export function createEngine(deps: EngineDeps = {}) {
       qc = { pass: false, reasons: [...new Set([...qc.reasons, ...verdict.blockers])] };
     }
 
-    if (ai.stt && shouldSampleDialogueStt(shot, episodeShots)) {
+    if (ai.stt && (analysis.transcript || shouldSampleDialogueStt(shot, episodeShots))) {
       try {
-        const audio = await extractAudioMp3(downloaded.bytes);
-        const spoken = await ai.stt.transcribe({ bytes: audio, format: "mp3" });
+        // The take analysis already transcribed a dialogue CU for its speech onset.
+        const spoken = analysis.transcript
+          ? { text: analysis.transcript }
+          : await ai.stt.transcribe({ bytes: await extractAudioMp3(downloaded.bytes), format: "mp3" });
         const lane = await chooseHeardLane({
           dialogue: shot.shot_data.dialogue,
           audioRole: shot.shot_data.audio_role,
@@ -2797,8 +2810,8 @@ export function createEngine(deps: EngineDeps = {}) {
       if (!take) continue;
       const stillId = job.request_metadata.first_frame_asset_id;
       const still = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
-      // A take that was never measured (fetched before analysis existed) is measured now.
-      let analysis = (job.result_metadata.take_analysis as TakeAnalysis | undefined) ??
+      // Re-QC measures again: detectors improve, and a stored analysis may predate them.
+      let analysis: TakeAnalysis =
         (await measureTake({
           video: take.body,
           still,
@@ -2806,6 +2819,7 @@ export function createEngine(deps: EngineDeps = {}) {
           dialogueCu,
           wanDialogue: dialogueCu && (job.model ?? "").includes("wan"),
           locateFace: faceLocator(),
+          transcribe: speechTranscriber(),
         }));
       if (ai.vision && expectedFaces != null) {
         const identity = await runIdentityStage({
@@ -3054,7 +3068,18 @@ export function createEngine(deps: EngineDeps = {}) {
     // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
     // to call final. The audit JSON is stored either way so reviewers can see
     // why a cut passed or was refused.
-    const muxAudit = await audit({ body: rendered.body, manifest, analyses, heardLanes });
+    const muxAudit = await audit({
+      body: rendered.body,
+      manifest,
+      analyses,
+      heardLanes,
+      transcribe: ai.stt
+        ? async (mp3) => {
+            const spoken = await ai.stt!.transcribe({ bytes: mp3, format: "mp3" });
+            return { words: spoken.words ?? [] };
+          }
+        : undefined,
+    });
     return await finalizeRender({ input, episode, takes, rendered, muxAudit });
   }
 

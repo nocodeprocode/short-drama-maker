@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectInternalCuts, ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
+import { extractAudioMp3 } from "../media/extract-audio.ts";
 import { probeVideoBytes } from "../media/probe.ts";
 import { inventedSecondBody } from "../media/second-body.ts";
 import {
@@ -50,6 +51,9 @@ export type TakeAnalysis = {
   face_count: number | null;
   /** Face position on a settled frame, when located; the mouth probes used it. */
   face_box?: NormalizedFaceBox | null;
+  /** Native transcript when STT ran; the voice onset came from its first word. */
+  transcript?: string | null;
+  voice_onset_source?: "stt" | "level" | null;
   measured_at: string;
 };
 
@@ -70,6 +74,11 @@ export type TakeAnalysisInput = {
    * on extreme close-ups where the mouth sits low in frame.
    */
   locateFace?: (frame: Uint8Array) => Promise<NormalizedFaceBox | null>;
+  /**
+   * Speech-aware onset from a transcript with word timings. Native takes carry
+   * ambience before the line, so a level detector alone fires on room tone.
+   */
+  transcribe?: (mp3: Uint8Array) => Promise<{ text: string; speech_onset_seconds: number | null } | null>;
   now?: () => string;
 };
 
@@ -432,10 +441,27 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
         }
       }
       base.face_box = face;
-      const [darkMouth, voice] = await Promise.all([
+      const [darkMouth, levelVoice] = await Promise.all([
         firstMouthOpenSecond(input.video, face),
         probe.has_audio ? firstVoicedSecondFromBytes(input.video) : Promise.resolve(null),
       ]);
+      let voice = levelVoice;
+      base.voice_onset_source = levelVoice == null ? null : "level";
+      if (input.transcribe && probe.has_audio) {
+        try {
+          const mp3 = await extractAudioMp3(input.video);
+          const spoken = await input.transcribe(mp3);
+          if (spoken) {
+            base.transcript = spoken.text;
+            if (spoken.speech_onset_seconds != null) {
+              voice = spoken.speech_onset_seconds;
+              base.voice_onset_source = "stt";
+            }
+          }
+        } catch {
+          /* level-based onset stands */
+        }
+      }
       // Speech-driven mouth motion cannot lead the voice by more than the pad ceiling,
       // and residual head motion right after the settle is not a viseme.
       const searchFrom = Math.max(

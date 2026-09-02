@@ -308,6 +308,12 @@ export function lockedTakePrompt(input: {
 
   const single = !input.allowTwoShot;
   const who = input.onCameraName ? `ONE face only: ${input.onCameraName}.` : "ONE face only.";
+  // On an ECU the frame never leaves the face: no pull-out to hands or props,
+  // no push back in. Reframing is what breaks the settle and the sync gates.
+  const ecu = input.shotFunction === "hook_cu" || input.shotFunction === "accusation_cu" || input.shotFunction === "button_cu" || input.shotFunction === "block_button";
+  const moveForSingle = ecu
+    ? "locked-off only: no push, no pull, no reframe, no zoom; the face fills the frame from the first frame to the last; no hands, props or objects enter the frame"
+    : move;
   const eyeline = input.eyeline && input.eyeline !== "lens_forbidden"
     ? `eyeline ${input.eyeline}${input.partner ? ` toward off-screen ${input.partner}` : ""}`
     : input.partner
@@ -324,7 +330,7 @@ export function lockedTakePrompt(input: {
     who,
     input.camera ? stripCopyrightBait(input.camera) : null,
     "IDENTITY LOCK. Image-to-video from reference image 1 only.",
-    `${move}, same clothes as reference, do not change face, do not change hair, do not change outfit.`,
+    `${moveForSingle}, same clothes as reference, do not change face, do not change hair, do not change outfit.`,
     "Do not invent a teal cardigan, navy suit, new haircut, or second person.",
     single
       ? "FORBIDDEN: second person, second head, couple, talking two-shot, both people speaking in frame, OTS, over-the-shoulder."
