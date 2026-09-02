@@ -1,7 +1,7 @@
 import type { EpisodePlan, ShotPlanScene } from "../../engine/domain.ts";
-import { objectPlateCamera } from "../craft/prompt-fragments.ts";
+import { cameraDescribesFace, objectPlateCamera } from "../craft/prompt-fragments.ts";
 import { groupEditorialScenes } from "../editorial/scene-groups.ts";
-import { isObjectInsert } from "../types/editorial.ts";
+import { cameraIsObjectPlate, isObjectInsert } from "../types/editorial.ts";
 import { sanitizeCamera } from "../editorial/camera-sanitize.ts";
 import {
   applyShotBudget,
@@ -260,11 +260,16 @@ function sealBeats(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudget): 
   if (!last.dialogue || isNarrationLine(last.dialogue)) {
     last.dialogue = cliffLine(plan);
     last.speaker = last.speaker ?? last.speaker_on_camera ?? shots.find((shot) => shot.speaker)?.speaker ?? "Lead";
+    last.speaker_on_camera = last.speaker;
     last.type = "hero";
     last.audio_role = "onscreen";
     last.mouth_visibility_required = true;
     last.silence_license = null;
     last.duration_hint_seconds = clampDuration(Math.max(5, last.duration_hint_seconds), budget, true);
+    // A button that was a silent insert now speaks: it needs a face, not the paper.
+    if (cameraIsObjectPlate(last.camera) || !cameraDescribesFace(last.camera)) {
+      last.camera = `Tight single on ${last.speaker}'s face, eyes to the off-screen partner, one held breath before the line`;
+    }
   } else if (wordCount(last.dialogue) > DIALOGUE_MAX_WORDS) {
     last.dialogue = last.dialogue.split(/\s+/).slice(0, DIALOGUE_MAX_WORDS).join(" ");
   }

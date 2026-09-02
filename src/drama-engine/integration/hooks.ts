@@ -16,7 +16,7 @@ import { buildRenderManifest, type ManifestBuildInput } from "../editorial/manif
 import { assertDramaPlan, repairEpisodePlan, validateEpisodePlan, type ValidatePlanInput } from "../lint/index.ts";
 import { allocateShotDuration } from "../pacing/duration-allocator.ts";
 import { buildSeasonCraft, enrichEpisodeStructure, recapAllowed, recapBudgetSeconds } from "../plans/index.ts";
-import { allowsTwoShot, isObjectInsert, type AudioRole } from "../types/editorial.ts";
+import { allowsTwoShot, cameraIsObjectPlate, isObjectInsert, type AudioRole } from "../types/editorial.ts";
 import { LENGTH_BUDGETS } from "../types/pacing.ts";
 import type { DramaLintResult } from "../types/qc-drama.ts";
 import type { GenreId, SkuPolicy } from "../types/genre.ts";
@@ -88,10 +88,17 @@ Do not write a 90-minute movie and slice it.`;
       const motif = objectInsert
         ? evidenceMotif({ camera: data.camera, genreMotifs: input.genre ? playbookFor(input.genre).visualMotifs : null })
         : null;
+      // A spoken single that still carries a plate camera (an insert that gained a
+      // line during repair) is shot on the speaker's face.
+      const spokenName = data.speaker_on_camera ?? data.speaker;
+      const cameraText =
+        !objectInsert && data.dialogue && cameraIsObjectPlate(data.camera)
+          ? `Tight single on ${spokenName ?? "the speaker"}'s face, eyes to the off-screen partner`
+          : data.camera;
       const camera = objectInsert
         ? objectPlateCamera(data.function, data.camera, { dialogue: data.dialogue, motif })
         : stripCopyrightBait(
-            sanitizeCamera(data.camera, {
+            sanitizeCamera(cameraText, {
               lockedTake: (data.edit_mode ?? "locked_take") !== "already_cut",
               single: !twoShot,
               onCameraName: data.speaker_on_camera ?? data.speaker,

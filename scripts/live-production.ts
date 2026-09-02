@@ -203,7 +203,7 @@ async function main() {
     }
     // After the routing fix: a spoken line whose take has no audio must be reshot on an audio route.
     if (process.argv.includes("--reshoot-silent-dialogue")) {
-      const { data: jobs } = await client.from("generation_jobs").select("shot_id, result_metadata, model").eq("series_id", seriesId).eq("job_type", "video");
+      const { data: jobs } = await client.from("generation_jobs").select("shot_id, result_metadata, request_metadata, model").eq("series_id", seriesId).eq("job_type", "video");
       const { data: shotRows } = await client.from("shots").select("id, shot_data").in("id", [...new Set((jobs ?? []).map((job) => job.shot_id).filter((id): id is string => Boolean(id)))]);
       const spoken = new Set(
         (shotRows ?? [])
@@ -218,7 +218,9 @@ async function main() {
         const res = (job.result_metadata ?? {}) as Record<string, unknown>;
         const analysis = res.take_analysis as { has_audio?: boolean; voice_onset_source?: string | null } | undefined;
         const audioModel = typeof job.model === "string" && job.model.includes("wan");
-        const silent = analysis?.has_audio === false || (!audioModel && analysis?.voice_onset_source !== "stt");
+        const req = (job as { request_metadata?: Record<string, unknown> }).request_metadata ?? {};
+        const silent =
+          analysis?.has_audio === false || (!audioModel && analysis?.voice_onset_source !== "stt") || req.first_frame_kind === "object";
         if (!job.shot_id || !spoken.has(job.shot_id) || typeof res.asset_id !== "string" || !silent) continue;
         await client.from("engine_tasks").insert({
           owner_id: ownerId,

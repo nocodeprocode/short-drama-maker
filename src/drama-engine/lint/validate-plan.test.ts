@@ -3,6 +3,7 @@ import type { EpisodePlan } from "../../engine/domain.ts";
 import { sanitizeCamera } from "../editorial/camera-sanitize.ts";
 import { applyShotBudget, splitLongShots } from "../editorial/shot-budget.ts";
 import { LENGTH_BUDGETS } from "../types/pacing.ts";
+import { isObjectInsert } from "../types/editorial.ts";
 import { repairEpisodePlan } from "./repair.ts";
 import { assertDramaPlan, validateEpisodePlan } from "./validate-plan.ts";
 import { playbookFor } from "../craft/genre-playbooks.ts";
@@ -105,6 +106,27 @@ describe("hook and button", () => {
     expect(opener.function).toBe("hook_cu");
     expect(opener.dialogue && /[?!]/.test(opener.dialogue) || /\b(don'?t|three months)\b/i.test(opener.dialogue ?? "")).toBe(true);
     expect(validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 }).pass).toBe(true);
+  });
+
+  it("gives a button that gains a line a face camera, and never treats a spoken line as an insert", () => {
+    const ten = tenShotPlan();
+    ten[ten.length - 1] = shot({
+      function: "insert_evidence",
+      type: "broll",
+      dialogue: null,
+      speaker: null,
+      audio_role: "silent",
+      camera: "insert of unlabeled paper on dark stone, handwritten block letters TUESDAY only, object only, no people, no faces",
+      duration_hint_seconds: 4,
+    });
+    const repaired = repairEpisodePlan({ plan: plan(ten), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const button = repaired.scenes.at(-1)!.shots.at(-1)!;
+    expect(button.function).toBe("button_cu");
+    expect(button.dialogue).toBeTruthy();
+    expect(button.camera).toMatch(/face/i);
+    expect(button.camera).not.toMatch(/paper|object only/i);
+    expect(isObjectInsert(button)).toBe(false);
+    expect(isObjectInsert({ function: "button_cu", dialogue: "Then whose name is on it?", audio_role: "onscreen", camera: "insert of unlabeled paper, object only, no faces" })).toBe(false);
   });
 
   it("warns when neither the button line nor the cliffhanger leaves a question", () => {
