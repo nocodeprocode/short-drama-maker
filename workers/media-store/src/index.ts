@@ -43,6 +43,34 @@ export default {
         return json({ error: "Unauthorized" }, 401);
       }
 
+      // Multipart: a 15-minute master or a programme stem is well past a single
+      // request body, so large objects arrive as parts and are completed in one step.
+      const uploadId = url.searchParams.get("uploadId");
+      if (request.method === "POST" && url.searchParams.has("uploads")) {
+        const upload = await env.MEDIA.createMultipartUpload(key, {
+          httpMetadata: { contentType: request.headers.get("content-type") ?? "application/octet-stream" },
+        });
+        return json({ ok: true, key, uploadId: upload.uploadId });
+      }
+      if (request.method === "PUT" && uploadId) {
+        const partNumber = Number(url.searchParams.get("partNumber"));
+        if (!Number.isInteger(partNumber) || partNumber < 1 || !request.body) return json({ error: "Bad part" }, 400);
+        const upload = env.MEDIA.resumeMultipartUpload(key, uploadId);
+        const part = await upload.uploadPart(partNumber, request.body);
+        return json({ ok: true, partNumber: part.partNumber, etag: part.etag });
+      }
+      if (request.method === "POST" && uploadId) {
+        const body = (await request.json()) as { parts?: Array<{ partNumber: number; etag: string }> };
+        if (!Array.isArray(body.parts) || !body.parts.length) return json({ error: "No parts" }, 400);
+        const upload = env.MEDIA.resumeMultipartUpload(key, uploadId);
+        await upload.complete(body.parts);
+        return json({ ok: true, key });
+      }
+      if (request.method === "DELETE" && uploadId) {
+        await env.MEDIA.resumeMultipartUpload(key, uploadId).abort();
+        return json({ ok: true, key, aborted: uploadId });
+      }
+
       if (request.method === "PUT") {
         await env.MEDIA.put(key, request.body, {
           httpMetadata: {
