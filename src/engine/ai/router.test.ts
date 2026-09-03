@@ -42,7 +42,7 @@ describe("video router", () => {
       "standard",
       "auto",
     );
-    expect(reaction.route.model).toBe("bytedance/seedance-2.0-mini");
+    expect(reaction.route.model).toBe("alibaba/wan-3.0");
 
     const hero = router.selectVideoRoute(
       shot({
@@ -77,7 +77,7 @@ describe("video router", () => {
       "standard",
       "auto",
     );
-    expect(offscreen.route.model).toBe("bytedance/seedance-2.0-mini");
+    expect(offscreen.route.model).toBe("alibaba/wan-3.0");
     expect(offscreen.reason).toMatch(/offscreen|economy/i);
 
     const prev = process.env.DRAMA_CU_MODEL;
@@ -95,7 +95,7 @@ describe("video router", () => {
         "standard",
         "auto",
       );
-      expect(silent.route.model).toBe("bytedance/seedance-2.0-mini");
+      expect(silent.route.model).toBe("alibaba/wan-3.0");
     } finally {
       if (prev === undefined) delete process.env.DRAMA_CU_MODEL;
       else process.env.DRAMA_CU_MODEL = prev;

@@ -105,8 +105,11 @@ export const router: AIRouter = {
       );
     }
 
+    // A listener or silent single still shows a locked face. The economy model
+    // lost identity on every listener take in the live 15-minute run (the
+    // bake-off said as much), so faces stay on the identity-holding route.
     if (isOffscreen(shot) || shot.shot_data.audio_role === "silent") {
-      return pick("economy_default", Math.max(duration, VIDEO_ROUTES.economy_default.min_duration_seconds), "offscreen or silent — economy, no lipsync");
+      return pick("visual_default", Math.max(duration, VIDEO_ROUTES.visual_default.min_duration_seconds), "offscreen or silent single — identity route, no lipsync");
     }
 
     if (isAction(shot) && duration >= VIDEO_ROUTES.action.min_duration_seconds && duration <= VIDEO_ROUTES.action.max_duration_seconds) {
@@ -131,7 +134,10 @@ export const router: AIRouter = {
       return pick("dialogue_default", duration, "verified audio-conditioned dialogue");
     }
 
-    if (quality === "economy" || ["reaction", "establishing", "broll"].includes(shot.shot_data.type)) {
+    if (shot.shot_data.type === "reaction") {
+      return pick("visual_default", Math.max(duration, VIDEO_ROUTES.visual_default.min_duration_seconds), "reaction single — identity route");
+    }
+    if (quality === "economy" || ["establishing", "broll"].includes(shot.shot_data.type)) {
       return pick("economy_default", duration, "silent or economy shot");
     }
 

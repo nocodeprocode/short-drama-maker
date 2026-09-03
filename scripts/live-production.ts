@@ -143,6 +143,36 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // After a routing/QC fix: reject the latest take of every shot the production
+    // flagged as exhausted, which resets its attempt budget so it reshoots.
+    if (process.argv.includes("--reshoot-exhausted")) {
+      const { data: prod } = await client.from("productions").select("intervention").eq("id", productionId).single();
+      const ids = ((prod?.intervention as Record<string, unknown> | null)?.shot_ids ?? []) as string[];
+      let queued = 0;
+      for (const shotId of ids) {
+        const { data: latest } = await client
+          .from("generation_jobs")
+          .select("result_metadata")
+          .eq("shot_id", shotId)
+          .eq("job_type", "video")
+          .not("result_metadata->>asset_id", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const assetId = (latest?.result_metadata as Record<string, unknown> | null)?.asset_id;
+        if (typeof assetId !== "string") continue;
+        await client.from("engine_tasks").insert({
+          owner_id: ownerId,
+          series_id: seriesId,
+          production_id: productionId,
+          action: "review_take",
+          payload: { shot_id: shotId, asset_id: assetId, decision: "reject", note: "exhausted under the previous route; reshoot" },
+          status: "queued",
+        });
+        queued += 1;
+      }
+      process.stdout.write(`queued ${queued} rejection(s) for exhausted shots\n`);
+    }
     // A line that kept failing QC: rewrite it and give the shot a fresh retry budget.
     //   --revise-line "<shot_id>::<new line>"
     const revise = process.argv[process.argv.indexOf("--revise-line") + 1];
