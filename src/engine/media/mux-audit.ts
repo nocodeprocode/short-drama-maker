@@ -43,12 +43,16 @@ export type MuxAudit = {
   integrated_lufs: number | null;
   true_peak_dbfs: number | null;
   loudness_range_lu: number | null;
+  /** Which track the voice onsets were measured on. */
+  onset_source?: "dialogue_stem" | "mix" | null;
   lines: MuxAuditLine[];
   measured_at: string;
 };
 
 export type MuxAuditInput = {
   body: Uint8Array;
+  /** Dialogue-only stem from the mixer (WAV), aligned to the programme clock. */
+  dialogueStem?: Uint8Array | null;
   manifest: RenderManifest;
   analyses: Array<TakeAnalysis | null | undefined>;
   heardLanes: Array<"native" | "tts" | "silent" | null | undefined>;
@@ -237,10 +241,24 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
 
     let samples: Int16Array | null = null;
     let words: Array<{ start: number; end: number }> | null = null;
+    // The dialogue stem is the mixer's own record of where it put each line, free
+    // of the bed and effects, so the onset search cannot be fooled by the music
+    // recovering from the duck between lines. The full mix is the fallback.
+    if (input.dialogueStem && input.dialogueStem.byteLength > 64) {
+      const stemIn = join(dir, "stem.bin");
+      const stemWav = join(dir, "stem.wav");
+      await writeFile(stemIn, input.dialogueStem);
+      const ok = await run("ffmpeg", ["-y", "-i", stemIn, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", stemWav]);
+      if (ok.ok) samples = pcmFromWav(await readFile(stemWav));
+      audit.onset_source = samples ? "dialogue_stem" : null;
+    }
     if (probe.has_audio) {
-      const wav = join(dir, "mux.wav");
-      const ok = await run("ffmpeg", ["-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", wav]);
-      if (ok.ok) samples = pcmFromWav(await readFile(wav));
+      if (!samples) {
+        const wav = join(dir, "mux.wav");
+        const ok = await run("ffmpeg", ["-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", wav]);
+        if (ok.ok) samples = pcmFromWav(await readFile(wav));
+        audit.onset_source = samples ? "mix" : null;
+      }
       if (input.transcribe) {
         try {
           const mp3 = join(dir, "mux.mp3");
@@ -290,10 +308,10 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       const windowEnd = pictureStart + pictureLength;
       if (samples && expectedVoice != null) {
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.25);
-        let at = firstVoicedSecond(samples, 16000, searchFrom);
+        let at = firstVoicedSecond(samples, 16000, searchFrom, windowEnd);
         if (at != null && at - searchFrom < 0.03) {
           const quietAt = firstQuietSecond(samples, 16000, at, Math.min(windowEnd, expectedVoice + 0.6));
-          at = quietAt == null ? at : firstVoicedSecond(samples, 16000, quietAt);
+          at = quietAt == null ? at : firstVoicedSecond(samples, 16000, quietAt, windowEnd);
         }
         voice = at != null && at < windowEnd ? at : null;
       }

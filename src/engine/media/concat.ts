@@ -46,6 +46,48 @@ export async function concatMp4Segments(segments: readonly Uint8Array[]): Promis
   }
 }
 
+/**
+ * Lays WAV stems end to end, each trimmed or padded to exactly the seconds its
+ * picture block occupies, so the result sits on the same clock as the joined
+ * programme. Returns null if ffmpeg is unavailable or any segment fails.
+ */
+export async function concatWavSegments(
+  segments: ReadonlyArray<{ body: Uint8Array; seconds: number }>,
+): Promise<Uint8Array | null> {
+  if (!segments.length) return null;
+  if (!(await ffmpegAvailable())) return null;
+  const dir = await mkdtemp(join(tmpdir(), "sdm-stem-concat-"));
+  try {
+    const inputs: string[] = [];
+    const filters: string[] = [];
+    for (const [index, segment] of segments.entries()) {
+      const file = join(dir, `stem-${String(index).padStart(3, "0")}.wav`);
+      await writeFile(file, segment.body);
+      inputs.push("-i", file);
+      const seconds = Math.max(0.05, segment.seconds).toFixed(3);
+      filters.push(`[${index}:a]aresample=48000,aformat=channel_layouts=stereo,apad=whole_dur=${seconds},atrim=0:${seconds}[s${index}]`);
+    }
+    const labels = segments.map((_, index) => `[s${index}]`).join("");
+    const out = join(dir, "programme-stem.wav");
+    await run("ffmpeg", [
+      "-y",
+      ...inputs,
+      "-filter_complex",
+      `${filters.join(";")};${labels}concat=n=${segments.length}:v=0:a=1[out]`,
+      "-map",
+      "[out]",
+      "-c:a",
+      "pcm_s16le",
+      out,
+    ]);
+    return new Uint8Array(await readFile(out));
+  } catch {
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 function runStderr(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });

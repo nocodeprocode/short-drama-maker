@@ -155,7 +155,7 @@ async function main() {
     vtt: ["WEBVTT", "", ...cues].join("\n"),
   });
 
-  const audit = await auditMux({ body: rendered.body, manifest, analyses, heardLanes });
+  const audit = await auditMux({ body: rendered.body, dialogueStem: rendered.dialogueStem ?? null, manifest, analyses, heardLanes });
   const sha256 = createHash("sha256").update(rendered.body).digest("hex");
   const report = {
     ...audit,

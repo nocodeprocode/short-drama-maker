@@ -61,6 +61,8 @@ export type AssetKind =
   | "shot_video"
   | "episode_final"
   | "episode_block"
+  | "episode_block_stem"
+  | "episode_stem"
   | "episode_audit"
   | "episode_captions"
   | "episode_provenance"

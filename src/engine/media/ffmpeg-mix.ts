@@ -26,6 +26,8 @@ export type MixInput = {
   visemeWanDialogue?: Array<boolean | null | undefined>;
   /** Per-take heard delay. When set, skip probe/align for that shot (keep picture in-point). */
   visemePadSeconds?: Array<number | null | undefined>;
+  /** Receives the dialogue-only stem (48 kHz stereo WAV) on the programme clock. */
+  onDialogueStem?: (stem: Uint8Array) => void | Promise<void>;
 };
 
 /** Audio-conditioned takes keep the file Wan returned. Never strip and replace with TTS. */
@@ -688,11 +690,14 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
       (spiked ? ",volume=0.6" : "") +
       `[bed]`;
 
-    const premaster =
-      `[dlg]volume=1.4[dlgv];` +
+    const premaster = (withStem: boolean) =>
+      (withStem ? `[dlg]volume=1.4,asplit=2[dlgv][dlgstem0];[dlgstem0]atrim=0:${total.toFixed(3)},aresample=48000[stem];` : `[dlg]volume=1.4[dlgv];`) +
       `[dlgv][bed][sting][sfx]amix=inputs=4:normalize=0:dropout_transition=0[pre]`;
 
-    const graph = (master: string) => [burn, bedGraph, stingGraph, dlg, sfxGraph, duckGraph, premaster, `[pre]${master}[a]`].join(";");
+    const graph = (master: string, withStem = false) =>
+      [burn, bedGraph, stingGraph, dlg, sfxGraph, duckGraph, premaster(withStem), `[pre]${master}[a]`].join(";");
+    const wantStem = Boolean(input.onDialogueStem);
+    const stemFile = join(dir, "dialogue-stem.wav");
 
     // Two-pass EBU R128: measure the mix once, then normalise with a linear gain
     // computed from the measurement so dialogue dynamics survive.
@@ -716,7 +721,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     const args = [
       ...inputs,
       "-filter_complex",
-      graph(`${loudnormFilter(measured)},aresample=48000`),
+      graph(`${loudnormFilter(measured)},aresample=48000`, wantStem),
       "-map",
       "[v]",
       "-map",
@@ -733,12 +738,16 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
       "192k",
       "-shortest",
       mixed,
+      ...(wantStem ? ["-map", "[stem]", "-c:a", "pcm_s16le", stemFile] : []),
     ];
 
     // No fallback: a mix that drops the dialogue is not a lesser episode, it is
     // a broken one. Fail so the render is refused and the reason is recorded.
     await run("ffmpeg", args);
     if (process.env.SDM_MIX_KEEP) process.stderr.write(`mix workdir kept: ${dir}\n`);
+    if (wantStem && input.onDialogueStem) {
+      await input.onDialogueStem(new Uint8Array(await readFile(stemFile)));
+    }
     return new Uint8Array(await readFile(mixed));
   } catch (error) {
     if (process.env.SDM_DEBUG_MIX) {

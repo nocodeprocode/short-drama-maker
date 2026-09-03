@@ -13,7 +13,7 @@ import {
   VIDEO_ROUTES,
 } from "./config/models.ts";
 import { decodeJson, encodeJson, sha256Hex, sha256HexSync, stableStringify } from "./crypto.ts";
-import { concatMp4Segments, mergeManifests, mergeVtt, normalizeProgrammeLoudness } from "./media/concat.ts";
+import { concatMp4Segments, concatWavSegments, mergeManifests, mergeVtt, normalizeProgrammeLoudness } from "./media/concat.ts";
 import { LOUDNESS } from "../drama-engine/types/audio.ts";
 import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
@@ -167,7 +167,7 @@ export class RenderIncompleteError extends Error {
 /** Below this many takes an episode renders in one pass; above it, per block with reuse. */
 export const BLOCK_RENDER_MIN_SHOTS = 24;
 /** Bump when the mixer's output for the same inputs changes, so cached blocks re-render. */
-export const MIXER_VERSION = 2;
+export const MIXER_VERSION = 3;
 /** Image attempts for an empty location plate before the lock fails loudly. */
 export const LOCATION_PLATE_ATTEMPTS = 4;
 
@@ -3164,6 +3164,7 @@ export function createEngine(deps: EngineDeps = {}) {
     // why a cut passed or was refused.
     const muxAudit = await audit({
       body: rendered.body,
+      dialogueStem: rendered.dialogueStem ?? null,
       manifest,
       analyses,
       heardLanes,
@@ -3194,6 +3195,7 @@ export function createEngine(deps: EngineDeps = {}) {
     checksum: string;
     vtt: string;
     container: "mp4";
+    dialogueStem?: Uint8Array | null;
     manifest: RenderManifest;
     analyses: Array<TakeAnalysis | null>;
     heardLanes: Array<"native" | "tts" | "silent">;
@@ -3226,15 +3228,18 @@ export function createEngine(deps: EngineDeps = {}) {
     const existing = (await liveAssetsForSeries(episode.series_id)).filter(
       (asset) => asset.kind === "episode_block" && asset.metadata.episode_id === episode.id,
     );
-    const pieces: Array<{ body: Uint8Array; vtt: string; manifest: RenderManifest; analyses: Array<TakeAnalysis | null>; heardLanes: Array<"native" | "tts" | "silent">; seconds: number; reused: boolean }> = [];
+    const pieces: Array<{ body: Uint8Array; dialogueStem: Uint8Array | null; vtt: string; manifest: RenderManifest; analyses: Array<TakeAnalysis | null>; heardLanes: Array<"native" | "tts" | "silent">; seconds: number; reused: boolean }> = [];
     for (const group of groups) {
       const fingerprint = blockFingerprint(group.takes);
       const cached = existing.find((asset) => asset.metadata.block_index === group.block && asset.metadata.fingerprint === fingerprint);
       const stored = cached ? await assets.get(cached.id).catch(() => null) : null;
       if (stored && typeof cached?.metadata.vtt === "string" && cached.metadata.manifest) {
         const seconds = probeVideoBytes(stored.body).duration_seconds;
+        const stemId = typeof cached.metadata.dialogue_stem_asset_id === "string" ? cached.metadata.dialogue_stem_asset_id : null;
+        const stem = stemId ? await assets.get(stemId).catch(() => null) : null;
         pieces.push({
           body: stored.body,
+          dialogueStem: stem?.body ?? null,
           vtt: cached.metadata.vtt,
           manifest: cached.metadata.manifest as RenderManifest,
           analyses: group.takes.map((row) => row.shot.shot_data.take_analysis ?? null),
@@ -3246,6 +3251,17 @@ export function createEngine(deps: EngineDeps = {}) {
       }
       const slice = await renderSlice(episode, group.takes);
       const seconds = probeVideoBytes(slice.body).duration_seconds;
+      const stemAsset = slice.dialogueStem
+        ? await putAsset({
+            owner_id: ownerId,
+            series_id: episode.series_id,
+            kind: "episode_block_stem",
+            bucket: "private-final",
+            mime_type: "audio/wav",
+            body: slice.dialogueStem,
+            metadata: { episode_id: episode.id, block_index: group.block, fingerprint, stem: "dialogue" },
+          })
+        : null;
       await putAsset({
         owner_id: ownerId,
         series_id: episode.series_id,
@@ -3262,9 +3278,10 @@ export function createEngine(deps: EngineDeps = {}) {
           manifest: slice.manifest,
           heard_lanes: slice.heardLanes,
           seconds,
+          dialogue_stem_asset_id: stemAsset?.id ?? null,
         },
       });
-      pieces.push({ ...slice, seconds, reused: false });
+      pieces.push({ ...slice, dialogueStem: slice.dialogueStem ?? null, seconds, reused: false });
     }
     const joined = await concat(pieces.map((piece) => piece.body));
     if (!joined) throw new RenderFailedError("block concatenation failed");
@@ -3276,8 +3293,14 @@ export function createEngine(deps: EngineDeps = {}) {
       offset += piece.seconds;
       return at;
     });
+    // The programme stem is the block stems laid end to end on the same block
+    // clock the manifest uses, so an onset measured on it is on the programme clock.
+    const dialogueStem = pieces.every((piece) => piece.dialogueStem)
+      ? await concatWavSegments(pieces.map((piece) => ({ body: piece.dialogueStem!, seconds: piece.seconds })))
+      : null;
     return {
       body,
+      dialogueStem,
       checksum: await sha256Hex(body),
       vtt: mergeVtt(pieces.map((piece, index) => ({ vtt: piece.vtt, offsetSeconds: offsets[index]! }))),
       container: "mp4",
@@ -3449,6 +3472,19 @@ export function createEngine(deps: EngineDeps = {}) {
       body: new TextEncoder().encode(cuesToSrt(cuesFromVtt(rendered.vtt))),
       metadata: { episode_id: episode.id, version, final_asset_id: finalAsset.id, format: "srt" },
     });
+
+    // Dialogue stem: the studio deliverable a dub, a re-mix or a localisation starts from.
+    if (rendered.dialogueStem) {
+      await putAsset({
+        owner_id: input.owner_id,
+        series_id: episode.series_id,
+        kind: "episode_stem",
+        bucket: "private-final",
+        mime_type: "audio/wav",
+        body: rendered.dialogueStem,
+        metadata: { episode_id: episode.id, version, final_asset_id: finalAsset.id, stem: "dialogue" },
+      });
+    }
 
     // Additional aspects are re-frames of the accepted master, never separate cuts.
     const deliverables: Array<{ aspect: DeliverableAspect; asset_id: string; checksum: string }> = [

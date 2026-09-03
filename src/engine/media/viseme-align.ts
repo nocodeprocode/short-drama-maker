@@ -129,20 +129,27 @@ export function firstVoicedSecond(
   samples: ArrayLike<number>,
   rate: number,
   skipSeconds = 0,
+  untilSeconds?: number,
 ): number | null {
   if (rate <= 0 || samples.length < rate * 0.04) return null;
   const hop = Math.max(1, Math.round(rate * 0.01));
   const skip = Math.max(0, Math.round(skipSeconds * rate));
-  if (skip >= samples.length) return null;
+  const end = untilSeconds == null ? samples.length : Math.min(samples.length, Math.round(untilSeconds * rate));
+  if (skip >= end) return null;
   const windows: number[] = [];
-  for (let i = skip; i + hop <= samples.length; i += hop) {
+  for (let i = skip; i + hop <= end; i += hop) {
     let sum = 0;
     for (let j = 0; j < hop; j += 1) sum += (samples[i + j] ?? 0) ** 2;
     windows.push(Math.sqrt(sum / hop));
   }
+  if (windows.length === 0) return null;
   const ranked = [...windows].sort((a, b) => a - b);
   const quiet = ranked[Math.floor(ranked.length * 0.2)] ?? 0;
-  const floor = Math.max(700, quiet * 4);
+  const peak = ranked[ranked.length - 1] ?? 0;
+  // The floor is set from the region searched, not the whole file: a long
+  // programme's quiet cutaways would otherwise pull it under the music bed.
+  // Speech in the region also has to reach within 14 dB of its loudest moment.
+  const floor = Math.max(700, quiet * 4, peak * 0.2);
   let run = 0;
   for (let i = 0; i < windows.length; i += 1) {
     if ((windows[i] ?? 0) >= floor) {

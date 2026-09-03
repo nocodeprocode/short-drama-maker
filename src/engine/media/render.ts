@@ -23,6 +23,8 @@ export type RenderOutput = {
   checksum: string;
   vtt: string;
   container: "mp4";
+  /** Dialogue-only stem (48 kHz WAV) on the same clock as `body`; null when the mixer had none. */
+  dialogueStem?: Uint8Array | null;
 };
 
 export type RenderFn = (input: RenderInput) => Promise<RenderOutput>;
@@ -66,6 +68,7 @@ export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutp
     );
   }
   const vtt = input.vtt ?? buildEpisodeVtt(input);
+  let dialogueStem: Uint8Array | null = null;
   const mixed = await assembleEpisodeMp4({
     manifest: input.manifest,
     shotBodies: input.shotBodies,
@@ -76,13 +79,16 @@ export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutp
     visemeMouthOpenSeconds: input.visemeMouthOpenSeconds,
     visemeVoiceOnsetSeconds: input.visemeVoiceOnsetSeconds,
     vtt,
+    onDialogueStem: (stem) => {
+      dialogueStem = stem;
+    },
   });
   if (!mixed || !isMp4(mixed)) {
     throw new RenderFailedError(
       mixed ? "mixer returned bytes that are not an MP4" : "ffmpeg unavailable or every take was rejected by the mixer",
     );
   }
-  return { body: mixed, checksum: await sha256Hex(mixed), vtt, container: "mp4" };
+  return { body: mixed, checksum: await sha256Hex(mixed), vtt, container: "mp4", dialogueStem };
 }
 
 export function manifestFingerprint(manifest: RenderManifest): string {
