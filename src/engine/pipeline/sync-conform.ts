@@ -28,7 +28,7 @@ export type SyncCorrection = {
 /** Larger than this and the take's onset is not a mis-measure, it is a different line. */
 export const CONFORM_MAX_SHIFT_SECONDS = 3;
 export const CONFORM_HEAD_EXTEND_SECONDS = 0.3;
-export const CONFORM_MAX_SETTLE_SECONDS = 2.0;
+export const CONFORM_MAX_SETTLE_SECONDS = 2.5;
 export const CONFORM_MAX_PASSES = 2;
 
 export function conformCorrections(
@@ -109,16 +109,17 @@ export function conformCorrections(
 }
 
 /**
- * True when every refusal is one the conform loop can act on. Programme
- * loudness is re-normalised on every render, so its reasons are re-measured
- * on the next pass rather than blocking it.
+ * True when another pass is worth rendering: there is at least one correction
+ * to apply and every refusal is of a kind a re-time can address. Programme
+ * loudness is re-normalised on every render, so its reasons are re-measured on
+ * the next pass rather than blocking it. A line that cannot be corrected does
+ * not veto the others; passes are capped, and it stays on the final audit.
  */
 export function onlyConformable(audit: MuxAudit, corrections: SyncCorrection[]): boolean {
   if (corrections.length === 0) return false;
-  const fixable = new Set(corrections.map((row) => row.shot_id));
   return audit.reasons.every((reason) => {
     if (reason === "loudness_off_target" || reason === "true_peak_over") return true;
-    const [kind, id] = reason.split(":");
-    return (kind === "sync" || kind === "room_morph") && id != null && fixable.has(id);
+    const [kind] = reason.split(":");
+    return kind === "sync" || kind === "room_morph";
   });
 }

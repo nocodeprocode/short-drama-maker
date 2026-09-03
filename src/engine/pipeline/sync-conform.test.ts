@@ -116,6 +116,8 @@ describe("sync conform", () => {
     expect(onlyConformable(a, fixes)).toBe(true);
     expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })], ["loudness_off_target"]), fixes)).toBe(true);
     expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })], ["black_frames"]), fixes)).toBe(false);
-    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 }), line({ shot_id: "s9", lag_ms: null, voice_onset_s: null })]), fixes)).toBe(false);
+    // An uncorrectable sync line does not veto the pass; a black frame does.
+    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 }), line({ shot_id: "s9", lag_ms: null, voice_onset_s: null })]), fixes)).toBe(true);
+    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })]), [])).toBe(false);
   });
 });
