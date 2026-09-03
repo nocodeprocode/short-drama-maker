@@ -122,12 +122,15 @@ export async function normalizeProgrammeLoudness(
     const gainDb = Number((target.lufs - measured).toFixed(2));
     if (Math.abs(gainDb) < 0.3) return { body: programme, measured, gainDb: 0 };
     const out = join(dir, "programme-loud.mp4");
+    // The limiter works on sample peaks; AAC reconstruction overshoots by up to
+    // ~1 dB, so the ceiling sits a decibel under the true-peak target.
+    const ceilingDb = target.truePeakDb - 1;
     await run("ffmpeg", [
       "-y",
       "-i",
       input,
       "-af",
-      `volume=${gainDb}dB,alimiter=limit=${Math.pow(10, target.truePeakDb / 20).toFixed(4)}:attack=5:release=50:level=false`,
+      `volume=${gainDb}dB,alimiter=limit=${Math.pow(10, ceilingDb / 20).toFixed(4)}:attack=5:release=50:level=false`,
       "-c:v",
       "copy",
       "-c:a",

@@ -108,11 +108,16 @@ export function conformCorrections(
   return out;
 }
 
-/** True when every refusal is one the conform loop can act on. */
+/**
+ * True when every refusal is one the conform loop can act on. Programme
+ * loudness is re-normalised on every render, so its reasons are re-measured
+ * on the next pass rather than blocking it.
+ */
 export function onlyConformable(audit: MuxAudit, corrections: SyncCorrection[]): boolean {
   if (corrections.length === 0) return false;
   const fixable = new Set(corrections.map((row) => row.shot_id));
   return audit.reasons.every((reason) => {
+    if (reason === "loudness_off_target" || reason === "true_peak_over") return true;
     const [kind, id] = reason.split(":");
     return (kind === "sync" || kind === "room_morph") && id != null && fixable.has(id);
   });

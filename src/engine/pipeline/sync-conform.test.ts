@@ -114,7 +114,8 @@ describe("sync conform", () => {
     const a = audit([line({ shot_id: "s1", lag_ms: -500 })]);
     const fixes = conformCorrections(a, [{ id: "s1", analysis: analysis(), lane: "native", takeSeconds: 6 }]);
     expect(onlyConformable(a, fixes)).toBe(true);
-    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })], ["loudness_off_target"]), fixes)).toBe(false);
+    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })], ["loudness_off_target"]), fixes)).toBe(true);
+    expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 })], ["black_frames"]), fixes)).toBe(false);
     expect(onlyConformable(audit([line({ shot_id: "s1", lag_ms: -500 }), line({ shot_id: "s9", lag_ms: null, voice_onset_s: null })]), fixes)).toBe(false);
   });
 });
