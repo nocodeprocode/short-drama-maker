@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createAiGateway } from "../ai/index.ts";
 import { transcribeAudio } from "../ai/stt.ts";
 import { accessFromAppMetadata } from "../access.ts";
-import { createEngine } from "../create-engine.ts";
+import { createEngine, RenderIncompleteError } from "../create-engine.ts";
 import { classifyTaskFailure, failureDecision, redactTaskError, retryDelaySeconds, sanitizeTaskError } from "./errors.ts";
 import { createConfiguredAssetStore } from "../storage/create.ts";
 import type { AssetStore } from "../storage/types.ts";
@@ -354,7 +354,17 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       const deliverables: Array<"1:1" | "16:9"> = Array.isArray(payload.deliverables)
         ? payload.deliverables.filter((row): row is "1:1" | "16:9" => row === "1:1" || row === "16:9")
         : ["1:1", "16:9"];
-      result = await engine.renderEpisode({ owner_id, episode_id: String(payload.episode_id), deliverables });
+      try {
+        result = await engine.renderEpisode({ owner_id, episode_id: String(payload.episode_id), deliverables });
+      } catch (error) {
+        // A cut requested before every shot has a clean take is not a failure of
+        // the cut; advance will ask for it again when the shots are in.
+        if (error instanceof RenderIncompleteError) {
+          result = { skipped: true, reason: "render_incomplete", missing: error.missing };
+          break;
+        }
+        throw error;
+      }
       break;
     }
     case "advance_production":
