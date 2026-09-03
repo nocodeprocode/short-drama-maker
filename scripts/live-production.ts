@@ -143,6 +143,22 @@ async function main() {
     seriesId = production.series_id;
     ownerId = production.owner_id;
     process.stdout.write(`resuming production ${productionId} · series ${seriesId} · status ${production.status}\n`);
+    // After the onset fix: re-measure on-camera lines whose take onset read as t≈0 (ambience, not speech).
+    if (process.argv.includes("--rejudge-early-voice")) {
+      const { data: shotRows } = await client
+        .from("shots")
+        .select("id, shot_data, scene_id")
+        .in("scene_id", (await client.from("scenes").select("id").in("episode_id", (await client.from("episodes").select("id").eq("series_id", seriesId)).data?.map((row) => row.id) ?? [])).data?.map((row) => row.id) ?? []);
+      let queued = 0;
+      for (const row of shotRows ?? []) {
+        const data = (row.shot_data ?? {}) as Record<string, unknown>;
+        const analysis = (data.take_analysis ?? null) as { voice_onset_seconds?: number | null } | null;
+        if (!data.dialogue || data.audio_role !== "onscreen" || analysis?.voice_onset_seconds == null || analysis.voice_onset_seconds > 0.25) continue;
+        await client.from("engine_tasks").insert({ owner_id: ownerId, series_id: seriesId, production_id: productionId, action: "rejudge_shot", payload: { shot_id: row.id }, status: "queued" });
+        queued += 1;
+      }
+      process.stdout.write(`queued rejudge for ${queued} early-voice shot(s)\n`);
+    }
     // After a routing/QC fix: reject the latest take of every shot the production
     // flagged as exhausted, which resets its attempt budget so it reshoots.
     if (process.argv.includes("--reshoot-exhausted")) {

@@ -63,7 +63,8 @@ export type MuxAuditInput = {
   now?: () => string;
 };
 
-export const MUX_SYNC_LIMIT_MS = 80;
+/** Hard gate for lines with a frame-accurate mouth: the ITU-R BT.1359 detectability bound. */
+export const MUX_SYNC_LIMIT_MS = 125;
 /** Lines whose mouth-open came from the motion fallback get the v9 Eli tolerance. */
 export const MUX_SYNC_SOFT_LIMIT_MS = 200;
 /**
@@ -279,25 +280,27 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
         mouthOnTake: analysis.mouth_open_seconds,
       });
 
+      // Level onset is frame-accurate and is the primary measure. In dense
+      // dialogue the previous line's tail can still be sounding when the window
+      // opens; a level already high at the window start is not this line's
+      // onset, so look for the next rising edge. Transcript word timings drift
+      // by hundreds of milliseconds on a long programme, so they are only the
+      // fallback when the level finds nothing.
       let voice: number | null = null;
-      if (words && expectedVoice != null) {
-        const searchFrom = Math.max(pictureStart, expectedVoice - 0.35);
-        const word = words.find((row) => row.start >= searchFrom && row.start < pictureStart + pictureLength);
-        voice = word ? Number(word.start.toFixed(3)) : null;
-      }
-      if (voice == null && samples && expectedVoice != null) {
-        // No transcribed word in the window (a lone name can be missed): level onset.
-        // In dense dialogue the previous line's tail can still be sounding when the
-        // window opens; a level already high at the window start is not this line's
-        // onset, so look for the next rising edge instead.
+      const windowEnd = pictureStart + pictureLength;
+      if (samples && expectedVoice != null) {
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.25);
-        const windowEnd = pictureStart + pictureLength;
         let at = firstVoicedSecond(samples, 16000, searchFrom);
         if (at != null && at - searchFrom < 0.03) {
           const quietAt = firstQuietSecond(samples, 16000, at, Math.min(windowEnd, expectedVoice + 0.6));
           at = quietAt == null ? at : firstVoicedSecond(samples, 16000, quietAt);
         }
         voice = at != null && at < windowEnd ? at : null;
+      }
+      if (voice == null && words && expectedVoice != null) {
+        const searchFrom = Math.max(pictureStart, expectedVoice - 0.35);
+        const word = words.find((row) => row.start >= searchFrom && row.start < windowEnd);
+        voice = word ? Number(word.start.toFixed(3)) : null;
       }
       const lagMs = voice != null && mouthOnMux != null ? Math.round((mouthOnMux - voice) * 1000) : null;
       // The darkness mouth probe is frame-accurate; the motion fallback is ~200ms early.

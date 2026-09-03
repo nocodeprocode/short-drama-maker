@@ -214,12 +214,28 @@ export async function firstVoicedSecondFromBytes(body: Uint8Array): Promise<numb
     const pcm = await readFile(wav);
     if (pcm.byteLength < 44) return null;
     const samples = new Int16Array(pcm.buffer, pcm.byteOffset + 44, Math.floor((pcm.byteLength - 44) / 2));
-    return firstVoicedSecond(samples, 16000);
+    return speechOnsetSecond(samples, 16000);
   } catch {
     return null;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Speech onset on a take. Generated takes often open on baked-in ambience or
+ * a music swell that is already above the voice floor at t=0; that is not the
+ * line. When the level is high from the very first window, step to the first
+ * quiet and take the next rising edge instead.
+ */
+export function speechOnsetSecond(samples: ArrayLike<number>, rate: number): number | null {
+  const first = firstVoicedSecond(samples, rate);
+  if (first == null || first > 0.25) return first;
+  const total = samples.length / rate;
+  const quietAt = firstQuietSecond(samples, rate, first, Math.min(total, first + 4));
+  if (quietAt == null) return first;
+  const next = firstVoicedSecond(samples, rate, quietAt);
+  return next ?? first;
 }
 
 const MOUTH_W = 48;
