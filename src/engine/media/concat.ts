@@ -46,6 +46,65 @@ export async function concatMp4Segments(segments: readonly Uint8Array[]): Promis
   }
 }
 
+function runStderr(cmd: string, args: string[]): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", () => resolve(""));
+    child.on("exit", () => resolve(stderr));
+  });
+}
+
+/**
+ * Blocks are normalised one at a time, so a programme with quiet cutaways
+ * lands under target once they are joined. Measure the whole programme and
+ * apply one linear gain (dynamics untouched), with a true-peak limiter so the
+ * gain cannot push peaks over the delivery ceiling. Audio only; video copied.
+ */
+export async function normalizeProgrammeLoudness(
+  programme: Uint8Array,
+  target: { lufs: number; truePeakDb: number },
+): Promise<{ body: Uint8Array; measured: number | null; gainDb: number }> {
+  if (!(await ffmpegAvailable())) return { body: programme, measured: null, gainDb: 0 };
+  const dir = await mkdtemp(join(tmpdir(), "sdm-prog-loud-"));
+  try {
+    const input = join(dir, "programme.mp4");
+    await writeFile(input, programme);
+    const stderr = await runStderr("ffmpeg", ["-hide_banner", "-nostats", "-i", input, "-af", "ebur128=peak=true", "-f", "null", "-"]);
+    const integrated = /I:\s+(-?[\d.]+) LUFS/.exec(stderr.slice(stderr.lastIndexOf("Summary:")));
+    const measured = integrated ? Number(integrated[1]) : null;
+    if (measured == null || !Number.isFinite(measured)) return { body: programme, measured: null, gainDb: 0 };
+    const gainDb = Number((target.lufs - measured).toFixed(2));
+    if (Math.abs(gainDb) < 0.3) return { body: programme, measured, gainDb: 0 };
+    const out = join(dir, "programme-loud.mp4");
+    await run("ffmpeg", [
+      "-y",
+      "-i",
+      input,
+      "-af",
+      `volume=${gainDb}dB,alimiter=limit=${Math.pow(10, target.truePeakDb / 20).toFixed(4)}:attack=5:release=50:level=false`,
+      "-c:v",
+      "copy",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-movflags",
+      "+faststart",
+      out,
+    ]);
+    return { body: new Uint8Array(await readFile(out)), measured, gainDb };
+  } catch {
+    // The audit still measures the file; an un-normalised programme fails there, not silently.
+    return { body: programme, measured: null, gainDb: 0 };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /** Shift a block's cues onto the programme clock. */
 export function shiftCues(vtt: string, offsetSeconds: number): CaptionCue[] {
   return cuesFromVtt(vtt).map((cue) => ({ ...cue, start: cue.start + offsetSeconds, end: cue.end + offsetSeconds }));

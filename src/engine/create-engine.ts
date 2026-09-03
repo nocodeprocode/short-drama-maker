@@ -13,7 +13,8 @@ import {
   VIDEO_ROUTES,
 } from "./config/models.ts";
 import { decodeJson, encodeJson, sha256Hex, sha256HexSync, stableStringify } from "./crypto.ts";
-import { concatMp4Segments, mergeManifests, mergeVtt } from "./media/concat.ts";
+import { concatMp4Segments, mergeManifests, mergeVtt, normalizeProgrammeLoudness } from "./media/concat.ts";
+import { LOUDNESS } from "../drama-engine/types/audio.ts";
 import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
@@ -165,6 +166,8 @@ export class RenderIncompleteError extends Error {
 
 /** Below this many takes an episode renders in one pass; above it, per block with reuse. */
 export const BLOCK_RENDER_MIN_SHOTS = 24;
+/** Bump when the mixer's output for the same inputs changes, so cached blocks re-render. */
+export const MIXER_VERSION = 2;
 /** Image attempts for an empty location plate before the lock fails loudly. */
 export const LOCATION_PLATE_ATTEMPTS = 4;
 
@@ -3199,8 +3202,9 @@ export function createEngine(deps: EngineDeps = {}) {
   /** What a block render depends on; identical inputs reuse the stored block. */
   function blockFingerprint(rows: Array<{ shot: Shot; assetId: string }>): string {
     return sha256HexSync(
-      stableStringify(
-        rows.map((row) => ({
+      stableStringify({
+        mixer: MIXER_VERSION,
+        rows: rows.map((row) => ({
           shot: row.shot.id,
           take: row.assetId,
           measured: row.shot.shot_data.take_analysis?.measured_at ?? null,
@@ -3208,8 +3212,9 @@ export function createEngine(deps: EngineDeps = {}) {
           alignment: row.shot.shot_data.dialogue_alignment_asset_id ?? null,
           audio: row.shot.shot_data.dialogue_audio_asset_id ?? null,
           silence: row.shot.shot_data.silence_license ?? null,
+          role: row.shot.shot_data.audio_role ?? null,
         })),
-      ),
+      }),
     );
   }
 
@@ -3261,8 +3266,10 @@ export function createEngine(deps: EngineDeps = {}) {
       });
       pieces.push({ ...slice, seconds, reused: false });
     }
-    const body = await concat(pieces.map((piece) => piece.body));
-    if (!body) throw new RenderFailedError("block concatenation failed");
+    const joined = await concat(pieces.map((piece) => piece.body));
+    if (!joined) throw new RenderFailedError("block concatenation failed");
+    // One loudness pass over the whole programme; per-block normalisation lands low once quiet blocks join.
+    const body = (await normalizeProgrammeLoudness(joined, { lufs: LOUDNESS.mixLufs, truePeakDb: LOUDNESS.truePeakDb })).body;
     let offset = 0;
     const offsets = pieces.map((piece) => {
       const at = offset;
@@ -3339,7 +3346,7 @@ export function createEngine(deps: EngineDeps = {}) {
         ttsBodies.push(null);
       }
       let native: Uint8Array | null = null;
-      if (shot.shot_data.heard_audio === "native") {
+      if (shot.shot_data.heard_audio === "native" && shot.shot_data.audio_role !== "offscreen") {
         try {
           native = await extractAudioMp3(shotBodies[index]!);
         } catch {
@@ -3353,14 +3360,18 @@ export function createEngine(deps: EngineDeps = {}) {
           shot.shot_data.audio_role !== "offscreen" &&
           shot.shot_data.audio_role !== "silent",
       );
+      // An off-screen line is always the TTS lane: the listener take's own track
+      // is room tone at best, and a listener never speaks the line.
       heardLanes.push(
         shot.shot_data.audio_role === "silent" || !shot.shot_data.dialogue
           ? "silent"
-          : native
-            ? "native"
-            : audioConditioned
-              ? "silent"
-              : "tts",
+          : shot.shot_data.audio_role === "offscreen"
+            ? "tts"
+            : native
+              ? "native"
+              : audioConditioned
+                ? "silent"
+                : "tts",
       );
     }
     // Measured at ingest: pad only where the voice really led the mouth, and hand

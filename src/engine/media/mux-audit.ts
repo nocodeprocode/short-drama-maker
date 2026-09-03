@@ -7,7 +7,7 @@ import { LOUDNESS } from "../../drama-engine/types/audio.ts";
 import type { RenderManifest } from "../domain.ts";
 import type { TakeAnalysis } from "../pipeline/take-analysis.ts";
 import { probeVideoBytes } from "./probe.ts";
-import { firstVoicedSecond } from "./viseme-align.ts";
+import { firstQuietSecond, firstVoicedSecond } from "./viseme-align.ts";
 
 /**
  * Post-mux gate. The lock-v9 script audited its two-shot cut by hand-built
@@ -71,7 +71,7 @@ export const MUX_SYNC_SOFT_LIMIT_MS = 200;
  * same morph-velocity measure the settle detector uses (`SETTLE_STEP_MAX`),
  * with a little headroom for re-encode noise. Above this the room is still sliding.
  */
-export const HEAD_STEP_MAX = 16;
+export const HEAD_STEP_MAX = 18;
 export const HEAD_STEP_WINDOW_SECONDS = 0.3;
 /** Frames darker than this mean luma (0-255) read as black. */
 export const BLACK_FRAME_LUMA = 16;
@@ -287,9 +287,17 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
       }
       if (voice == null && samples && expectedVoice != null) {
         // No transcribed word in the window (a lone name can be missed): level onset.
+        // In dense dialogue the previous line's tail can still be sounding when the
+        // window opens; a level already high at the window start is not this line's
+        // onset, so look for the next rising edge instead.
         const searchFrom = Math.max(pictureStart, expectedVoice - 0.25);
-        const at = firstVoicedSecond(samples, 16000, searchFrom);
-        voice = at != null && at < pictureStart + pictureLength ? at : null;
+        const windowEnd = pictureStart + pictureLength;
+        let at = firstVoicedSecond(samples, 16000, searchFrom);
+        if (at != null && at - searchFrom < 0.03) {
+          const quietAt = firstQuietSecond(samples, 16000, at, Math.min(windowEnd, expectedVoice + 0.6));
+          at = quietAt == null ? at : firstVoicedSecond(samples, 16000, quietAt);
+        }
+        voice = at != null && at < windowEnd ? at : null;
       }
       const lagMs = voice != null && mouthOnMux != null ? Math.round((mouthOnMux - voice) * 1000) : null;
       // The darkness mouth probe is frame-accurate; the motion fallback is ~200ms early.

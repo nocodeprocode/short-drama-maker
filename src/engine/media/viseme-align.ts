@@ -155,6 +155,43 @@ export function firstVoicedSecond(
   return null;
 }
 
+/**
+ * First moment after `fromSeconds` where the level has fallen back under the
+ * voice floor for a few consecutive windows; null if it never goes quiet before
+ * `untilSeconds`. Used to step past a line that is still sounding.
+ */
+export function firstQuietSecond(
+  samples: ArrayLike<number>,
+  rate: number,
+  fromSeconds: number,
+  untilSeconds: number,
+): number | null {
+  if (rate <= 0 || untilSeconds <= fromSeconds) return null;
+  const hop = Math.max(1, Math.round(rate * 0.01));
+  const start = Math.max(0, Math.round(fromSeconds * rate));
+  const end = Math.min(samples.length, Math.round(untilSeconds * rate));
+  const windows: number[] = [];
+  for (let i = start; i + hop <= end; i += hop) {
+    let sum = 0;
+    for (let j = 0; j < hop; j += 1) sum += (samples[i + j] ?? 0) ** 2;
+    windows.push(Math.sqrt(sum / hop));
+  }
+  if (windows.length < 6) return null;
+  const ranked = [...windows].sort((a, b) => a - b);
+  const quiet = ranked[Math.floor(ranked.length * 0.2)] ?? 0;
+  const floor = Math.max(700, quiet * 4);
+  let run = 0;
+  for (let i = 0; i < windows.length; i += 1) {
+    if ((windows[i] ?? 0) < floor) {
+      run += 1;
+      if (run >= 4) return Number(((start + (i - 3) * hop) / rate).toFixed(3));
+    } else {
+      run = 0;
+    }
+  }
+  return null;
+}
+
 function run(cmd: string, args: string[]): Promise<{ ok: boolean; stdout: Buffer }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
