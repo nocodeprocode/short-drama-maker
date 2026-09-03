@@ -1067,7 +1067,7 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
           payload: { shot_id: shot.id },
         });
       }
-    } else if (stillShooting.length) {
+    } else if (stillShooting.length || exhausted.length) {
       waitingOnVideo = true;
     } else if ((shots ?? []).length > 0) {
       queued.push("render_episode");
