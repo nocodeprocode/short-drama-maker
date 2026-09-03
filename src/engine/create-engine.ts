@@ -3183,7 +3183,39 @@ export function createEngine(deps: EngineDeps = {}) {
         heardLanes,
         transcribe,
       });
-      if (muxAudit.ship || pass >= CONFORM_MAX_PASSES) {
+      if (muxAudit.ship) {
+        return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
+      }
+      const laneFor = (shotId: string) => heardLanes[current.findIndex((row) => row.shot.id === shotId)] ?? null;
+      if (pass >= CONFORM_MAX_PASSES) {
+        // Re-timing is spent. A native line still off the lips, or a room still
+        // sliding at its deepest settle, is a bad take, not a bad cut: reject it
+        // so the runner shoots another (the retry cap still bounds this) and
+        // report the cut incomplete. Anything else is refused for a human.
+        const stillBad = muxAudit.lines.filter((line) => !line.pass && laneFor(line.shot_id) === "native");
+        const unexplained = muxAudit.reasons.filter((reason) => {
+          const [kind, id] = reason.split(":");
+          return !((kind === "sync" || kind === "room_morph") && id && stillBad.some((line) => line.shot_id === id));
+        });
+        if (stillBad.length && unexplained.length === 0 && !input.allow_partial) {
+          const missing: string[] = [];
+          for (const line of stillBad) {
+            const row = current.find((take) => take.shot.id === line.shot_id);
+            if (!row) continue;
+            await reviewTake({ owner_id: input.owner_id, shot_id: row.shot.id, asset_id: row.assetId, decision: "reject", note: `mux audit after conform: ${line.settled_open ? "sync" : "room_morph"}` });
+            missing.push(`${row.shot.id} (take refused after conform)`);
+          }
+          await putAsset({
+            owner_id: input.owner_id,
+            series_id: episode.series_id,
+            kind: "episode_audit",
+            bucket: "private-final",
+            mime_type: "application/json",
+            body: encodeJson(muxAudit),
+            metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, takes_rejected_after_conform: missing.length },
+          });
+          throw new RenderIncompleteError(missing);
+        }
         return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
       }
       const corrections = conformCorrections(
@@ -3199,7 +3231,6 @@ export function createEngine(deps: EngineDeps = {}) {
         // A dialogue line with no voice anywhere in its window on the stem is a
         // take that never spoke; nothing to re-time. Reject it so the runner
         // generates another, and report the cut as incomplete rather than refused.
-        const laneFor = (shotId: string) => heardLanes[current.findIndex((row) => row.shot.id === shotId)] ?? null;
         const mute = muxAudit.lines.filter((line) => !line.pass && line.voice_onset_s == null && laneFor(line.shot_id) === "native");
         if (mute.length && !input.allow_partial) {
           const missing: string[] = [];
