@@ -272,6 +272,8 @@ export type ShotData = {
   line_revised_at?: string | null;
   /** Number of rewrites; part of the TTS job key so a new line gets new speech. */
   line_revision?: number;
+  /** Set when the shot was re-covered after exhausting its takes. */
+  coverage_fallback?: "offscreen_over_listener" | "plate_cutaway" | null;
   /** Reviewer decisions per take; an approval overrides ranking, a rejection excludes the take. */
   take_reviews?: Array<{ asset_id: string; decision: "approve" | "reject"; note: string | null; reviewed_at: string; reviewer_id: string }>;
 };

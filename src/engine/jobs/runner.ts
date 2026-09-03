@@ -33,6 +33,7 @@ export type EngineAction =
   | "regenerate_shot"
   | "review_take"
   | "revise_line"
+  | "fallback_coverage"
   | "rejudge_shot"
   | "render_episode"
   | "advance_production"
@@ -333,6 +334,9 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       break;
     case "rejudge_shot":
       result = await engine.rejudgeShot({ owner_id, shot_id: String(payload.shot_id) });
+      break;
+    case "fallback_coverage":
+      result = await engine.fallbackCoverage({ owner_id, shot_id: String(payload.shot_id) });
       break;
     case "revise_line":
       result = await engine.reviseLine({ owner_id, shot_id: String(payload.shot_id), dialogue: String(payload.dialogue ?? "") });
@@ -982,25 +986,40 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
       .from("engine_tasks")
       .select("payload")
       .eq("series_id", series_id)
-      .in("action", ["rejudge_shot", "review_take", "revise_line", "regenerate_shot", "generate_video", "generate_dialogue"])
+      .in("action", ["rejudge_shot", "review_take", "revise_line", "fallback_coverage", "regenerate_shot", "generate_video", "generate_dialogue"])
       .in("status", ["queued", "running"]);
     const pendingShots = new Set(
       (pendingShotTasks ?? [])
         .map((row) => (row.payload as Record<string, unknown> | null)?.shot_id)
         .filter((id): id is string => typeof id === "string"),
     );
+    // Wides are cut from the location plate at no cost, so a wide that has been
+    // generated even a few times is a planning defect, not bad luck.
     const exhausted = unfinishedVideo.filter((shot) => {
       const data = (shot.shot_data ?? {}) as Record<string, unknown>;
       const isWide = data.function === "establishing" || data.type === "establishing";
-      return !isWide && !pendingShots.has(shot.id) && (attemptsByShot.get(shot.id) ?? 0) >= VIDEO_RETRY_CAP;
+      const cap = isWide ? VIDEO_RETRY_CAP + 1 : VIDEO_RETRY_CAP;
+      return !pendingShots.has(shot.id) && (attemptsByShot.get(shot.id) ?? 0) >= cap;
     });
     if (pendingShots.size) waitingOnVideo = true;
-    // Exhausted shots are set aside, not a reason to stop the other hundred
-    // and fifty. The production keeps shooting everything else and asks for a
-    // human only when nothing else is left to do.
+    // First exhaustion: re-cover the shot (off-screen over the listener, or a
+    // plate cutaway) and shoot that. Only a shot that also exhausts its fallback
+    // is set aside for a human.
+    const recoverable = exhausted.filter((shot) => !((shot.shot_data ?? {}) as Record<string, unknown>).coverage_fallback);
+    for (const shot of recoverable) {
+      queued.push("fallback_coverage");
+      await queueTask(client, {
+        owner_id,
+        series_id,
+        production_id: productionId,
+        action: "fallback_coverage",
+        payload: { shot_id: shot.id },
+      });
+    }
+    if (recoverable.length) waitingOnVideo = true;
     const exhaustedIds = new Set(exhausted.map((shot) => shot.id));
     const stillShooting = unfinishedVideo.filter((shot) => !exhaustedIds.has(shot.id));
-    if (exhausted.length && stillShooting.length === 0 && missingAudio.length === 0) {
+    if (exhausted.length && recoverable.length === 0 && stillShooting.length === 0 && missingAudio.length === 0) {
       await client
         .from("productions")
         .update({

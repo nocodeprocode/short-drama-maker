@@ -1628,13 +1628,25 @@ export function createEngine(deps: EngineDeps = {}) {
 
     // Empty establishing wides are cut from the location plate, not generated:
     // the plate has nobody in it by construction and matches the scene's light.
-    const emptyWide =
-      (live.shot_data.function === "establishing" || live.shot_data.type === "establishing") &&
-      !live.shot_data.dialogue &&
-      !live.shot_data.group_still_asset_id &&
-      !isObjectInsert(live.shot_data);
+    // A wide never carries an on-camera line: nobody is in it. A line planned on
+    // a wide plays as voice-over from the plate take.
+    const isWide = live.shot_data.function === "establishing" || live.shot_data.type === "establishing";
+    if (isWide && live.shot_data.dialogue && live.shot_data.audio_role !== "offscreen" && !live.shot_data.group_still_asset_id) {
+      store.shots.set(live.id, {
+        ...live,
+        shot_data: {
+          ...live.shot_data,
+          audio_role: "offscreen",
+          speakers_off_camera: live.shot_data.speaker ? [live.shot_data.speaker] : live.shot_data.speakers_off_camera,
+          speaker_on_camera: null,
+          mouth_visibility_required: false,
+        },
+      });
+    }
+    const wideNow = store.shots.get(shot.id)!;
+    const emptyWide = isWide && !wideNow.shot_data.group_still_asset_id && !isObjectInsert(wideNow.shot_data);
     if (emptyWide) {
-      const fromPlate = await plateTakeForShot(live, series, location);
+      const fromPlate = await plateTakeForShot(wideNow, series, location);
       if (fromPlate) return fromPlate;
     }
     const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
@@ -1814,7 +1826,14 @@ export function createEngine(deps: EngineDeps = {}) {
       ...live,
       status: "complete",
       selected_generation_id: asset.id,
-      shot_data: { ...live.shot_data, take_analysis: analysis, identity_reject: false, heard_audio: "silent", first_frame_asset_id: plateId },
+      shot_data: {
+        ...live.shot_data,
+        take_analysis: analysis,
+        identity_reject: false,
+        // A line planned on the wide plays as voice-over from its TTS; otherwise the plate is silent.
+        heard_audio: live.shot_data.dialogue && live.shot_data.audio_role === "offscreen" ? "tts" : "silent",
+        first_frame_asset_id: plateId,
+      },
     });
     settle(current, 0);
     return { job: current, route: { route: { model: "plate/zoompan", provider: "local" }, reason: "empty establishing from location plate" } };
@@ -3629,6 +3648,67 @@ export function createEngine(deps: EngineDeps = {}) {
     return revised;
   }
 
+  /**
+   * Editorial fallback for a shot that cannot produce a clean take. An on-camera
+   * line becomes off-screen speech over the partner's listener close-up (first-
+   * class coverage in this house style, and free of lip-sync); a silent single
+   * becomes a plate cutaway of the room. Either way the line survives, the
+   * attempt budget resets, and the production can finish.
+   */
+  async function fallbackCoverage(input: { owner_id: string; shot_id: string }) {
+    const { shot } = requireShot(input.shot_id, input.owner_id);
+    const scene = store.scenes.get(shot.scene_id);
+    const cast = scene?.scene_data.characters ?? [];
+    const speaker = shot.shot_data.speaker ?? shot.shot_data.speaker_on_camera ?? null;
+    const partner = cast.find((name) => speaker == null || !sameName(name, speaker)) ?? null;
+    const hasLine = Boolean(shot.shot_data.dialogue?.trim());
+    const isWide = shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing";
+    let next: Shot;
+    if (hasLine && !isWide && partner && shot.shot_data.audio_role !== "offscreen") {
+      next = {
+        ...shot,
+        status: shot.shot_data.dialogue_audio_asset_id ? "audio_ready" : "planned",
+        selected_generation_id: null,
+        shot_data: {
+          ...shot.shot_data,
+          audio_role: "offscreen",
+          speaker_on_camera: partner,
+          speakers_off_camera: speaker ? [speaker] : [],
+          mouth_visibility_required: false,
+          function: "listener_hold",
+          type: "reaction",
+          camera: `Listener close-up on ${partner}, hearing the line off-screen, mouth closed, eyes to the off-screen speaker`,
+          identity_reject: false,
+          take_analysis: null,
+          line_revised_at: iso(clock),
+          coverage_fallback: "offscreen_over_listener",
+        },
+      };
+    } else {
+      next = {
+        ...shot,
+        status: shot.shot_data.dialogue_audio_asset_id || !hasLine ? "audio_ready" : "planned",
+        selected_generation_id: null,
+        shot_data: {
+          ...shot.shot_data,
+          type: "establishing",
+          function: "establishing",
+          audio_role: hasLine ? "offscreen" : "silent",
+          speaker_on_camera: null,
+          speakers_off_camera: hasLine && speaker ? [speaker] : shot.shot_data.speakers_off_camera,
+          mouth_visibility_required: false,
+          camera: `establishing wide of ${scene?.location ?? "the room"}, empty room, no people`,
+          identity_reject: false,
+          take_analysis: null,
+          line_revised_at: iso(clock),
+          coverage_fallback: "plate_cutaway",
+        },
+      };
+    }
+    store.shots.set(next.id, next);
+    return next;
+  }
+
   async function regenerateShot(input: { owner_id: string; shot_id: string }) {
     const { shot } = requireShot(input.shot_id, input.owner_id);
     // Attempts made on a previous version of the line do not count against this one.
@@ -3722,6 +3802,7 @@ export function createEngine(deps: EngineDeps = {}) {
     regenerateShot,
     reviewTake,
     reviseLine,
+    fallbackCoverage,
     rejudgeShot,
     gc,
     estimateEpisode,
