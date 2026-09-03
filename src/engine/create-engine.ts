@@ -3187,70 +3187,54 @@ export function createEngine(deps: EngineDeps = {}) {
         return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
       }
       const laneFor = (shotId: string) => heardLanes[current.findIndex((row) => row.shot.id === shotId)] ?? null;
-      if (pass >= CONFORM_MAX_PASSES) {
-        // Re-timing is spent. A native line still off the lips, or a room still
-        // sliding at its deepest settle, is a bad take, not a bad cut: reject it
-        // so the runner shoots another (the retry cap still bounds this) and
-        // report the cut incomplete. Anything else is refused for a human.
+
+      // When nothing can be re-timed, a native line still off the lips, a
+      // line with no voice in its window, or a room still sliding at its
+      // deepest settle is a bad take, not a bad cut: reject it so the runner
+      // shoots another (the retry cap still bounds this) and report the cut
+      // incomplete. Anything else is refused for a human.
+      const rejectRefusedTakes = async (): Promise<never | null> => {
         const stillBad = muxAudit.lines.filter((line) => !line.pass && laneFor(line.shot_id) === "native");
         const unexplained = muxAudit.reasons.filter((reason) => {
+          if (reason === "loudness_off_target" || reason === "true_peak_over") return false;
           const [kind, id] = reason.split(":");
           return !((kind === "sync" || kind === "room_morph") && id && stillBad.some((line) => line.shot_id === id));
         });
-        if (stillBad.length && unexplained.length === 0 && !input.allow_partial) {
-          const missing: string[] = [];
-          for (const line of stillBad) {
-            const row = current.find((take) => take.shot.id === line.shot_id);
-            if (!row) continue;
-            await reviewTake({ owner_id: input.owner_id, shot_id: row.shot.id, asset_id: row.assetId, decision: "reject", note: `mux audit after conform: ${line.settled_open ? "sync" : "room_morph"}` });
-            missing.push(`${row.shot.id} (take refused after conform)`);
-          }
-          await putAsset({
-            owner_id: input.owner_id,
-            series_id: episode.series_id,
-            kind: "episode_audit",
-            bucket: "private-final",
-            mime_type: "application/json",
-            body: encodeJson(muxAudit),
-            metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, takes_rejected_after_conform: missing.length },
-          });
-          throw new RenderIncompleteError(missing);
+        if (!stillBad.length || unexplained.length || input.allow_partial) return null;
+        const missing: string[] = [];
+        for (const line of stillBad) {
+          const row = current.find((take) => take.shot.id === line.shot_id);
+          if (!row) continue;
+          const why = line.voice_onset_s == null ? "no voice in the line's window" : line.settled_open ? "off the lips after conform" : "room still morphing at the open";
+          await reviewTake({ owner_id: input.owner_id, shot_id: row.shot.id, asset_id: row.assetId, decision: "reject", note: `mux audit: ${why}` });
+          missing.push(`${row.shot.id} (${why})`);
         }
-        return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
-      }
-      const corrections = conformCorrections(
-        muxAudit,
-        current.map((row, index) => ({
-          id: row.shot.id,
-          analysis: row.shot.shot_data.take_analysis ?? null,
-          lane: heardLanes[index] ?? null,
-          takeSeconds: row.shot.shot_data.take_analysis?.duration_seconds ?? null,
-        })),
-      );
+        await putAsset({
+          owner_id: input.owner_id,
+          series_id: episode.series_id,
+          kind: "episode_audit",
+          bucket: "private-final",
+          mime_type: "application/json",
+          body: encodeJson(muxAudit),
+          metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, takes_rejected: missing.length, conform_pass: pass },
+        });
+        throw new RenderIncompleteError(missing);
+      };
+
+      const corrections =
+        pass >= CONFORM_MAX_PASSES
+          ? []
+          : conformCorrections(
+              muxAudit,
+              current.map((row, index) => ({
+                id: row.shot.id,
+                analysis: row.shot.shot_data.take_analysis ?? null,
+                lane: heardLanes[index] ?? null,
+                takeSeconds: row.shot.shot_data.take_analysis?.duration_seconds ?? null,
+              })),
+            );
       if (!onlyConformable(muxAudit, corrections)) {
-        // A dialogue line with no voice anywhere in its window on the stem is a
-        // take that never spoke; nothing to re-time. Reject it so the runner
-        // generates another, and report the cut as incomplete rather than refused.
-        const mute = muxAudit.lines.filter((line) => !line.pass && line.voice_onset_s == null && laneFor(line.shot_id) === "native");
-        if (mute.length && !input.allow_partial) {
-          const missing: string[] = [];
-          for (const line of mute) {
-            const row = current.find((take) => take.shot.id === line.shot_id);
-            if (!row) continue;
-            await reviewTake({ owner_id: input.owner_id, shot_id: row.shot.id, asset_id: row.assetId, decision: "reject", note: "mux audit: no voice in the line's window" });
-            missing.push(`${row.shot.id} (take spoke no line)`);
-          }
-          await putAsset({
-            owner_id: input.owner_id,
-            series_id: episode.series_id,
-            kind: "episode_audit",
-            bucket: "private-final",
-            mime_type: "application/json",
-            body: encodeJson(muxAudit),
-            metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, mute_takes_rejected: missing.length },
-          });
-          throw new RenderIncompleteError(missing);
-        }
+        await rejectRefusedTakes();
         return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
       }
       await putAsset({
