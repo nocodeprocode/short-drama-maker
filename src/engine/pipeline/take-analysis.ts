@@ -60,6 +60,8 @@ export type TakeAnalysis = {
   voice_onset_source?: "stt" | "level" | null;
   /** True when the audio was actually probed for speech (level and/or transcript). */
   speech_checked?: boolean;
+  /** Set by the sync conform loop: measured on the cut's dialogue stem and folded into pad/skip/settle. */
+  conform?: { passes: number; shift_seconds: number; last_lag_ms: number | null };
   measured_at: string;
 };
 

@@ -15,6 +15,7 @@ import {
 import { decodeJson, encodeJson, sha256Hex, sha256HexSync, stableStringify } from "./crypto.ts";
 import { concatMp4Segments, concatWavSegments, mergeManifests, mergeVtt, normalizeProgrammeLoudness } from "./media/concat.ts";
 import { LOUDNESS } from "../drama-engine/types/audio.ts";
+import { CONFORM_MAX_PASSES, conformCorrections, onlyConformable } from "./pipeline/sync-conform.ts";
 import { cuesFromVtt, cuesToSrt } from "./pipeline/captions.ts";
 import { manifestFingerprint } from "./media/render.ts";
 import { reframeMp4, type DeliverableAspect } from "./media/reframe.ts";
@@ -3152,30 +3153,97 @@ export function createEngine(deps: EngineDeps = {}) {
     // Long episodes render per block, and a block whose takes have not changed
     // since the last render is reused byte for byte. The programme is a stream
     // copy of the blocks, so a failure late in a 15-minute cut costs one block.
-    const groups = blockGroups(takes);
-    const rendered =
-      groups.length > 1 && takes.length >= blockRenderMinShots
-        ? await renderInBlocks(episode, groups, input.owner_id)
-        : await renderSlice(episode, takes);
-    const { manifest, analyses, heardLanes } = rendered;
+    const transcribe = ai.stt
+      ? async (mp3: Uint8Array) => {
+          const spoken = await ai.stt!.transcribe({ bytes: mp3, format: "mp3" });
+          return { words: spoken.words ?? [] };
+        }
+      : undefined;
 
-    // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
-    // to call final. The audit JSON is stored either way so reviewers can see
-    // why a cut passed or was refused.
-    const muxAudit = await audit({
-      body: rendered.body,
-      dialogueStem: rendered.dialogueStem ?? null,
-      manifest,
-      analyses,
-      heardLanes,
-      transcribe: ai.stt
-        ? async (mp3) => {
-            const spoken = await ai.stt!.transcribe({ bytes: mp3, format: "mp3" });
-            return { words: spoken.words ?? [] };
+    // Render, audit, and when the only refusals are lines the conform loop can
+    // re-time from the stem measurement, fold the correction into the shots and
+    // render again. Only the blocks holding corrected shots re-render.
+    let current = takes;
+    for (let pass = 0; ; pass += 1) {
+      const groups = blockGroups(current);
+      const rendered =
+        groups.length > 1 && current.length >= blockRenderMinShots
+          ? await renderInBlocks(episode, groups, input.owner_id)
+          : await renderSlice(episode, current);
+      const { manifest, analyses, heardLanes } = rendered;
+
+      // Gate: the same frame audit that shipped lock-v9, on the bytes we are about
+      // to call final. The audit JSON is stored either way so reviewers can see
+      // why a cut passed or was refused.
+      const muxAudit = await audit({
+        body: rendered.body,
+        dialogueStem: rendered.dialogueStem ?? null,
+        manifest,
+        analyses,
+        heardLanes,
+        transcribe,
+      });
+      if (muxAudit.ship || pass >= CONFORM_MAX_PASSES) {
+        return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
+      }
+      const corrections = conformCorrections(
+        muxAudit,
+        current.map((row, index) => ({
+          id: row.shot.id,
+          analysis: row.shot.shot_data.take_analysis ?? null,
+          lane: heardLanes[index] ?? null,
+          takeSeconds: row.shot.shot_data.take_analysis?.duration_seconds ?? null,
+        })),
+      );
+      if (!onlyConformable(muxAudit, corrections)) {
+        // A dialogue line with no voice anywhere in its window on the stem is a
+        // take that never spoke; nothing to re-time. Reject it so the runner
+        // generates another, and report the cut as incomplete rather than refused.
+        const laneFor = (shotId: string) => heardLanes[current.findIndex((row) => row.shot.id === shotId)] ?? null;
+        const mute = muxAudit.lines.filter((line) => !line.pass && line.voice_onset_s == null && laneFor(line.shot_id) === "native");
+        if (mute.length && !input.allow_partial) {
+          const missing: string[] = [];
+          for (const line of mute) {
+            const row = current.find((take) => take.shot.id === line.shot_id);
+            if (!row) continue;
+            await reviewTake({ owner_id: input.owner_id, shot_id: row.shot.id, asset_id: row.assetId, decision: "reject", note: "mux audit: no voice in the line's window" });
+            missing.push(`${row.shot.id} (take spoke no line)`);
           }
-        : undefined,
-    });
-    return await finalizeRender({ input, episode, takes, rendered, muxAudit });
+          await putAsset({
+            owner_id: input.owner_id,
+            series_id: episode.series_id,
+            kind: "episode_audit",
+            bucket: "private-final",
+            mime_type: "application/json",
+            body: encodeJson(muxAudit),
+            metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, mute_takes_rejected: missing.length },
+          });
+          throw new RenderIncompleteError(missing);
+        }
+        return await finalizeRender({ input, episode, takes: current, rendered, muxAudit });
+      }
+      await putAsset({
+        owner_id: input.owner_id,
+        series_id: episode.series_id,
+        kind: "episode_audit",
+        bucket: "private-final",
+        mime_type: "application/json",
+        body: encodeJson(muxAudit),
+        metadata: { episode_id: episode.id, ship: false, reasons: muxAudit.reasons, checksum: rendered.checksum, conform_pass: pass + 1 },
+      });
+      for (const correction of corrections) {
+        const shot = store.shots.get(correction.shot_id);
+        if (!shot) continue;
+        store.shots.set(shot.id, {
+          ...shot,
+          shot_data: { ...shot.shot_data, take_analysis: correction.analysis },
+        });
+        process.stderr.write(
+          `${JSON.stringify({ event: "sync_conform", shot_id: shot.id, reason: correction.reason, delta_seconds: correction.delta_seconds, pass: pass + 1 })}\n`,
+        );
+      }
+      current = current.map((row) => ({ ...row, shot: store.shots.get(row.shot.id) ?? row.shot }));
+    }
   }
 
   /** Takes grouped by block_index in programme order; shots without a block form one group. */
@@ -3215,6 +3283,9 @@ export function createEngine(deps: EngineDeps = {}) {
           audio: row.shot.shot_data.dialogue_audio_asset_id ?? null,
           silence: row.shot.shot_data.silence_license ?? null,
           role: row.shot.shot_data.audio_role ?? null,
+          pad: row.shot.shot_data.take_analysis?.viseme_pad_seconds ?? null,
+          skip: row.shot.shot_data.take_analysis?.audio_skip_seconds ?? null,
+          settle: row.shot.shot_data.take_analysis?.settle_in_seconds ?? null,
         })),
       }),
     );
