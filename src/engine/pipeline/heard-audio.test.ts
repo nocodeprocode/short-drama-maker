@@ -25,6 +25,18 @@ describe("heard lane", () => {
     ).resolves.toBe("native");
   });
 
+  it("keeps Seedance scene-take speech even when STT misses the hook line", async () => {
+    await expect(
+      chooseHeardLane({
+        dialogue: "Petra, where are the scissors?",
+        audioRole: "onscreen",
+        hasNativeAudio: true,
+        nativeTranscript: "Petra, where are the scissors? Third drawer is stuck. There's a pair in the second drawer.",
+        sceneTake: true,
+      }),
+    ).resolves.toBe("native");
+  });
+
   it("does not mux TTS over a take that was timed to missing native", async () => {
     await expect(
       chooseHeardLane({

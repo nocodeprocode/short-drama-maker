@@ -7,7 +7,7 @@ export const OPENROUTER_API = "https://openrouter.ai/api/v1";
 /** Chat/JSON completions can run long on big plans; video submits are quick, downloads are large. */
 export const OPENROUTER_TIMEOUTS_MS = {
   json: 120_000,
-  submit: 60_000,
+  submit: 120_000,
   poll: 30_000,
   download: 180_000,
 } as const;

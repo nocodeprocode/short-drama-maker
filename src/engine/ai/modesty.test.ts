@@ -3,10 +3,9 @@ import { MODEST_DRESS_RULE, MODEST_WARDROBE_EXAMPLES, modestDressFail } from "./
 
 describe("modest dress rule", () => {
   it("is a hard public-decency rule, not a suggestion", () => {
-    expect(MODEST_DRESS_RULE).toMatch(/UAE/);
-    expect(MODEST_DRESS_RULE).toMatch(/long sleeves/);
-    expect(MODEST_DRESS_RULE).toMatch(/sleepwear/);
-    expect(MODEST_WARDROBE_EXAMPLES).toMatch(/wide-leg|full-length|floor-length/);
+    expect(MODEST_DRESS_RULE).toMatch(/Clothes stay on/);
+    expect(MODEST_DRESS_RULE).toMatch(/Do not take clothes off/);
+    expect(MODEST_WARDROBE_EXAMPLES).toMatch(/dress|suit|blouse/);
   });
 
   it("flags sheer cloth and a visible bra", () => {

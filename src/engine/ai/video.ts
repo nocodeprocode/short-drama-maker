@@ -1,5 +1,6 @@
 import type { GenerationStatus } from "../domain.ts";
 import type { VideoEngine, VideoSubmitRequest } from "./types.ts";
+import { isSceneTake } from "../../drama-engine/types/editorial.ts";
 import { VIDEO_RESOLUTION } from "../config/models.ts";
 import { OPENROUTER_TIMEOUTS_MS, openRouterBytes, openRouterJson, openRouterProvider } from "./openrouter.ts";
 
@@ -51,6 +52,17 @@ function stillUrl(request: VideoSubmitRequest): string | undefined {
   return request.visual_reference_urls[0];
 }
 
+function seedanceIdentity(request: VideoSubmitRequest): boolean {
+  return String(request.model).includes("seedance") && request.visual_reference_urls.length > 0;
+}
+
+function imageRefs(urls: string[]): Array<Record<string, unknown>> {
+  return urls.map((url) => ({
+    type: "image_url",
+    image_url: { url },
+  }));
+}
+
 export function buildVideoSubmitPayload(
   request: VideoSubmitRequest,
   audioStyle: AudioAttachStyle = DEFAULT_AUDIO_ATTACH,
@@ -61,17 +73,18 @@ export function buildVideoSubmitPayload(
     request.shot.shot_data.audio_role === "offscreen" ||
     request.shot.shot_data.function === "listener_hold" ||
     request.shot.shot_data.audio_role === "silent";
-  if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen) {
+  const nativeScene =
+    isSceneTake(request.shot.shot_data) || String(request.model).includes("seedance");
+  if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen && !nativeScene) {
     throw new Error("Dialogue video requires a real dialogue-audio URL");
   }
-  const input_references: Array<Record<string, unknown>> = request.visual_reference_urls
-    .slice(1)
-    .map((url) => ({
-      type: "image_url",
-      image_url: { url },
-    }));
+  const seedanceRefs = seedanceIdentity(request);
+  const input_references: Array<Record<string, unknown>> = seedanceRefs
+    ? imageRefs(request.visual_reference_urls)
+    : imageRefs(request.visual_reference_urls.slice(1));
+  // Never attach a previous take. Seedance reprints that blocking as the same scene.
 
-  const audioUrl = offscreen ? null : request.audio_reference_url;
+  const audioUrl = offscreen || nativeScene ? null : request.audio_reference_url;
   if (audioUrl && (audioStyle === "openrouter_audio_url" || audioStyle === "both")) {
     input_references.push({
       type: "audio_url",
@@ -113,9 +126,14 @@ export function buildVideoSubmitPayload(
     provider,
   };
   if (request.callback_url) payload.callback_url = request.callback_url;
+  if (typeof request.seed === "number" && Number.isFinite(request.seed)) {
+    payload.seed = Math.trunc(request.seed) & 0x7fffffff;
+  }
 
   const frame = stillUrl(request);
-  if (frame) {
+  // Seedance treats frame_images and input_references as exclusive.
+  // frame_images wins and drops the face stills, which is why the cast morphs.
+  if (frame && !seedanceRefs) {
     payload.frame_images = [
       {
         type: "image_url",
@@ -127,7 +145,7 @@ export function buildVideoSubmitPayload(
   if (input_references.length > 0) {
     payload.input_references = input_references;
   }
-  if (audioUrl && !offscreen) {
+  if (nativeScene || (audioUrl && !offscreen)) {
     payload.generate_audio = true;
   } else if (offscreen) {
     payload.generate_audio = false;

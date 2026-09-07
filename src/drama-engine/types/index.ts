@@ -3,5 +3,8 @@ export * from "./story.ts";
 export * from "./editorial.ts";
 export * from "./pacing.ts";
 export * from "./dialogue.ts";
+export * from "./talk.ts";
 export * from "./audio.ts";
 export * from "./qc-drama.ts";
+export * from "./micro-drama.ts";
+export * from "./continuity.ts";

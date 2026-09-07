@@ -44,7 +44,7 @@ export function recapBudgetSeconds(episodeNumber: number): number {
 export function lastFreeEpisode(episodeCount: number): number {
   const max = DEFAULT_PAYWALL.freeEpisodes.max;
   const min = DEFAULT_PAYWALL.freeEpisodes.min;
-  return Math.min(max, Math.max(min, Math.min(episodeCount, 8)));
+  return Math.min(max, Math.max(min, Math.min(episodeCount, 10)));
 }
 
 export function tentpoleAt(episodeNumber: number): boolean {
@@ -64,6 +64,7 @@ export function enrichEpisodeStructure(bible: StoryBible) {
 
 export * from "./long-form.ts";
 export * from "./lock-slice.ts";
+export * from "./season-bible.ts";
 
 export function plannerLength(length: EpisodeLength | undefined): EpisodeLength {
   return length ?? "60_90";

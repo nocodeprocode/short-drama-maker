@@ -2,10 +2,11 @@ import type { Shot } from "../../engine/domain.ts";
 import { HEAD_HANDLE_SECONDS as GENERATION_HEAD_HANDLE_SECONDS } from "../../engine/config/models.ts";
 import { OVERLAP } from "../types/audio.ts";
 import type { AudioRole, TransitionType } from "../types/editorial.ts";
-import { isObjectInsert } from "../types/editorial.ts";
+import { isObjectInsert, isSceneTake } from "../types/editorial.ts";
 import { classifyEditorialShot, groupEditorialScenes, type EditorialSceneKind } from "./scene-groups.ts";
 
 export function pickTransition(prev: Shot, next: Shot): TransitionType {
+  if (isSceneTake(prev.shot_data) || isSceneTake(next.shot_data)) return "fade";
   const prevBlock = prev.shot_data.block_index;
   const nextBlock = next.shot_data.block_index;
   if (prevBlock != null && nextBlock != null && prevBlock !== nextBlock) return "cut";
@@ -21,11 +22,16 @@ export function pickTransition(prev: Shot, next: Shot): TransitionType {
 export const REACTION_HOLD_SECONDS = 12 / 30;
 export const JCUT_LEAD_SECONDS = OVERLAP.interruptLeadMs.max / 1000;
 export const LCUT_HOLD_SECONDS = OVERLAP.lcutHoldMs.max / 1000;
+/** Silent hook only. A spoken hook keeps the whole line (see speechNeedSeconds). */
 export const HOOK_PICTURE_MAX_SECONDS = 2.2;
 export const HOOK_JCUT_LEAD_SECONDS = 0.85;
 export const SILENT_HOLD_MAX_SECONDS = 2.5;
 export const SILENT_HOLD_HARD_MAX_SECONDS = 3;
-export const SPOKEN_PICTURE_MAX_SECONDS = 6.5;
+export const SPOKEN_PICTURE_MAX_SECONDS = 8;
+export const SCENE_TAKE_MAX_SECONDS = 16;
+export const SPEECH_HOLD_AFTER_SECONDS = 0.3;
+/** Spoken English in this format lands around 2.4 words/s including the breath. */
+export const SPOKEN_WORDS_PER_SECOND = 2.4;
 export const INSERT_PICTURE_MAX_SECONDS = 4;
 export const BUTTON_PICTURE_MAX_SECONDS = 5;
 export const BUTTON_FREEZE_SECONDS = 1.2;
@@ -51,6 +57,28 @@ function audioRole(shot: Shot): AudioRole {
 
 function hasSpokenLine(shot: Shot): boolean {
   return Boolean(shot.shot_data.dialogue);
+}
+
+/**
+ * Seconds of picture a spoken take must keep so the last word is heard.
+ * Prefers a measured alignment on the shot; otherwise estimates from word count.
+ */
+export function speechNeedSeconds(shot: Shot): number {
+  if (!hasSpokenLine(shot)) return 0;
+  const analysis = shot.shot_data.take_analysis;
+  const measured = analysis?.speech_seconds;
+  if (typeof measured === "number" && measured > 0) {
+    return measured + SPEECH_HOLD_AFTER_SECONDS;
+  }
+  const words = (shot.shot_data.dialogue ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+  if (!words) return 0;
+  return Math.min(
+    SPOKEN_PICTURE_MAX_SECONDS,
+    Math.max(1.2, words / SPOKEN_WORDS_PER_SECOND + SPEECH_HOLD_AFTER_SECONDS),
+  );
 }
 
 function isSilentHold(shot: Shot): boolean {
@@ -79,6 +107,15 @@ export function editorialPictureSeconds(shot: Shot, available?: number | null): 
   const fn = shot.shot_data.function;
   const kind = classifyEditorialShot(shot);
 
+  if (isSceneTake(shot.shot_data)) {
+    return Math.min(SCENE_TAKE_MAX_SECONDS, playable);
+  }
+  if (hasSpokenLine(shot)) {
+    const need = speechNeedSeconds(shot);
+    const cap = fn === "button_cu" || kind === "button" ? BUTTON_PICTURE_MAX_SECONDS : SPOKEN_PICTURE_MAX_SECONDS;
+    const want = Math.max(need, Math.min(playable, planned > 0 ? planned : playable));
+    return Math.min(cap, playable, want);
+  }
   if (fn === "hook_cu") {
     return Math.min(HOOK_PICTURE_MAX_SECONDS, playable);
   }
@@ -97,9 +134,6 @@ export function editorialPictureSeconds(shot: Shot, available?: number | null): 
   }
   if (kind === "evidence" || isObjectInsert(shot.shot_data)) {
     return Math.min(INSERT_PICTURE_MAX_SECONDS, playable);
-  }
-  if (hasSpokenLine(shot)) {
-    return Math.min(SPOKEN_PICTURE_MAX_SECONDS, playable);
   }
   return Math.min(SILENT_HOLD_MAX_SECONDS, playable);
 }
@@ -121,29 +155,47 @@ export function buildEditTimeline(
         prev.shot.shot_data.block_index != null &&
         shot.shot_data.block_index != null &&
         prev.shot.shot_data.block_index !== shot.shot_data.block_index;
-      let transition: TransitionType = !prev || blockChanged ? "cut" : sameScene ? pickTransition(prev.shot, shot) : "cut";
+      let transition: TransitionType = !prev
+        ? "cut"
+        : isSceneTake(prev.shot.shot_data) || isSceneTake(shot.shot_data)
+          ? pickTransition(prev.shot, shot)
+          : blockChanged
+            ? "cut"
+            : sameScene
+              ? pickTransition(prev.shot, shot)
+              : "cut";
       const spoken = hasSpokenLine(shot);
-      if (prev && spoken && audioRole(shot) === "onscreen") {
+      if (prev && spoken && audioRole(shot) === "onscreen" && transition !== "fade") {
         transition = transition === "lcut" ? "lcut" : "cut";
       }
       const button = shot.shot_data.function === "button_cu" || scene.kind === "button";
       const chapter = shot.shot_data.function === "block_button";
-      const holdTail = button
-        ? BUTTON_FREEZE_SECONDS
-        : chapter
-          ? 0.35
-          : transition === "hold"
-            ? REACTION_HOLD_SECONDS
-            : 0;
+      const holdTail = isSceneTake(shot.shot_data)
+        ? 0
+        : button
+          ? BUTTON_FREEZE_SECONDS
+          : chapter
+            ? 0.35
+            : transition === "hold"
+              ? REACTION_HOLD_SECONDS
+              : 0;
       if (transition === "lcut" && prev) {
-        const overlap = Math.min(LCUT_HOLD_SECONDS, Math.max(0, prev.picture_duration_seconds - 0.4));
-        prev.picture_duration_seconds = Math.max(0.4, prev.picture_duration_seconds - overlap);
-        prev.audio_tail_seconds = overlap;
-        picture -= overlap;
+        // Never steal picture that still has spoken words. L-cut may only eat
+        // leftover hold after the last word; otherwise this is a hard cut.
+        const spokenFloor = hasSpokenLine(prev.shot) ? speechNeedSeconds(prev.shot) : 0;
+        const leftover = Math.max(0, prev.picture_duration_seconds - Math.max(0.4, spokenFloor));
+        const overlap = Math.min(LCUT_HOLD_SECONDS, leftover);
+        if (overlap > 0.05) {
+          prev.picture_duration_seconds = Math.max(0.4, prev.picture_duration_seconds - overlap);
+          prev.audio_tail_seconds = overlap;
+          picture -= overlap;
+        } else {
+          transition = "cut";
+        }
       }
       const audioStart: number | null = spoken ? picture : null;
       const capped = Math.max(0.4, editorialPictureSeconds(shot, durationFor?.(shot)));
-      const moving = button ? Math.max(0.4, capped - holdTail) : capped;
+      const moving = isSceneTake(shot.shot_data) ? capped : button ? Math.max(0.4, capped - holdTail) : capped;
       clips.push({
         shot,
         scene_index: scene.index,

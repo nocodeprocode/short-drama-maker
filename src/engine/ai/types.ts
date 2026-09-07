@@ -51,6 +51,15 @@ export interface LLMEngine {
     blocks: import("../../drama-engine/plans/long-form.ts").EpisodeOutlineBlock[];
     episode_length?: import("../config/catalog.ts").EpisodeLength;
   }): Promise<import("../domain.ts").ShotPlanScene[]>;
+  /**
+   * Copywriter pass over the scene-take scripts: every cue on the nose, one
+   * sentence, under 12 words, plain translatable English, names and numbers.
+   * Keeps speakers, order, beats in parentheses, entrances and exits.
+   */
+  polishSceneDialogue?(input: {
+    bible: StoryBible;
+    takes: Array<{ index: number; scene_script: string; staging?: string | null }>;
+  }): Promise<Array<{ index: number; scene_script: string }>>;
 }
 
 export interface VoiceEngine {
@@ -79,6 +88,30 @@ export interface ImageEngine {
     seed_mime_type: string;
     replaceWardrobe?: string;
   }): Promise<{ bytes: Uint8Array; mime_type: string }>;
+  /**
+   * Composites a character into a locked room so consecutive takes in a scene
+   * start from the same pixels. `face_bytes` is reference 1 (identity wins),
+   * `plate_bytes` is reference 2 (geography and light).
+   */
+  generateBlockingStill?(input: {
+    characterName: string;
+    description: string;
+    framing: string;
+    locationNote?: string | null;
+    face_bytes: Uint8Array;
+    face_mime_type: string;
+    plate_bytes: Uint8Array;
+    plate_mime_type: string;
+  }): Promise<{ bytes: Uint8Array; mime_type: string }>;
+  /** Fallback when two-ref compositing fails the room lock: plate is the only seed. */
+  generateBlockingStillFromPlate?(input: {
+    characterName: string;
+    description: string;
+    framing: string;
+    locationNote?: string | null;
+    plate_bytes: Uint8Array;
+    plate_mime_type: string;
+  }): Promise<{ bytes: Uint8Array; mime_type: string }>;
   generateCover?(input: {
     title: string;
     logline: string;
@@ -103,12 +136,15 @@ export type VideoSubmitRequest = {
   shot: Shot;
   prompt: string;
   visual_reference_urls: string[];
+  video_reference_url?: string | null;
   audio_reference_url: string | null;
   duration_seconds: number;
   model: string;
   privacy_profile: PrivacyProfile;
   /** Null when no webhook endpoint is configured; the runner polls instead. */
   callback_url: string | null;
+  /** Stable per-cast seed. Seedance may honor it; it is not a character ID. */
+  seed?: number;
 };
 
 export interface AIRouter {

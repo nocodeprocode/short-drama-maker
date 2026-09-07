@@ -1,4 +1,5 @@
 import { SCREENPLAY_RULES, type EpisodePlan, type StoryBible } from "../domain.ts";
+import { assertSeasonBible, buildSeasonBible } from "../../drama-engine/plans/season-bible.ts";
 import type { EpisodeLength } from "../config/catalog.ts";
 import { LLM_PRICE, TEXT_MODEL } from "../config/models.ts";
 import { costMeter, openRouterUsageCost } from "./meter.ts";
@@ -21,11 +22,14 @@ async function completeJson<T>(user: string, length: EpisodeLength = "60_90"): P
     body: JSON.stringify({
       model: TEXT_MODEL,
       temperature: 0.4,
+      // Plans are a few hundred lines of JSON; the default 64k max_tokens is
+      // both waste and a 402 when the account is low.
+      max_tokens: 16384,
       response_format: { type: "json_object" },
       usage: { include: true },
       provider: openRouterProvider(),
       messages: [
-        { role: "system", content: `${dramaHooks.systemPrompt(length)}\n- ${MODEST_DRESS_RULE}\n- default_wardrobe must be modest public clothing. ${MODEST_WARDROBE_EXAMPLES}` },
+        { role: "system", content: `${dramaHooks.systemPrompt(length)}\n- ${MODEST_DRESS_RULE}\n- default_wardrobe is contemporary clothes that stay on. ${MODEST_WARDROBE_EXAMPLES}` },
         { role: "user", content: user },
       ],
     }),
@@ -77,7 +81,7 @@ function assertBible(value: StoryBible): StoryBible {
       `${character.name}. ${character.description}`,
     );
   }
-  return { ...value, rules: SCREENPLAY_RULES };
+  return { ...value, rules: SCREENPLAY_RULES, season: assertSeasonBible(buildSeasonBible(value)) };
 }
 
 export function assertPlan(value: EpisodePlan, opts?: { bible?: StoryBible; length?: EpisodeLength; episodeNumber?: number }): EpisodePlan {
@@ -133,9 +137,9 @@ JSON shape:
       "age_look": string,
       "ethnicity_notes": "unspecified fictional",
       "hair": string,
-      "face": string,
+      "face": "specific phone-close beauty: eyes, bone, mouth, skin — a face the viewer wants to stay with",
       "body": string,
-      "default_wardrobe": "modest public clothing: long sleeves, covered legs, closed neckline"
+      "default_wardrobe": "contemporary clothes that stay on: a dress, a suit, or a blouse and trousers"
     },
     "personality": { "core": string, "tell": string, "job": "engine" | "wall" | "witness" | "nuke" },
     "relationships": { [name: string]: string },
@@ -151,19 +155,17 @@ JSON shape:
     async writeEpisode(input) {
       const locations = input.bible.locations ?? [];
       const length = input.episode_length ?? "60_90";
+      // Shape-check only; repair and assert run once in planEpisode.
       return pinPlanLocations(
-        assertPlan(
-          validatePlanShape(
-            await completeJson<unknown>(
-              dramaHooks.writeEpisodeUserPrompt({
-                bible: input.bible,
-                episodeNumber: input.episodeNumber,
-                length,
-              }),
+        validatePlanShape(
+          await completeJson<unknown>(
+            dramaHooks.writeEpisodeUserPrompt({
+              bible: input.bible,
+              episodeNumber: input.episodeNumber,
               length,
-            ),
+            }),
+            length,
           ),
-          { bible: input.bible, length, episodeNumber: input.episodeNumber },
         ),
         locations,
       );
@@ -172,21 +174,55 @@ JSON shape:
     async planShots(input) {
       const locations = input.bible?.locations ?? input.plan.scenes.map((scene) => scene.location);
       const length = input.episode_length ?? "60_90";
+      // Repair and assert once in planEpisode; tightening here only fills craft fields.
       return pinPlanLocations(
-        assertPlan(
-          validatePlanShape(
-            await completeJson<unknown>(
-            `Tighten this episode plan. Keep the same story. Enforce dialogue-first, hook/friction/spike/button, one reaction or listener_hold, off-screen over listener, no opera, no edit verbs in camera, 9:16.
+        validatePlanShape(
+          await completeJson<unknown>(
+            `Tighten this episode plan. Keep the same story. 60–90s is continuous scene takes (edit_mode=scene_take), not chopped singles, not off-screen-over-listener. Fill craft fields only. No opera. No edit verbs in camera. 9:16.
 Do not change scene location strings. Each location must stay one of: ${locations.join(" | ")}
+Keep every shot's blocking object verbatim (camera_left, camera_right, prop, staging, anchor, upper_frame, present, enters, exits); if a scene_take has no blocking.staging, write one from its script: who is where and in what posture. Keep every speaker who already has a line, including a third person. Write blocking.present as every speaker in that take. Each scene_script stays 5–8 cues; do not thin a conversation.
 ${JSON.stringify(input.plan)}
-Return the same JSON shape with edit_mode, audio_role, function, eyeline filled.`,
-              length,
-            ),
+Return the same JSON shape with edit_mode, audio_role, function, eyeline, blocking filled.`,
+            length,
           ),
-          { bible: input.bible, length },
         ),
         locations,
       );
+    },
+
+    async polishSceneDialogue(input) {
+      const out = await completeJson<{ takes?: Array<{ index?: number; scene_script?: string }> }>(
+        `You are the dialogue writer on a vertical short drama. Rewrite so it sounds like people talking on a phone show — casual, short, implied. Not a Hollywood script. Not a lawyer.
+
+KILL these on sight:
+- Formal talk: "It is not something that I can do." "There are reasons why I cannot go." "Do not bring me to the hospital."
+- Refusal loops: Don't take me. / I have to take you. / No, don't. / There are reasons.
+- Saying the other person's name every line. "Name, you don't get this."
+- Anyone saying "says" or reading a label.
+
+WRITE like this:
+- Contractions. I can't go there. You're burning up. Not that place. If they see me I'm done.
+- Imply the reason once. The viewer fills it in.
+- One sentence, under 12 words, easy English, no slang, no idiom.
+- Every line gives or takes something. Answer by deflecting, lying, or flipping status.
+- Name someone at most once per take.
+- Hidden identity: one line that means one thing to her and another to us.
+- Take 1 first cue is the hook. Last cue of the last take is an unpaid question or a consequence starting.
+- Keep the SAME speakers in the SAME order, including a third person. Keep 5–8 cues; do not drop below 5 if the take already had 5. Keep parentheticals, especially enters / leaves / tells.
+- Keep the story mechanism. Make the talk clearer, not different.
+- Format each scene_script as lines "NAME: text" joined by \\n. That format is for the engine only. The video model never sees those labels.
+Bible: ${JSON.stringify({ title: input.bible.title, logline: input.bible.logline, characters: input.bible.characters.map((row) => ({ name: row.name, description: row.description })) })}
+Takes: ${JSON.stringify(input.takes)}
+Return JSON: {"takes":[{"index":number,"scene_script":string}]}`,
+        "60_90",
+      );
+      const rows = Array.isArray(out.takes) ? out.takes : [];
+      return rows
+        .filter((row): row is { index: number; scene_script: string } => {
+          const script = row?.scene_script;
+          return typeof row?.index === "number" && typeof script === "string" && script.trim().length > 0;
+        })
+        .map((row) => ({ index: row.index, scene_script: row.scene_script.trim() }));
     },
 
     async outlineEpisode(input) {

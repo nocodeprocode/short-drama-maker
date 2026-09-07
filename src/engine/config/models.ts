@@ -17,14 +17,15 @@ export const VIDEO_RESOLUTION = "720p";
 
 export const DIALOGUE_TTS_PRICE = 0.004;
 export const IMAGE_PRICE = 0.04;
-export const LLM_PRICE = 0.01;
+/** Estimate per writer call; Opus bills 5/25 per Mtok, so a plan call lands near this. */
+export const LLM_PRICE = 0.02;
 export const VOICE_DESIGN_PRICE = 0.12;
 /** ElevenLabs bills per character; this is the metered rate used for actuals. */
 export const ELEVEN_TTS_PRICE_PER_CHAR = 0.00003;
 /** STT billed per audio minute when the provider reports no cost. */
 export const STT_PRICE_PER_MINUTE = 0.006;
 
-export const TEXT_MODEL = "anthropic/claude-sonnet-4.6";
+export const TEXT_MODEL = "anthropic/claude-opus-5";
 /** Identity judge: same ZDR-capable family as the writer so one privacy posture covers both. */
 export const VISION_MODEL = "anthropic/claude-sonnet-4.6";
 /** Per identity judgement (reference + 3 frames). */
@@ -35,11 +36,11 @@ export const VOICE_DESIGN_MODEL = "eleven_ttv_v3";
 
 export const VIDEO_ROUTES: Record<VideoRoute["role"], VideoRoute> = {
   dialogue_default: {
-    model: "alibaba/wan-3.0",
+    model: "bytedance/seedance-2.5",
     provider: "openrouter",
     role: "dialogue_default",
-    min_duration_seconds: 2,
-    max_duration_seconds: 30,
+    min_duration_seconds: 4,
+    max_duration_seconds: 15,
     aspect_ratios: ["9:16"],
     audio_conditioning_verified: true,
     region_documented: false,
@@ -57,13 +58,13 @@ export const VIDEO_ROUTES: Record<VideoRoute["role"], VideoRoute> = {
     strict_privacy_allowed: false,
   },
   visual_default: {
-    model: "alibaba/wan-3.0",
+    model: "bytedance/seedance-2.5",
     provider: "openrouter",
     role: "visual_default",
-    min_duration_seconds: 2,
-    max_duration_seconds: 30,
+    min_duration_seconds: 4,
+    max_duration_seconds: 15,
     aspect_ratios: ["9:16"],
-    audio_conditioning_verified: false,
+    audio_conditioning_verified: true,
     region_documented: false,
     strict_privacy_allowed: false,
   },
@@ -72,9 +73,9 @@ export const VIDEO_ROUTES: Record<VideoRoute["role"], VideoRoute> = {
     provider: "openrouter",
     role: "hero",
     min_duration_seconds: 4,
-    max_duration_seconds: 30,
+    max_duration_seconds: 15,
     aspect_ratios: ["9:16"],
-    audio_conditioning_verified: false,
+    audio_conditioning_verified: true,
     region_documented: false,
     strict_privacy_allowed: false,
   },

@@ -36,6 +36,8 @@ export function createRemoteRender(config: RemoteRenderConfig): RenderFn {
         tts_bodies_b64: input.ttsBodies?.map(toB64),
         native_audio_b64: input.nativeAudio?.map(toB64),
         heard_lanes: input.heardLanes,
+        viseme_pad_seconds: input.visemePadSeconds,
+        locked_native: input.lockedNative,
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });

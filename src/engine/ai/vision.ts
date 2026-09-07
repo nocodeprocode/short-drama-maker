@@ -1,4 +1,5 @@
 import { VISION_MODEL, VISION_PRICE } from "../config/models.ts";
+import { imageDataUrl } from "../media/image-mime.ts";
 import { costMeter, openRouterUsageCost } from "./meter.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 
@@ -46,6 +47,8 @@ export type LocationNotes = {
   dressing: string[];
   /** Any human figure at all: face, silhouette, back to camera, reflection, portrait on a wall. */
   people_present: boolean;
+  /** Floor plan in one sentence: main surface and its height, window wall, shelf wall, floor. */
+  geometry?: string;
   model: string;
 };
 
@@ -57,6 +60,8 @@ export interface VisionEngine {
   describeLocation?(input: { plate: Uint8Array; plateMime?: string; location: string }): Promise<LocationNotes>;
   /** Where the (single) face is in a character still; null when none is visible. */
   locateFace?(input: { image: Uint8Array; imageMime?: string }): Promise<FaceBox | null>;
+  /** One-sentence blocking note from a last frame: sides, hands, prop place. */
+  describeBlocking?(input: { frame: Uint8Array; frameMime?: string; names: string[] }): Promise<string>;
 }
 
 const FACE_RUBRIC = `You locate the face in a character reference still.
@@ -83,9 +88,11 @@ export function parseFaceBox(content: string): FaceBox | null {
 }
 
 const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
-Answer only with JSON: {"people_present": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact room and light>"}.
+Answer only with JSON: {"people_present": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact place and light>", "geometry": "<one sentence of real geography>"}.
 people_present is true if ANY human figure is visible in any form: a face, a body, a silhouette, someone with their back to camera, a reflection, a mannequin, or a person in a painting or photograph on the wall. Be strict.
-Rules: name real visible things only; no brands or readable text; keep lighting_lock under 40 words.`;
+If the still is OUTDOOR (alley, street, rain, pavement): geometry names the wall, the ground, the light (street lamp or window), the opening, and that there are no indoor curtains or furniture in the street. lighting_lock must not invent a room.
+If the still is INDOOR: geometry is the floor plan — the main surface, window side, shelves, floor material. lighting_lock must not invent open sky or rain inside.
+Rules: name real visible things only; no brands or readable text; keep lighting_lock under 40 words and geometry under 45 words.`;
 
 export function parseLocationNotes(content: string, model: string): LocationNotes {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -101,6 +108,7 @@ export function parseLocationNotes(content: string, model: string): LocationNote
     key_light: typeof raw.key_light === "string" ? raw.key_light.slice(0, 120) : "",
     dressing,
     people_present: raw.people_present === true || raw.people_present === "true",
+    geometry: typeof raw.geometry === "string" && raw.geometry.trim() ? raw.geometry.trim().slice(0, 320) : undefined,
     model,
   };
 }
@@ -118,14 +126,24 @@ Rules:
 - If there is no reference, set same_person to 1.0 and judge only face_count.
 - Never explain outside the JSON.`;
 
-function dataUrl(bytes: Uint8Array, mime: string): string {
-  return `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
+function dataUrl(bytes: Uint8Array, mime?: string): string {
+  return imageDataUrl(bytes, mime);
 }
 
 function clamp01(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return 0.5;
   return Math.min(1, Math.max(0, n));
+}
+
+export function parseBlockingNote(content: string): string {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const raw = JSON.parse(start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed) as Record<string, unknown>;
+  const note = typeof raw.note === "string" ? raw.note.trim() : trimmed;
+  if (!note) throw new Error("blocking note missing");
+  return note.slice(0, 240);
 }
 
 export function parseIdentityJudgement(content: string, model: string): IdentityJudgement {
@@ -204,6 +222,38 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the location note");
       return parseLocationNotes(content, model);
+    },
+
+    async describeBlocking(input) {
+      const who = input.names.filter(Boolean).join(" and ") || "the two people";
+      const body = await openRouterJson<ChatResponse>("/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          usage: { include: true },
+          provider: openRouterProvider("text"),
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a script supervisor writing a blocking note from the last frame of a scene. Answer only with JSON: {\"note\": \"<one sentence>\"}. Name who is camera-left and camera-right, what each is doing with their hands, and where the prop sits. No brands. No readable text. Under 40 words.",
+            },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: `Named people: ${who}.` },
+                { type: "image_url", image_url: { url: dataUrl(input.frame, input.frameMime ?? "image/jpeg") } },
+              ],
+            },
+          ],
+        }),
+      }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter returned no text for the blocking note");
+      return parseBlockingNote(content);
     },
 
     async locateFace(input) {

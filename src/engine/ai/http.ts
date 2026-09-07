@@ -61,7 +61,10 @@ export const BREAKER_THRESHOLD = 5;
 export const BREAKER_OPEN_MS = 60_000;
 
 export function isTransientStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  if (status === 408 || status === 425 || status === 429) return true;
+  if (status === 500 || status === 502 || status === 503 || status === 504) return true;
+  // 52x is the edge saying it could not reach or hold the model upstream.
+  return status >= 520 && status <= 599;
 }
 
 export function retryAfterMs(header: string | null): number | null {

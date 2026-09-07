@@ -53,7 +53,7 @@ export function cuCropBox(width: number, height: number, kind?: string | null): 
 export function firstFrameKind(kind?: string | null): "cu" | "face" | "full_body" | "object" | "wardrobe" {
   if (kind === "object_insert" || kind === "phone_ui") return "object";
   if (kind === "full_body") return "full_body";
-  if (kind === "cu" || kind === "mcu") return "cu";
+  if (kind === "cu" || kind === "mcu" || kind === "blocking_still" || kind === "last_frame") return "cu";
   if (kind === "default_wardrobe" || kind?.startsWith("look:")) return "wardrobe";
   if (kind === "front" || kind === "three_quarter" || kind === "profile") return "face";
   return "face";

@@ -1,5 +1,7 @@
 import type { EpisodeLength } from "../../engine/config/catalog.ts";
 import type { EpisodePlan, ShotPlanScene, StoryBible } from "../../engine/domain.ts";
+import { inferGenre, playbookFor } from "../craft/genre-playbooks.ts";
+import { coreExpectationFrom } from "../types/micro-drama.ts";
 
 export const LONG_BLOCK_SECONDS = { min: 50, max: 75, typical: 60 } as const;
 export const LONG_BLOCK_COUNT = { min: 12, max: 18 } as const;
@@ -24,10 +26,10 @@ export type EpisodeOutline = {
   mid_reprice_index: number;
 };
 
-/** Locked-take count from finished picture. 8–12 is only legal for a 60s chapter. */
+/** Generation units: 4–6 continuous scene takes for a 90s episode. */
 export function shotBudget(durationSeconds: number): { min_shots: number; max_shots: number } {
-  if (durationSeconds <= 45) return { min_shots: 6, max_shots: 8 };
-  if (durationSeconds <= 90) return { min_shots: 8, max_shots: 12 };
+  if (durationSeconds <= 45) return { min_shots: 8, max_shots: 12 };
+  if (durationSeconds <= 90) return { min_shots: 4, max_shots: 6 };
   if (durationSeconds <= 180) return { min_shots: 14, max_shots: 20 };
   return {
     min_shots: Math.round(durationSeconds / 7.5),
@@ -82,37 +84,27 @@ export function synthesizeLongOutline(input: {
   const lead = names[0] ?? "Mara";
   const wall = names[1] ?? "Eli";
   const witness = names[2] ?? "Jules";
-  const titles = [
-    "The paper",
-    "Who signed",
-    "The alibi",
-    "Witness walks in",
-    "The Tuesday count",
-    "Name on the line",
-    "The reprice",
-    "He changes the story",
-    "Phone that should not exist",
-    "The mark",
-    "Downstairs",
-    "The second paper",
-    "Who sent you",
-    "The door",
-  ];
+  // Block titles come from the genre playbook's ten beats and the bible's own
+  // expectation; nothing here names an object the story did not write.
+  const genre = inferGenre(`${input.bible.title} ${input.bible.logline}`);
+  const beats = playbookFor(genre).tenBeats;
+  const core = coreExpectationFrom(input.bible.logline);
+  const titles = Array.from({ length: count }, (_, i) => beats[i % beats.length] ?? `Stake ${i + 1}`);
   const blocks: EpisodeOutlineBlock[] = titles.map((title, index) => {
     const n = index + 1;
     return {
       index,
       title,
-      hook: index === 0 ? `The Tuesday paper is already in ${lead}'s hand.` : `${lead} will not drop the last unpaid question.`,
-      friction: `${wall} tries to close it. ${lead} keeps the paper in frame.`,
+      hook: index === 0 ? `${lead} is already inside the conflict: ${input.bible.logline}` : `${lead} will not drop the last unpaid question.`,
+      friction: `${wall} tries to close it. ${lead} keeps the stake in frame.`,
       spike:
         index === 6
           ? `${witness} puts a second name on the desk. The price of the lie changes.`
-          : `Mute-readable paper / phone / doorway — not a speech-only twist.`,
+          : `Mute-readable object, mark, or doorway from this story — not a speech-only twist.`,
       button:
         index === count - 1
-          ? `Then whose name is on it?`
-          : `If it is not ${wall}, who signed Tuesday?`,
+          ? core
+          : `${wall}, what did you not tell ${lead}?`,
       closes_hook: index === 0 ? "Is the paper real?" : `Stake ${n} closed: ${titles[index - 1]}`,
       opens_hook: `Stake ${n + 1} open: ${title} is not the last name.`,
       reprice: index === midRepriceIndex(count),
@@ -136,8 +128,8 @@ export function synthesizeBlockShots(input: {
   const lead = names[0] ?? "Mara";
   const wall = names[1] ?? "Eli";
   const witness = names[2] ?? "Jules";
-  const places = input.bible.locations.length ? input.bible.locations : ["night kitchen"];
-  const loc = input.location ?? places[input.block.index % places.length] ?? "night kitchen";
+  const places = input.bible.locations.length ? input.bible.locations : ["the story's main room"];
+  const loc = input.location ?? places[input.block.index % places.length] ?? places[0]!;
   const n = input.block.index + 1;
   const title = input.block.title;
   const buttonFn = input.lastBlock ? "button_cu" : "block_button";
@@ -229,7 +221,7 @@ export function synthesizeBlockShots(input: {
     {
       type: "dialogue",
       speaker: lead,
-      dialogue: `${wall}, look at Tuesday.`,
+      dialogue: `${wall}, look at me.`,
       emotion: emotional ? "break" : "hot",
       delivery: emotional ? "cry" : "shout",
       pace: "fast",
@@ -338,7 +330,7 @@ export function synthesizeBlockShots(input: {
     {
       type: "dialogue",
       speaker: lead,
-      dialogue: clipWords(input.block.button) || `Then whose name is on ${title.toLowerCase()}?`,
+      dialogue: clipWords(input.block.button) || coreExpectationFrom(input.bible.logline),
       emotion: "unpaid",
       delivery: "still",
       pace: "slow",
@@ -376,7 +368,7 @@ export function assemblePlanFromBlocks(input: {
     title: input.title,
     hook: first?.hook ?? "The turn is already happening.",
     conflict: "The lie keeps a higher price each block.",
-    cliffhanger: last?.button ?? "Then whose name is on it?",
+    cliffhanger: last?.button ?? "The unpaid question is still open.",
     outline: input.outline,
     scenes: input.scenes,
   };

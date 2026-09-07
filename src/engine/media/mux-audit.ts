@@ -80,6 +80,31 @@ export const HEAD_STEP_MAX = 18;
 export const HEAD_STEP_WINDOW_SECONDS = 0.3;
 /** Frames darker than this mean luma (0-255) read as black. */
 export const BLACK_FRAME_LUMA = 16;
+/** Matches SCENE_TAKE_FADE_SECONDS — intentional fade joins are not a black-frame defect. */
+export const HANDOFF_FADE_SECONDS = 0.4;
+
+export function handoffFadeWindows(manifest: RenderManifest): Array<{ start: number; end: number }> {
+  const windows: Array<{ start: number; end: number }> = [];
+  let clock = 0;
+  for (const [index, shot] of manifest.shots.entries()) {
+    const explicit = shot.picture_start_seconds;
+    const start = index === 0 ? (explicit ?? 0) : explicit && explicit > 0 ? explicit : clock;
+    const duration = Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds + (shot.hold_tail_seconds ?? 0));
+    const next = manifest.shots[index + 1];
+    if (shot.transition_in === "fade") {
+      windows.push({ start, end: start + HANDOFF_FADE_SECONDS });
+    }
+    if (next?.transition_in === "fade") {
+      windows.push({ start: start + duration - HANDOFF_FADE_SECONDS, end: start + duration });
+    }
+    clock = start + duration;
+  }
+  return windows;
+}
+
+export function inHandoffFade(time: number, windows: Array<{ start: number; end: number }>): boolean {
+  return windows.some((window) => time >= window.start - 0.08 && time <= window.end + 0.08);
+}
 
 export type MuxAuditFn = (input: MuxAuditInput) => Promise<MuxAudit>;
 
@@ -169,12 +194,13 @@ function pcmFromWav(pcm: Buffer): Int16Array {
 }
 
 export function expectedDurationSeconds(manifest: RenderManifest): number {
-  return manifest.shots.reduce((max, shot) => {
-    const start = shot.picture_start_seconds ?? 0;
+  // The mixer concatenates clips in order. picture_start_seconds can still
+  // reflect the pre-trim timeline, so summing clip lengths is the mix clock.
+  const picture = manifest.shots.reduce((sum, shot) => {
     const slip = Math.max(0, shot.audio_slip_seconds ?? 0);
-    const length = Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds - slip) + (shot.hold_tail_seconds ?? 0);
-    return Math.max(max, start + length);
+    return sum + Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds - slip) + (shot.hold_tail_seconds ?? 0);
   }, 0);
+  return picture + 2;
 }
 
 /** Pure timeline math: where on the final cut a take's onsets should land. */
@@ -232,8 +258,11 @@ export async function auditMux(input: MuxAuditInput): Promise<MuxAudit> {
     const file = join(dir, "final.mp4");
     await writeFile(file, input.body);
 
-    // Black-frame sweep at 2 Hz across the whole cut.
+    // Black-frame sweep at 2 Hz. Fade-out / fade-in joins are supposed to go dark.
+    const fadeWindows = handoffFadeWindows(input.manifest);
+    const endCardFrom = Math.max(0, probe.duration_seconds - 2.2);
     for (let t = 0.05; t < probe.duration_seconds; t += 0.5) {
+      if (t >= endCardFrom || inHandoffFade(t, fadeWindows)) continue;
       const frame = await grayFrameAt(file, t);
       if (frame && meanLuma(frame) < BLACK_FRAME_LUMA) audit.black_frames += 1;
     }

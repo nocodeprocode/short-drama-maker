@@ -87,6 +87,7 @@ export type ModerationCategory =
   | "real_person_likeness"
   | "minor"
   | "sexual"
+  | "uae_media"
   | "other";
 
 export type ScreenplayRules = {
@@ -105,18 +106,18 @@ export type ScreenplayRules = {
 };
 
 export const SCREENPLAY_RULES: ScreenplayRules = {
-  narration_mode: "off",
+  narration_mode: "on",
   dialogue_first: true,
   require_conflict_or_progression: true,
   require_reactions: true,
   require_episode_hook: true,
   require_cliffhanger: true,
-  target_episode_seconds: 60,
-  min_shots: 8,
-  max_shots: 12,
-  min_shot_s: 4,
-  max_shot_s: 8,
-  max_dialogue_s: 10,
+  target_episode_seconds: 90,
+  min_shots: 4,
+  max_shots: 6,
+  min_shot_s: 12,
+  max_shot_s: 15,
+  max_dialogue_s: 15,
 };
 
 export type AppearanceProfile = {
@@ -207,7 +208,7 @@ export type Series = {
   created_at: string;
 };
 
-export type ShotEditMode = "locked_take" | "already_cut" | "coverage_single";
+export type ShotEditMode = "locked_take" | "already_cut" | "coverage_single" | "scene_take";
 export type ShotAudioRole = "onscreen" | "offscreen" | "two_shot_avoid" | "silent";
 export type ShotEyeline = "left_of_camera" | "right_of_camera" | "down" | "lens_forbidden";
 export type ShotFunction =
@@ -223,11 +224,31 @@ export type ShotFunction =
   | "establishing"
   | "button_cu"
   | "block_button"
-  | "name_plant";
+  | "name_plant"
+  | "scene_take";
 export type ShotContinuity = {
   kind: "weld" | "jump";
   prev_shot_id?: string;
   last_frame_asset_id?: string;
+  /** Vision note from the last frame: sides, gesture, prop place. */
+  blocking_note?: string;
+};
+
+export type ShotBlocking = {
+  camera_left?: string | null;
+  camera_right?: string | null;
+  prop?: string | null;
+  left_gesture?: string | null;
+  right_gesture?: string | null;
+  start_from?: string | null;
+  coverage?: "two_shot" | "room" | "single" | "cu";
+  pictured?: string | null;
+  present?: string[];
+  enters?: string[];
+  exits?: string[];
+  upper_frame?: string | null;
+  staging?: string | null;
+  anchor?: string | null;
 };
 export type SilenceLicense = "post_slap" | "post_nuke" | "button_freeze" | "illegal_opera";
 
@@ -246,11 +267,17 @@ export type ShotData = {
   dialogue_alignment_asset_id: string | null;
   hero: boolean;
   edit_mode?: ShotEditMode;
+  /** Full scene dialogue when this take is one continuous scene, not a coverage single. */
+  scene_script?: string | null;
+  /** Set when a reference still trips the provider's content classifier: the pack is submitted without it. */
+  scene_take_strip?: "sheet1" | "sheet2" | "sheet3" | "location" | "wardrobe" | "sides" | "faces";
   audio_role?: ShotAudioRole;
   speaker_on_camera?: string | null;
   speakers_off_camera?: string[];
   eyeline?: ShotEyeline;
   continuity?: ShotContinuity;
+  /** Screen direction, prop, and gesture lock for this location. */
+  blocking?: ShotBlocking;
   function?: ShotFunction;
   internal_cut_count?: number | null;
   look_id?: string | null;
@@ -306,7 +333,7 @@ export type Scene = {
   status: SceneStatus;
 };
 
-export type RenderTransitionType = "cut" | "jcut" | "lcut" | "hold";
+export type RenderTransitionType = "cut" | "jcut" | "lcut" | "hold" | "fade";
 
 export type RenderManifestShot = {
   shot_id: string;
@@ -336,7 +363,16 @@ export type RenderManifestShot = {
   music_mood?: string | null;
   sfx?: string | null;
   speaker?: string | null;
+  /** Full conversation for this take; captions use each cue's own speaker. */
+  scene_script?: string | null;
+  /** How this clip joins the previous one when transition_in is "fade". */
+  transition_style?: RenderTransitionStyle;
+  transition_seconds?: number;
+  /** On-screen text labels for characters seen for the first time in this clip ("MARA — Night delivery driver"). */
+  intro_labels?: string[];
 };
+
+export type RenderTransitionStyle = "cut" | "dissolve" | "fadeblack" | "fadewhite";
 
 export type RenderManifest = {
   version: 1;
@@ -356,6 +392,7 @@ export type Episode = {
   title: string;
   script: string;
   status: EpisodeStatus;
+  poster_tone?: string;
   render_manifest: RenderManifest | null;
   episode_outline?: import("../drama-engine/plans/long-form.ts").EpisodeOutline | null;
   /** Increments on every accepted render; each final asset keeps its version in metadata. */
@@ -453,6 +490,7 @@ export type StoryBible = {
   }>;
   visual_style: Record<string, unknown>;
   rules: ScreenplayRules;
+  season?: import("../drama-engine/plans/season-bible.ts").SeasonBible;
 };
 
 export type EpisodePlan = {
@@ -482,6 +520,7 @@ export type ShotPlanScene = {
     duration_hint_seconds: number;
     hero?: boolean;
     edit_mode?: ShotEditMode;
+    scene_script?: string | null;
     audio_role?: ShotAudioRole;
     speaker_on_camera?: string | null;
     speakers_off_camera?: string[];
@@ -493,6 +532,8 @@ export type ShotPlanScene = {
     camera_move?: string | null;
     comic_sting?: boolean;
     sfx?: string | null;
+    /** Screen direction, prop, and gesture lock for this location. */
+    blocking?: ShotBlocking;
     /** Index of the planned scene this shot came from; repair uses it to keep location/time when regrouping. */
     origin_scene?: number;
   }>;

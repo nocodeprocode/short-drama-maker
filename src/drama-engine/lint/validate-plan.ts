@@ -3,17 +3,21 @@ import { isLongFormLength, type EpisodeLength } from "../../engine/config/catalo
 import { lintLongFormEngagement } from "./engagement.ts";
 import { containsEditVerb } from "../editorial/camera-sanitize.ts";
 import { silenceLegal } from "../pacing/reaction-pad.ts";
-import { DIALOGUE_MAX_WORDS, dialogueTooClose, wordCount } from "../types/dialogue.ts";
-import { cameraDescribesFace } from "../craft/prompt-fragments.ts";
+import { DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesShareSpokenBeat, wordCount } from "../types/dialogue.ts";
+import { isRefusalLoop, talkProblems } from "../types/talk.ts";
+import { channelMix, channelMixOk, channelOf, isLoopOpener, isOneSentence, MICRO_EPISODE } from "../types/micro-drama.ts";
+import { cameraDescribesFace, speakersForSceneTake } from "../craft/prompt-fragments.ts";
 import {
   BUTTON_FUNCTIONS,
   HOOK_FUNCTIONS,
   allowsTwoShot,
   isObjectInsert,
+  isSceneTake,
   isWideCoverage,
   type ShotFunction,
 } from "../types/editorial.ts";
 import { LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
+import { cueRows, cueWordCount, splitCueSentences, spokenSeconds } from "../types/continuity.ts";
 import type { CharacterJob } from "../types/genre.ts";
 import { qc, type DramaLintResult, type QcReport } from "../types/qc-drama.ts";
 import type { EpisodeKind } from "../types/story.ts";
@@ -92,6 +96,158 @@ function looksIntoLens(camera: string, eyeline?: string | null): boolean {
   );
 }
 
+const RESOLVE_LINE =
+  /\b(it'?s over|we'?re (?:done|safe|free)|i forgive you|the end|happily|resolved|finally together|i love you too)\b/i;
+const GOODBYE_LINE =
+  /\b(goodbye|good night|see you|bye[,.]|i'?m leaving|walk(?:s|ing)? (?:to|toward|towards) (?:the )?door|heading (?:out|home))\b/i;
+const ESTABLISH_CAMERA = /\b(establishing wide|empty wide|wide of the|sunrise|title card)\b/i;
+
+export function picturedName(shot: ReturnType<typeof shotsOf>[number]): string | null {
+  if (isObjectInsert(shot)) return null;
+  if (shot.speaker_on_camera) return firstToken(shot.speaker_on_camera);
+  if (shot.audio_role === "offscreen" || shot.function === "listener_hold") return null;
+  return shot.speaker ? firstToken(shot.speaker) : null;
+}
+
+export function framingClass(shot: ReturnType<typeof shotsOf>[number]): string {
+  const fn = shot.function;
+  if (fn === "reaction" || fn === "listener_hold") return "reaction";
+  if (fn === "insert_evidence" || fn === "phone_ui") return "insert";
+  if (fn === "slap_peak" || fn === "doorway_reveal") return "mcu";
+  if (fn === "hook_cu" || fn === "accusation_cu" || fn === "button_cu" || fn === "block_button") return "cu";
+  if (/\b(medium|mcu|chest|shoulders)\b/i.test(shot.camera)) return "mcu";
+  if (/\b(insert|paper|phone|object)\b/i.test(shot.camera)) return "insert";
+  return "cu";
+}
+
+export function handbookBeatCount(plan: EpisodePlan): number {
+  const shots = shotsOf(plan);
+  const spoken: string[] = [];
+  for (const shot of shots) {
+    const line = shot.dialogue?.trim();
+    if (!line) continue;
+    if (spoken.some((prev) => dialogueTooClose(prev, line))) continue;
+    spoken.push(line);
+  }
+  return spoken.length || Math.min(6, Math.max(1, plan.scenes.length));
+}
+
+function lintHandbookGrammar(input: {
+  plan: EpisodePlan;
+  shots: ReturnType<typeof shotsOf>;
+  episodeNumber?: number;
+  bible?: import("../../engine/domain.ts").StoryBible | null;
+}): QcReport[] {
+  const reports: QcReport[] = [];
+  const shots = input.shots;
+  const beats = handbookBeatCount(input.plan);
+  reports.push(
+    qc("BEAT_COUNT", beats >= 3 && beats <= 16, `${beats} beats`, "4–6 story beats (spoken turns, not shot count)", "block"),
+  );
+
+  const copiedTakes: string[] = [];
+  for (let index = 0; index < shots.length; index += 1) {
+    const shot = shots[index]!;
+    for (let earlier = 0; earlier < index; earlier += 1) {
+      const prev = shots[earlier]!;
+      if (isSceneTake(shot) && isSceneTake(prev) && sceneTakesShareSpokenBeat(prev, shot)) {
+        copiedTakes.push(`${earlier + 1}–${index + 1}`);
+        continue;
+      }
+      if (shot.dialogue && prev.dialogue && dialogueTooClose(shot.dialogue, prev.dialogue) && earlier === index - 1) {
+        copiedTakes.push(`${earlier + 1}–${index + 1}`);
+      }
+    }
+  }
+  reports.push(
+    qc(
+      "REPEAT_BEAT",
+      copiedTakes.length === 0,
+      copiedTakes.length ? `takes ${copiedTakes.join(", ")} copy the same spoken beat` : "each take is a new beat",
+      "each scene take speaks a new beat; never generate the same script twice",
+      "block",
+    ),
+  );
+
+  const sceneTakesOnly = shots.length > 0 && shots.every((shot) => isSceneTake(shot));
+  const mix = channelMix(shots);
+  reports.push(
+    qc(
+      "CHANNEL_MIX",
+      sceneTakesOnly || shots.length === 0 || channelMixOk(mix),
+      `sync ${Math.round(mix.sync * 100)}% vo ${Math.round(mix.vo * 100)}% silent ${Math.round(mix.silent * 100)}%`,
+      sceneTakesOnly ? "scene takes carry the full conversation" : "~40% sync / 30% VO / 30% silent",
+      "warn",
+    ),
+  );
+  const multi = shots.filter((shot) => !isSceneTake(shot) && channelOf(shot) === "sync" && !isOneSentence(shot.dialogue));
+  reports.push(
+    qc("ONE_SENTENCE", multi.length === 0, multi.length ? `${multi.length} multi-sentence sync` : "one sentence", "one sentence per sync shot", "block"),
+  );
+  if (input.episodeNumber === 1) {
+    const leads = [
+      ...new Set(
+        shots.slice(0, 8).flatMap((shot) => {
+          const fromScript = speakersForSceneTake({
+            sceneScript: shot.scene_script,
+            speaker: shot.speaker,
+            speakerOnCamera: shot.speaker_on_camera,
+          });
+          return fromScript.length
+            ? fromScript.map((name) => name.split(/\s+/)[0]!).filter(Boolean)
+            : [(shot.speaker ?? "").split(/\s+/)[0]].filter(Boolean);
+        }),
+      ),
+    ];
+    reports.push(qc("LEADS_MEET", leads.length >= 2, leads.join("/") || "one face", "both leads meet in episode 1", "block"));
+  }
+  const core = input.bible?.logline?.trim() || input.plan.conflict?.trim() || input.plan.hook?.trim();
+  reports.push(qc("CORE_EXPECTATION", Boolean(core), core ? "stated" : "missing", "one-sentence core expectation", "warn"));
+
+  const last = shots[shots.length - 1];
+  const seasonLen = input.bible?.episode_structure?.length ?? input.bible?.season?.episode_log?.length ?? 60;
+  const finale = Boolean(input.episodeNumber && input.episodeNumber >= seasonLen);
+  const resolves =
+    !finale &&
+    (RESOLVE_LINE.test(last?.dialogue ?? "") ||
+      RESOLVE_LINE.test(input.plan.cliffhanger ?? "") ||
+      (!asksAQuestion(input.plan.cliffhanger) && !asksAQuestion(last?.dialogue)));
+  reports.push(
+    qc(
+      "NOTHING_RESOLVES",
+      !resolves || shots.length === 0,
+      last?.dialogue ?? input.plan.cliffhanger ?? "empty",
+      finale ? "finale may close a thread" : "cliffhanger stays unpaid",
+      "block",
+    ),
+  );
+
+  for (const [index, shot] of shots.entries()) {
+    if (index === 0) continue;
+    const prev = shots[index - 1]!;
+    const a = picturedName(prev);
+    const b = picturedName(shot);
+    if (a && b && a === b && framingClass(prev) === framingClass(shot) && !isSceneTake(prev) && !isSceneTake(shot)) {
+      reports.push(
+        qc("ADJACENT_SAME_FACE", false, `shots ${index}–${index + 1} ${a}/${framingClass(shot)}`, "cut away or change size", "block"),
+      );
+    }
+  }
+
+  const recap = shots.filter((shot) => shot.recap || shot.function === "establishing" || ESTABLISH_CAMERA.test(shot.camera));
+  const goodbye = shots.filter((shot) => GOODBYE_LINE.test(`${shot.dialogue ?? ""} ${shot.camera}`));
+  reports.push(
+    qc(
+      "NO_RECAP_GOODBYE",
+      recap.length === 0 && goodbye.length === 0,
+      recap.length ? "recap/establishing" : goodbye.length ? "goodbye/door walk" : "none",
+      "no recaps, goodbyes, or walking to doors",
+      "block",
+    ),
+  );
+  return reports;
+}
+
 export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   const budget: LengthBudget = LENGTH_BUDGETS[input.length ?? "60_90"];
   const shots = shotsOf(input.plan);
@@ -99,15 +255,22 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   const cast = castSet(input);
 
   const shortSku = budget.target_episode_seconds <= 180;
-  const operaCount = shortSku && shots.length >= 16;
-  const operaDur = shots.some((shot) => shot.duration_hint_seconds >= 12);
+  const handbookSku = budget.length === "60_90";
+  const shortDramaSku = handbookSku || budget.length === "30_45";
+  const sceneTakeCount = shots.filter((shot) => isSceneTake(shot)).length;
+  const longTalk = shots.some((shot) => Boolean(shot.dialogue) && shot.duration_hint_seconds >= 12 && !isSceneTake(shot));
+  const choppedSingles = handbookSku && shots.length > 0 && (sceneTakeCount !== shots.length || sceneTakeCount < budget.min_shots);
+  const operaDump = !handbookSku && shortDramaSku && (sceneTakeCount >= 2 || (shots.length > 0 && shots.length < budget.min_shots));
+  const operaDur = !shortDramaSku && longTalk;
   const operaTalk = !shortSku && shots.length < budget.min_shots && operaDur;
   reports.push(
     qc(
       "OPERA_PLAN",
-      !operaCount && !operaDur && !operaTalk,
-      `${shots.length} shots, max hint ${Math.max(0, ...shots.map((s) => s.duration_hint_seconds))}s`,
-      shortSku ? "≤12 shots and ≤10s per take" : "no ≥12s talking-head; shot count follows shotBudget",
+      !choppedSingles && !operaDump && !operaDur && !operaTalk && !longTalk,
+      `${shots.length} shots, ${sceneTakeCount} scene takes, max hint ${Math.max(0, ...shots.map((s) => s.duration_hint_seconds))}s`,
+      handbookSku
+        ? `${MICRO_EPISODE.min_shots}–${MICRO_EPISODE.max_shots} continuous scene takes of ${MICRO_EPISODE.gen_min_s}–${MICRO_EPISODE.gen_max_s}s`
+        : "no ≥12s talking-head; shot count follows shotBudget",
       "block",
     ),
   );
@@ -133,6 +296,90 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     ),
   );
 
+  const speechOverflow = handbookSku
+    ? shots.filter((shot) => isSceneTake(shot) && spokenSeconds(cueRows(shot.scene_script)) > budget.max_shot_s + 0.25)
+    : [];
+  reports.push(
+    qc(
+      "SPEECH_WINDOW",
+      speechOverflow.length === 0,
+      speechOverflow.length ? `${speechOverflow.length} takes over ${budget.max_shot_s}s of speech` : "each take fits the model window",
+      `scene_script spoken time ≤ ${budget.max_shot_s}s`,
+      "block",
+    ),
+  );
+
+  // On the nose: one breath, one caption. A cue over 12 words or with two
+  // sentences is where captions overflow and the viewer stops following.
+  const wordyCues = handbookSku
+    ? shots
+        .filter((shot) => isSceneTake(shot))
+        .flatMap((shot) => cueRows(shot.scene_script))
+        .filter((row) => cueWordCount(row) > DIALOGUE_MAX_WORDS || splitCueSentences([row]).length > 1)
+    : [];
+  reports.push(
+    qc(
+      "ON_THE_NOSE",
+      wordyCues.length === 0,
+      wordyCues.length ? `${wordyCues.length} cue(s) over 12 words or two sentences` : "every cue is one short sentence",
+      "every cue ≤12 words, one sentence",
+      "warn",
+    ),
+  );
+
+  if (handbookSku) {
+    const takes = shots.filter((shot) => isSceneTake(shot));
+    const looped = takes.filter((shot) => isRefusalLoop(shot.scene_script));
+    const staged = takes.filter((shot) => talkProblems(shot.scene_script).some((row) => row !== "refusal-loop"));
+    reports.push(
+      qc(
+        "STAGED_TALK",
+        looped.length === 0 && staged.length === 0,
+        looped.length
+          ? `${looped.length} take(s) restating the same no`
+          : staged.length
+            ? `${staged.length} take(s) sound staged`
+            : "talk is casual",
+        "casual spoken English; a refusal loop blocks",
+        looped.length ? "block" : "warn",
+      ),
+    );
+    const isButton = (shot: (typeof takes)[number]) => shot.function === "button_cu" || shot === takes.at(-1);
+    const mute = takes.filter((shot) => !isButton(shot) && cueRows(shot.scene_script).length < 1);
+    const thin = takes.filter((shot) => !isButton(shot) && cueRows(shot.scene_script).length < 5);
+    reports.push(
+      qc(
+        "CUE_COUNT",
+        mute.length === 0 && thin.length === 0,
+        mute.length
+          ? `${mute.length} take(s) with an empty script`
+          : thin.length
+            ? `${thin.length} take(s) under 5 cues`
+            : "each take has 5–8 cues",
+        "5–8 cues per scene take",
+        mute.length ? "block" : "warn",
+      ),
+    );
+  }
+
+  const faces = input.bible?.characters ?? [];
+  if (faces.length) {
+    const plain = faces.filter((row) => {
+      const face = row.appearance?.face?.trim() ?? "";
+      if (!face) return false;
+      return face.length < 12 || /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i.test(face);
+    });
+    reports.push(
+      qc(
+        "CAST_LOOK",
+        plain.length === 0,
+        plain.length ? `${plain.length} face(s) look average or thin` : "faces are specific beauty",
+        "phone-close beauty on every named face",
+        "warn",
+      ),
+    );
+  }
+
   // Dialogue-first: a short drama is spoken. Under half spoken is a montage.
   const spokenShare = shots.length ? shots.filter((shot) => Boolean(shot.dialogue)).length / shots.length : 0;
   reports.push(
@@ -153,15 +400,22 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   // a question, an accusation, an exclamation, or a short punch. "Good morning,
   // how was your flight" is not a hook even on a hook_cu.
   const inMotion = lineInMotion(first?.dialogue);
-  const hookOk = Boolean(
-    first && (HOOK_FUNCTIONS.has(firstFn!) ? !first.dialogue || inMotion : (first.type === "dialogue" || first.type === "hero") && inMotion),
-  );
+  const hookOk = shortDramaSku
+    ? Boolean(first && first.dialogue && inMotion)
+    : Boolean(
+        first &&
+          (HOOK_FUNCTIONS.has(firstFn!)
+            ? !first.dialogue || inMotion
+            : (first.type === "dialogue" || first.type === "hero") && inMotion),
+      );
   reports.push(
     qc(
       "HOOK_3S",
       hookOk,
       first?.dialogue ? `${firstFn ?? "?"}: "${first.dialogue.slice(0, 40)}"` : firstFn ?? "missing",
-      "hook_cu / insert_evidence / slap_peak, and any opening line is a question, accusation or punch",
+      shortDramaSku
+        ? "spoken hook in the first 3 seconds — a question, accusation or punch"
+        : "hook_cu / insert_evidence / slap_peak, and any opening line is a question, accusation or punch",
       "block",
     ),
   );
@@ -220,7 +474,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   );
 
   const hasReaction = shots.some((shot) => shot.type === "reaction" || shot.function === "reaction" || shot.function === "listener_hold");
-  if (!hasReaction) {
+  if (!hasReaction && !shortDramaSku) {
     reports.push(qc("ASL_HOLD", false, "0 reaction/listener holds", "≥1 reaction", "block"));
   }
 
@@ -268,6 +522,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     }
     if (
       !allowsTwoShot(fn) &&
+      !isSceneTake(shot) &&
       /\b(two-shot|two shot|both of them|both characters|the couple|same frame)\b/i.test(shot.camera)
     ) {
       reports.push(qc("EDIT_VERB", false, shot.camera, "single: no two-shot / both / couple", "block"));
@@ -286,14 +541,18 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
         qc("FACE_ON_INSERT", false, shot.camera, "object plate / no people", "warn"),
       );
     }
-    if (shot.dialogue && (wordCount(shot.dialogue) > DIALOGUE_MAX_WORDS || shot.duration_hint_seconds > budget.max_dialogue_s)) {
+    if (
+      !isSceneTake(shot) &&
+      shot.dialogue &&
+      (wordCount(shot.dialogue) > DIALOGUE_MAX_WORDS || shot.duration_hint_seconds > budget.max_dialogue_s)
+    ) {
       reports.push(
         qc(
           "MONOLOGUE",
           false,
           `${wordCount(shot.dialogue)} words / ${shot.duration_hint_seconds}s`,
           `≤${DIALOGUE_MAX_WORDS} words / ≤${budget.max_dialogue_s}s`,
-          "warn",
+          handbookSku ? "block" : "warn",
         ),
       );
     }
@@ -319,25 +578,31 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
       fn === "slap_peak" ||
       fn === "insert_evidence" ||
       fn === "phone_ui" ||
-      /\b(slap|paper|receipt|test|mark|badge|clause|dated message)\b/i.test(`${shot.dialogue ?? ""} ${shot.camera}`)
+      /\b(slap|paper|receipt|test|mark|badge|clause|dated message|carrier|envelope|parcel|phone|letter|object|prop)\b/i.test(
+        `${shot.dialogue ?? ""} ${shot.camera} ${shot.blocking?.prop ?? ""}`,
+      )
     );
   });
   reports.push(qc("MUTE_FAIL", muteOk || shots.length === 0, muteOk ? "visual spike" : "speech-only", "mute-readable spike", "block"));
 
-  const hasWide = shots.some((shot) => isWideCoverage(shot));
+  const hasWide = shots.some((shot) => isWideCoverage(shot) || shot.function === "establishing" || shot.type === "establishing");
   const hasInsert = shots.some((shot, index) => isObjectInsert({ ...shot, function: inferFunction(shot, index, shots.length) }));
-  const ecuOnly = shots.filter((shot) => shot.dialogue && shot.audio_role !== "offscreen").every((shot) =>
-    /\b(tight single|extreme close|ecu|neck)\b/i.test(shot.camera),
-  );
+  const spokenFaces = shots.filter((shot) => shot.dialogue && shot.audio_role !== "offscreen" && !isSceneTake(shot));
+  const ecuOnly =
+    spokenFaces.length > 0 &&
+    spokenFaces.every((shot) => /\b(extreme close|ecu|neck)\b/i.test(shot.camera));
   // Two-shots are not required coverage: without a locked group still they
   // invent people. They stay legal only when the plan explicitly asks for one.
   const twoShots = shots.filter((shot) => shot.function === "stacked_two");
   reports.push(
     qc(
       "COVERAGE_MIX",
-      shots.length === 0 || (hasWide && hasInsert && !ecuOnly),
+      shots.length === 0 ||
+        (shortDramaSku ? !hasWide && !ecuOnly : hasWide && hasInsert && !ecuOnly),
       `${hasWide ? "wide" : "no-wide"}/${hasInsert ? "insert" : "no-insert"}${ecuOnly ? "/ecu-only" : ""}`,
-      "≥1 empty establishing/wide, ≥1 insert, not 100% ECU faces",
+      shortDramaSku
+        ? "no establishing/wide; jump-in or object ECU; not 100% ECU faces"
+        : "≥1 empty establishing/wide, ≥1 insert, not 100% ECU faces",
       "block",
     ),
   );
@@ -364,7 +629,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
       hasComic || shots.length === 0,
       hasComic ? "comic/stun cutaway" : "accusation CUs only",
       "≥1 comic/stun cutaway + SFX per episode or block cluster",
-      "block",
+      shortDramaSku ? "warn" : "block",
     ),
   );
 
@@ -377,8 +642,11 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   for (let i = 1; i < sceneRows.length; i += 1) {
     const prev = sceneRows[i - 1]!;
     const next = sceneRows[i]!;
-    const bridged = next.shots.some(
-      (shot, index) => index === 0 && (isWideCoverage(shot) || isObjectInsert({ ...shot, function: inferFunction(shot, index, next.shots.length) })),
+    const opener = next.shots[0];
+    const bridged = Boolean(
+      opener &&
+        (isObjectInsert({ ...opener, function: inferFunction(opener, 0, next.shots.length) }) ||
+          lineInMotion(opener.dialogue)),
     );
     if (norm(prev.location) !== norm(next.location) && !bridged) unbridgedLocationJumps.push(`${prev.location}→${next.location}`);
     if (norm(prev.time) !== norm(next.time) && !bridged) unbridgedLightJumps.push(`${prev.time}→${next.time}`);
@@ -388,7 +656,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
       "CONTINUITY_JUMP",
       unbridgedLocationJumps.length === 0,
       unbridgedLocationJumps.length ? unbridgedLocationJumps.join(", ") : "none",
-      "a location change opens on a wide or insert",
+      "a location change opens on an insert or jump-in-on-conflict",
       "warn",
     ),
   );
@@ -397,7 +665,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
       "LIGHT_JUMP",
       unbridgedLightJumps.length === 0,
       unbridgedLightJumps.length ? unbridgedLightJumps.join(", ") : "none",
-      "a time-of-day change opens on a wide or insert",
+      "a time-of-day change opens on an insert or jump-in-on-conflict",
       "warn",
     ),
   );
@@ -412,6 +680,30 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     const opens = input.hookLedgerOpens ?? 1;
     reports.push(
       qc("HOOK_LEDGER", !(closes === 0 && opens === 0), `close ${closes} open ${opens}`, "close≥1 or open≥1", "block"),
+    );
+  }
+
+  if (handbookSku) {
+    reports.push(...lintHandbookGrammar({ plan: input.plan, shots, episodeNumber: input.episodeNumber, bible: input.bible }));
+  }
+
+  // A loop opener must let a cold viewer in: the first take names at least two
+  // cast members out loud. Any 7 minutes of the season should stand on its own.
+  if (handbookSku && input.episodeNumber && isLoopOpener(input.episodeNumber)) {
+    const first = shots.find((shot) => isSceneTake(shot));
+    const script = `${first?.scene_script ?? ""} ${first?.dialogue ?? ""}`.toLowerCase();
+    const cast = (input.namedCast ?? input.bible?.characters.map((row) => row.name) ?? [])
+      .map((name) => name.trim().toLowerCase().split(/\s+/)[0] ?? "")
+      .filter(Boolean);
+    const named = cast.filter((name) => new RegExp(`\\b${name}\\b`).test(script));
+    reports.push(
+      qc(
+        "LOOP_REANCHOR",
+        cast.length < 2 || named.length >= 2,
+        `${named.length} cast named in the first take`,
+        "loop opener names both leads out loud in take 1",
+        "warn",
+      ),
     );
   }
 

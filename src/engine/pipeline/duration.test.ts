@@ -23,12 +23,12 @@ describe("audio-before-duration", () => {
     expect(decision.needs_reaction_pad).toBe(true);
   });
 
-  it("clamps long lines to the Wan 30s window", () => {
+  it("clamps long lines to the Seedance 15s window", () => {
     const decision = finalizeShotDuration({
       wavSeconds: 40,
       route: VIDEO_ROUTES.dialogue_default,
     });
-    expect(decision.duration_seconds).toBe(30);
+    expect(decision.duration_seconds).toBe(15);
   });
 
   it("clamps a 20s line to the 10s dialogue craft window", () => {

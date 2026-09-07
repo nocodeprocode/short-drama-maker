@@ -14,15 +14,15 @@ import { ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
 export type PlateMove = "push_in" | "pull_out" | "drift_left" | "drift_right";
 
 export const PLATE_TAKE_FPS = 30;
-export const PLATE_TAKE_WIDTH = 720;
-export const PLATE_TAKE_HEIGHT = 1280;
+export const PLATE_TAKE_WIDTH = 1080;
+export const PLATE_TAKE_HEIGHT = 1920;
 
 function run(cmd: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk);
+      stderr = `${stderr}${String(chunk)}`.slice(-4000);
     });
     child.on("error", reject);
     child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}: ${stderr.slice(-600)}`))));

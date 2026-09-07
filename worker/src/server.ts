@@ -94,6 +94,8 @@ createServer(async (req, res) => {
         ttsBodies: Array.isArray(body.tts_bodies_b64) ? (body.tts_bodies_b64 as unknown[]).map(b64) : undefined,
         nativeAudio: Array.isArray(body.native_audio_b64) ? (body.native_audio_b64 as unknown[]).map(b64) : undefined,
         heardLanes: lanes,
+        visemePadSeconds: Array.isArray(body.viseme_pad_seconds) ? (body.viseme_pad_seconds as Array<number | null>) : undefined,
+        lockedNative: Array.isArray(body.locked_native) ? (body.locked_native as boolean[]) : undefined,
       });
       reply(res, 200, {
         checksum: rendered.checksum,

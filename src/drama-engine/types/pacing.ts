@@ -1,5 +1,6 @@
 import type { EpisodeLength } from "../../engine/config/catalog.ts";
 import type { CliffhangerRule } from "./story.ts";
+import { MICRO_AD_CUT, MICRO_EPISODE } from "./micro-drama.ts";
 
 export type SilenceLicense = "post_slap" | "post_nuke" | "button_freeze" | "illegal_opera";
 
@@ -34,25 +35,25 @@ export type LengthBudget = {
 export const LENGTH_BUDGETS: Record<EpisodeLength, LengthBudget> = {
   "30_45": {
     length: "30_45",
-    target_episode_seconds: 38,
-    min_shots: 6,
-    max_shots: 8,
-    min_shot_s: 4,
-    max_shot_s: 8,
-    max_dialogue_s: 10,
-    duration_sum_min: 32,
-    duration_sum_max: 44,
+    target_episode_seconds: MICRO_AD_CUT.target_seconds,
+    min_shots: MICRO_AD_CUT.min_shots,
+    max_shots: MICRO_AD_CUT.max_shots,
+    min_shot_s: MICRO_AD_CUT.gen_min_s,
+    max_shot_s: MICRO_AD_CUT.gen_max_s,
+    max_dialogue_s: MICRO_EPISODE.gen_max_s,
+    duration_sum_min: MICRO_AD_CUT.min_seconds,
+    duration_sum_max: MICRO_AD_CUT.max_seconds,
   },
   "60_90": {
     length: "60_90",
-    target_episode_seconds: 60,
-    min_shots: 8,
-    max_shots: 12,
-    min_shot_s: 4,
-    max_shot_s: 8,
-    max_dialogue_s: 10,
-    duration_sum_min: 54,
-    duration_sum_max: 66,
+    target_episode_seconds: MICRO_EPISODE.target_seconds,
+    min_shots: MICRO_EPISODE.min_shots,
+    max_shots: MICRO_EPISODE.max_shots,
+    min_shot_s: MICRO_EPISODE.gen_min_s,
+    max_shot_s: MICRO_EPISODE.gen_max_s,
+    max_dialogue_s: MICRO_EPISODE.gen_max_s,
+    duration_sum_min: MICRO_EPISODE.min_seconds,
+    duration_sum_max: MICRO_EPISODE.max_seconds,
   },
   "120_180": {
     length: "120_180",

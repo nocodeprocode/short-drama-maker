@@ -9,6 +9,7 @@ import type { AssetStore } from "../storage/types.ts";
 import { configuredRender } from "../media/remote-render.ts";
 import { publicLog } from "../logging.ts";
 import { voiceSexRepair } from "../ai/voice-sex.ts";
+import { isSceneTake } from "../../drama-engine/types/editorial.ts";
 import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 
@@ -954,6 +955,7 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
       : { data: [] };
     const missingAudio = (shots ?? []).filter((shot) => {
       const data = (shot.shot_data ?? {}) as Record<string, unknown>;
+      if (isSceneTake(data)) return false;
       return Boolean(data.dialogue) && !data.dialogue_audio_asset_id;
     });
     const { data: videoJobs } = await client
@@ -1067,7 +1069,10 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
         });
       }
     } else if (missingVideo.length && videoSlotsOpen > 0) {
-      for (const shot of missingVideo.slice(0, videoSlotsOpen)) {
+      const ordered = [...missingVideo].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+      const nextScene = ordered.find((shot) => isSceneTake((shot.shot_data ?? {}) as Record<string, unknown>));
+      const batch = nextScene ? [nextScene] : ordered.slice(0, videoSlotsOpen);
+      for (const shot of batch) {
         queued.push("generate_video");
         await queueTask(client, {
           owner_id,

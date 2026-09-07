@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captionsAlongTimeline, captionsFromAlignment, cuesFromVtt, cuesToAss, cuesToVtt, wrapCaptionLines } from "./captions.ts";
+import { captionsAlongTimeline, captionsFromAlignment, captionsFromSceneScript, cuesFromVtt, cuesToAss, cuesToVtt, wrapCaptionLines } from "./captions.ts";
 import type { AlignmentTrack } from "../domain.ts";
 
 const track = (text: string, start: number, end: number): AlignmentTrack => ({
@@ -33,7 +33,7 @@ describe("captions along the cut", () => {
 
   it("writes ASS with 9:16 PlayRes so burns land in the lower third", () => {
     const ass = cuesToAss(cuesFromVtt(cuesToVtt([{ start: 1.35, end: 3.2, text: "How many Tuesdays, Eli." }])));
-    expect(ass).toMatch(/PlayResY: 1280/);
+    expect(ass).toMatch(/PlayResY: 1920/);
     expect(ass).toMatch(/Dialogue: 0,0:00:01\.35,0:00:03\.20,Default/);
   });
 
@@ -54,6 +54,29 @@ describe("captions along the cut", () => {
     });
     expect(cues[0]?.text).toMatch(/^MARA:/);
     expect(cues[0]?.text).toMatch(/I did not write the paper/);
+  });
+
+  it("labels each cue with its own speaker instead of the take's first speaker", () => {
+    const cues = captionsAlongTimeline({
+      shotDurations: [15],
+      alignments: [track("How long Don't Three months", 0, 2)],
+      pictureStarts: [0],
+      speakers: ["Cole"],
+      scripts: ["MARA: How long?\nCOLE: Don't.\nMARA: Three months."],
+    });
+    expect(cues.map((cue) => cue.text.replace(/\n/g, " "))).toEqual([
+      expect.stringMatching(/^MARA: How long/),
+      expect.stringMatching(/^COLE: Don't/),
+      expect.stringMatching(/^MARA: Three months/),
+    ]);
+    expect(cues[0]?.speaker).toBe("MARA");
+    expect(cues[1]?.speaker).toBe("COLE");
+    expect(cues[0]?.start).toBeCloseTo(0, 5);
+    expect(cues[1]?.start).toBeCloseTo(0.4, 5);
+    expect(cues[2]?.start).toBeCloseTo(0.6, 5);
+    const timed = captionsFromSceneScript("MARA: Stay.\nCOLE: No hospital.", 10, 2);
+    expect(timed[0]?.start).toBeGreaterThanOrEqual(2);
+    expect(timed[1]?.end).toBeLessThanOrEqual(12.01);
   });
 
   it("absorbs a one-word tail like 'like.'", () => {

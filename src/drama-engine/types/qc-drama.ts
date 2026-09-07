@@ -24,6 +24,12 @@ export type DramaQcId =
   | "AUDIO_MISSING"
   | "SHOT_BUDGET"
   | "DURATION_WINDOW"
+  | "SPEECH_WINDOW"
+  | "ON_THE_NOSE"
+  | "STAGED_TALK"
+  | "CUE_COUNT"
+  | "CAST_LOOK"
+  | "LOOP_REANCHOR"
   | "ILLEGAL_SILENCE"
   | "INVENTED_SPEAKER"
   | "EDIT_VERB"
@@ -39,7 +45,15 @@ export type DramaQcId =
   | "LIGHT_JUMP"
   | "BUTTON_QUESTION"
   | "DIALOGUE_SHARE"
-  | "COMIC_STING";
+  | "COMIC_STING"
+  | "BEAT_COUNT"
+  | "NOTHING_RESOLVES"
+  | "ADJACENT_SAME_FACE"
+  | "NO_RECAP_GOODBYE"
+  | "CHANNEL_MIX"
+  | "ONE_SENTENCE"
+  | "LEADS_MEET"
+  | "CORE_EXPECTATION";
 
 export type QcReport = {
   id: DramaQcId;

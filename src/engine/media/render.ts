@@ -14,6 +14,8 @@ export type RenderInput = {
   visemePadSeconds?: Array<number | null | undefined>;
   visemeMouthOpenSeconds?: Array<number | null | undefined>;
   visemeVoiceOnsetSeconds?: Array<number | null | undefined>;
+  /** Seedance scene takes keep the model's own picture+speech mux. */
+  lockedNative?: boolean[];
   /** Pre-built cues; when set, alignments are not used for captions. */
   vtt?: string;
 };
@@ -51,6 +53,7 @@ export function buildEpisodeVtt(input: Pick<RenderInput, "manifest" | "alignment
           alignments: input.alignments,
           pictureStarts: input.manifest.shots.map((shot) => shot.picture_start_seconds),
           speakers: input.manifest.shots.map((shot) => shot.speaker),
+          scripts: input.manifest.shots.map((shot) => shot.scene_script),
         })
       : input.alignments.flatMap((track) => (track ? captionsFromAlignment(track) : []));
   return cuesToVtt(aligned);
@@ -78,6 +81,7 @@ export async function renderEpisodeBytes(input: RenderInput): Promise<RenderOutp
     visemePadSeconds: input.visemePadSeconds,
     visemeMouthOpenSeconds: input.visemeMouthOpenSeconds,
     visemeVoiceOnsetSeconds: input.visemeVoiceOnsetSeconds,
+    lockedNative: input.lockedNative,
     vtt,
     onDialogueStem: (stem) => {
       dialogueStem = stem;

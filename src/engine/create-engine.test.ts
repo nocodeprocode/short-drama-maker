@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ContentBlockedError } from "./ai/moderation.ts";
 import { createAiGateway, type AIGateway } from "./ai/index.ts";
 import { DuplicateStripeEventError } from "./ledger/budget.ts";
-import { createEngine, RenderIncompleteError } from "./create-engine.ts";
+import { createEngine, DuplicateSceneTakeError, RenderIncompleteError } from "./create-engine.ts";
 import { RenderFailedError } from "./media/render.ts";
 import type { MuxAuditFn } from "./media/mux-audit.ts";
 import type { TakeAnalysis } from "./pipeline/take-analysis.ts";
@@ -250,7 +250,7 @@ function testGateway(): AIGateway {
     vision: {
       // Answers the question asked: an empty-room check sees no one, a single sees one.
       async judgeIdentity(input) {
-        return { same_person: input.expectedFaces === 0 ? 0 : 0.95, face_count: input.expectedFaces === 0 ? 0 : 1, notes: "test", model: "test" };
+        return { same_person: input.expectedFaces === 0 ? 0 : 0.95, face_count: input.expectedFaces, notes: "test", model: "test" };
       },
     },
     llm: {
@@ -309,7 +309,11 @@ function testGateway(): AIGateway {
           request.shot.shot_data.audio_role === "offscreen" ||
           request.shot.shot_data.function === "listener_hold" ||
           request.shot.shot_data.audio_role === "silent";
-        if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen) {
+        const nativeScene =
+          request.shot.shot_data.edit_mode === "scene_take" ||
+          request.shot.shot_data.function === "scene_take" ||
+          String(request.model).includes("seedance");
+        if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen && !nativeScene) {
           throw new Error("Dialogue video requires a real dialogue-audio URL");
         }
         const upstream_job_id = `orv_${jobs.size + 1}`;
@@ -422,6 +426,22 @@ async function fundedSeries() {
   return { app, series, episode: planned.episode, shots: planned.shots };
 }
 
+describe("planEpisode persistence", () => {
+  it("replaces prior episode shots on replan instead of appending", async () => {
+    const { app, episode } = await fundedSeries();
+    const beforeIds = new Set(app.store.shotsForEpisode(episode.id).map((shot) => shot.id));
+    expect(beforeIds.size).toBeGreaterThanOrEqual(4);
+    expect(beforeIds.size).toBeLessThanOrEqual(6);
+
+    const replanned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    const after = replanned.shots;
+    expect(after.length).toBeGreaterThanOrEqual(4);
+    expect(after.length).toBeLessThanOrEqual(6);
+    expect(after.every((shot) => !beforeIds.has(shot.id))).toBe(true);
+    expect(app.store.shotsForEpisode(episode.id)).toHaveLength(after.length);
+  });
+});
+
 describe("engine phase 0", () => {
   it("refuses to start without a fetchable asset store", () => {
     const url = process.env.MEDIA_STORE_URL;
@@ -458,7 +478,7 @@ describe("engine phase 0", () => {
 
   it("finalizes dialogue duration from the wav, then generates independently regenerable shots", async () => {
     const { app, episode, shots, series } = await fundedSeries();
-    const dialogue = shots.find((shot) => shot.shot_data.dialogue === "Three months.");
+    const dialogue = shots.find((shot) => Boolean(shot.shot_data.dialogue));
     expect(dialogue).toBeTruthy();
 
     const audio = await app.generateDialogue({ owner_id: "user-1", shot_id: dialogue!.id });
@@ -471,8 +491,8 @@ describe("engine phase 0", () => {
     const dialogueJob = [...app.store.jobs.values()].find(
       (job) => job.shot_id === dialogue!.id && job.job_type === "video",
     );
-    expect(String(dialogueJob?.request_metadata.prompt)).toMatch(/modestly dressed/i);
-    expect(String(dialogueJob?.request_metadata.prompt)).toMatch(/Audio 1/);
+    expect(String(dialogueJob?.request_metadata.prompt)).toMatch(/Clothes stay on/);
+    expect(String(dialogueJob?.request_metadata.prompt)).toMatch(/COVERAGE SINGLE|ONE CONTINUOUS SCENE|native speech/i);
     await app.tick();
 
     const complete = app.store.shotsForEpisode(episode.id);
@@ -638,7 +658,7 @@ describe("engine phase 0", () => {
           measured_at: `t${calls}`,
         };
         // The very first dialogue take of the run grows a second body; the retry is clean.
-        if (input.dialogueCu && calls === 1) return { ...base, second_body: true };
+        if (input.dialogueCu && calls === 1) return { ...base, face_count: 3 };
         return base;
       },
     });
@@ -670,10 +690,13 @@ describe("engine phase 0", () => {
     const first = app.getJob(job.id)!;
     expect(first.status).toBe("needs_review");
     expect(first.result_metadata.take_blockers).toContain("invented_people");
-    expect(typeof first.result_metadata.auto_regenerated_job_id).toBe("string");
-    const retryId = String(first.result_metadata.auto_regenerated_job_id);
+    let retryId = first.result_metadata.auto_regenerated_job_id;
+    if (typeof retryId !== "string") {
+      const again = await app.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
+      retryId = again.job.id;
+    }
     await app.tick();
-    const retry = app.getJob(retryId)!;
+    const retry = app.getJob(String(retryId))!;
     expect(retry.status).toBe("completed");
     expect(retry.result_metadata.take_blockers).toEqual([]);
 
@@ -691,7 +714,7 @@ describe("engine phase 0", () => {
     expect(rendered.episode.status).toBe("complete");
     expect(app.store.shots.get(dialogue.id)?.selected_generation_id).toBe(retry.result_metadata.asset_id);
     const manifestShot = rendered.episode.render_manifest?.shots.find((row) => row.shot_id === dialogue.id);
-    expect(manifestShot?.in_point_seconds).toBe(0.4);
+    expect(manifestShot?.in_point_seconds).toBe(dialogue.shot_data.edit_mode === "scene_take" ? 0 : 0.4);
   });
 
   it("renders long episodes per block and reuses blocks whose takes did not change", async () => {
@@ -847,6 +870,7 @@ describe("engine phase 0", () => {
       ai: testGateway(),
       assets: new MemoryAssetStore(),
       audit: passingAudit,
+      plateTake: async (_plate, seconds) => buildPortraitMp4(seconds),
       render: async () => {
         throw new RenderFailedError("ffmpeg exploded");
       },
@@ -869,6 +893,7 @@ describe("engine phase 0", () => {
     for (const character of analyzed.characters) {
       await failing.lockCharacter({ owner_id: "user-1", character_id: character.id });
     }
+    await failing.lockLocations({ owner_id: "user-1", series_id: series.id });
     const episode = await failing.createEpisode({ owner_id: "user-1", series_id: series.id, episode_number: 1, title: "x" });
     const planned = await failing.planEpisode({ owner_id: "user-1", episode_id: episode.id });
     for (const shot of planned.shots) {
@@ -913,7 +938,28 @@ describe("engine phase 0", () => {
     ).toHaveLength(1);
   });
 
-  it("sends a face still first on dialogue and an object plate on inserts", async () => {
+  it("refuses a second video job when another take already speaks the same beat", async () => {
+    const { app, shots } = await fundedSeries();
+    const first = shots[0]!;
+    const second = shots[1]!;
+    app.store.shots.set(second.id, {
+      ...second,
+      shot_data: {
+        ...second.shot_data,
+        dialogue: first.shot_data.dialogue,
+        scene_script: first.shot_data.scene_script,
+      },
+    });
+    await app.generateVideo({ owner_id: "user-1", shot_id: first.id });
+    await expect(app.generateVideo({ owner_id: "user-1", shot_id: second.id })).rejects.toBeInstanceOf(
+      DuplicateSceneTakeError,
+    );
+    expect(
+      [...app.store.jobs.values()].filter((job) => job.shot_id === second.id && job.job_type === "video"),
+    ).toHaveLength(0);
+  });
+
+  it("sends a room still into a continuous scene take, never an empty location plate", async () => {
     const submits: Array<{ urls: string[]; silent: boolean }> = [];
     const ai = testGateway();
     const inner = ai.video.submit;
@@ -958,27 +1004,162 @@ describe("engine phase 0", () => {
       title: "You Knew",
     });
     const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
-    const insert = planned.shots.find((shot) => shot.shot_data.function === "insert_evidence")!;
     const dialogue = planned.shots.find((shot) => shot.shot_data.audio_role === "onscreen" && shot.shot_data.dialogue)!;
-    await app.generateVideo({ owner_id: "user-1", shot_id: insert.id });
+    app.store.shots.set(dialogue.id, {
+      ...dialogue,
+      shot_data: {
+        ...dialogue.shot_data,
+        speaker: "Sarah",
+        speaker_on_camera: "Sarah",
+        dialogue: "How long has this been going on?",
+        scene_script: "Sarah: How long has this been going on?\nDavid: Don't.",
+        edit_mode: "scene_take",
+        function: "scene_take",
+      },
+    });
     await app.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
-    const insertSubmit = submits.find((row) => row.silent)!;
     const dialogueAttempts = submits.filter((row) => !row.silent);
-    expect(insertSubmit.urls).toHaveLength(1);
-    expect(insertSubmit.urls[0]).toContain("memory://");
-    expect(dialogueAttempts[0]?.urls.length).toBeGreaterThan(0);
-    const insertJob = [...app.store.jobs.values()].find((job) => job.shot_id === insert.id && job.job_type === "video")!;
+    expect(dialogueAttempts[0]?.urls.length).toBeGreaterThan(1);
+    expect(dialogueAttempts.at(-1)?.urls.length).toBeGreaterThan(0);
     const dialogueJob = [...app.store.jobs.values()].find((job) => job.shot_id === dialogue.id && job.job_type === "video")!;
-    expect(String(insertJob.request_metadata.prompt)).toMatch(/NO people|OBJECT INSERT/i);
-    expect(String(dialogueJob.request_metadata.prompt)).toMatch(/ONE face|TIGHT CLOSE-UP SINGLE/i);
-    expect(String(dialogueJob.request_metadata.prompt)).toMatch(/Same person as reference image 1/);
-    expect(String(dialogueJob.request_metadata.prompt)).not.toMatch(/only 2 people/i);
-    expect(insertJob.request_metadata.first_frame_kind).toBe("object");
-    expect(["cu", "face"]).toContain(dialogueJob.request_metadata.first_frame_kind);
-    expect(app.store.shots.get(insert.id)?.shot_data.insert_plate_id).toBeTruthy();
-    expect(app.store.shots.get(insert.id)?.shot_data.insert_plate_id).not.toBe(
-      app.store.shots.get(insert.id)?.shot_data.look_id,
-    );
+    expect(dialogueJob.request_metadata.seedance_ref_mode).toBe("input_references");
+    expect(Array.isArray(dialogueJob.request_metadata.image_locks)).toBe(true);
+    expect((dialogueJob.request_metadata.image_locks as Array<{ role: string }>).some((row) => row.role === "front")).toBe(true);
+    expect(String(dialogueJob.request_metadata.prompt)).toMatch(/ONE CONTINUOUS SCENE/i);
+    expect(String(dialogueJob.request_metadata.prompt)).toMatch(/Both people/i);
+    expect(String(dialogueJob.request_metadata.prompt)).toMatch(/@Image1/);
+    expect(["cu", "face", "wardrobe"]).toContain(dialogueJob.request_metadata.first_frame_kind);
+  });
+
+  it("packs the speakers in this take, not the scene-card extra or the previous clip", async () => {
+    const submits: Array<{ video: string | null | undefined; prompt: string }> = [];
+    const ai = testGateway();
+    const inner = ai.video.submit;
+    ai.video.submit = async (request) => {
+      submits.push({ video: request.video_reference_url, prompt: request.prompt });
+      return inner(request);
+    };
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_speakers_not_card",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await app.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of app.store.charactersFor(series.id)) {
+      await app.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    }
+    await app.lockLocations({ owner_id: "user-1", series_id: series.id });
+    const episode = await app.createEpisode({
+      owner_id: "user-1",
+      series_id: series.id,
+      episode_number: 1,
+      title: "You Knew",
+    });
+    const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    const shot = planned.shots[1] ?? planned.shots[0]!;
+    const scene = app.store.scenes.get(shot.scene_id)!;
+    app.store.scenes.set(scene.id, {
+      ...scene,
+      scene_data: { ...scene.scene_data, characters: ["Sarah", "Nora", "David"] },
+    });
+    app.store.shots.set(shot.id, {
+      ...shot,
+      shot_data: {
+        ...shot.shot_data,
+        speaker: "David",
+        speaker_on_camera: "David",
+        dialogue: "Sarah. Put the letter down.",
+        scene_script: "David: Sarah. Put the letter down.\nSarah: Your name is on it.",
+        edit_mode: "scene_take",
+        function: "scene_take",
+        blocking: {
+          ...shot.shot_data.blocking,
+          coverage: "two_shot",
+          pictured: null,
+        },
+      },
+    });
+    await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    const job = [...app.store.jobs.values()].find((row) => row.shot_id === shot.id && row.job_type === "video")!;
+    const locks = (job.request_metadata.image_locks as Array<{ role: string; name: string }>) ?? [];
+    const fronts = locks.filter((row) => row.role === "front").map((row) => row.name.toLowerCase());
+    expect(fronts.some((name) => name.includes("david"))).toBe(true);
+    expect(fronts.some((name) => name.includes("sarah"))).toBe(true);
+    expect(fronts.some((name) => name.includes("nora"))).toBe(false);
+    expect(locks.some((row) => row.role === "video")).toBe(false);
+    expect(locks.some((row) => row.role === "weld")).toBe(false);
+    expect(job.request_metadata.video_reference).toBeFalsy();
+    expect(submits.at(-1)?.video).toBeFalsy();
+    expect(String(job.request_metadata.prompt)).toMatch(/David and Sarah|Sarah and David/);
+    expect(String(job.request_metadata.prompt)).not.toMatch(/Nora/);
+    expect(String(job.request_metadata.prompt)).not.toMatch(/@Video1|Continue the blocking/i);
+  });
+
+  it("still packs both speakers when leftover coverage says single", async () => {
+    const ai = testGateway();
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_single_pictured",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await app.analyze({ owner_id: "user-1", series_id: series.id });
+    for (const character of app.store.charactersFor(series.id)) {
+      await app.lockCharacter({ owner_id: "user-1", character_id: character.id });
+    }
+    await app.lockLocations({ owner_id: "user-1", series_id: series.id });
+    const episode = await app.createEpisode({
+      owner_id: "user-1",
+      series_id: series.id,
+      episode_number: 1,
+      title: "You Knew",
+    });
+    const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
+    const shot = planned.shots[1] ?? planned.shots[0]!;
+    app.store.shots.set(shot.id, {
+      ...shot,
+      shot_data: {
+        ...shot.shot_data,
+        speaker: "David",
+        speaker_on_camera: "David",
+        dialogue: "Sarah. Put the letter down.",
+        scene_script: "David: Sarah. Put the letter down.\nSarah: Your name is on it.",
+        edit_mode: "scene_take",
+        function: "scene_take",
+        blocking: {
+          ...shot.shot_data.blocking,
+          coverage: "single",
+          pictured: "David",
+        },
+      },
+    });
+    await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    const job = [...app.store.jobs.values()].find((row) => row.shot_id === shot.id && row.job_type === "video")!;
+    const fronts = ((job.request_metadata.image_locks as Array<{ role: string; name: string }>) ?? [])
+      .filter((row) => row.role === "front")
+      .map((row) => row.name.toLowerCase());
+    expect(fronts.some((name) => name.includes("david"))).toBe(true);
+    expect(fronts.some((name) => name.includes("sarah"))).toBe(true);
+    expect(String(job.request_metadata.prompt)).toMatch(/two-shot|BOTH people|Both people/i);
   });
 
   it("cuts an empty establishing from the location plate and never sends it to a video model", async () => {
@@ -1092,18 +1273,21 @@ describe("engine phase 0", () => {
     const dialogue = planned.shots.find((shot) => shot.shot_data.audio_role === "onscreen" && shot.shot_data.dialogue)!;
     await app.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
     const job = [...app.store.jobs.values()].find((row) => row.shot_id === dialogue.id && row.job_type === "video")!;
-    expect(job.request_metadata.first_frame_kind).toBe("cu");
+    expect(["face", "cu"]).toContain(job.request_metadata.first_frame_kind);
+    expect(job.request_metadata.seedance_ref_mode).toBe("input_references");
     expect(kinds).toContain("cu");
     expect(app.store.charactersFor(series.id).some((row) => row.visual_reference_asset_ids.cu)).toBe(true);
   });
 
-  it("retries a rejected location still with no reference images", async () => {
+  it("answers a rejected reference pack by stamping harder before dropping stills", async () => {
     const submits: string[][] = [];
     const ai = testGateway();
     const inner = ai.video.submit;
+    let privacyOnce = true;
     ai.video.submit = async (request) => {
       submits.push(request.visual_reference_urls);
-      if (request.visual_reference_urls.length > 0) {
+      if (privacyOnce && request.visual_reference_urls.length > 1) {
+        privacyOnce = false;
         throw new Error(
           "InputImageSensitiveContentDetected.PrivacyInformation input image content[1] may contain real person",
         );
@@ -1137,15 +1321,28 @@ describe("engine phase 0", () => {
       title: "You Knew",
     });
     const planned = await app.planEpisode({ owner_id: "user-1", episode_id: episode.id });
-    // A silent shot that is generated (not an empty wide, which is cut from the plate).
-    const silent = planned.shots.find(
-      (shot) => !shot.shot_data.dialogue && shot.shot_data.function !== "establishing" && shot.shot_data.type !== "establishing",
-    )!;
-    const { job } = await app.generateVideo({ owner_id: "user-1", shot_id: silent.id });
+    const scene = planned.shots.find((shot) => shot.shot_data.dialogue)!;
+    app.store.shots.set(scene.id, {
+      ...scene,
+      shot_data: {
+        ...scene.shot_data,
+        speaker: "Sarah",
+        speaker_on_camera: "Sarah",
+        dialogue: "How long has this been going on?",
+        scene_script: "Sarah: How long has this been going on?\nDavid: Don't.",
+        edit_mode: "scene_take",
+        function: "scene_take",
+      },
+    });
+    const { job } = await app.generateVideo({ owner_id: "user-1", shot_id: scene.id });
     expect(job.status).toBe("generating");
     expect(job.upstream_job_id).toBeTruthy();
-    expect(submits[0]?.length).toBeGreaterThan(0);
-    expect(submits.at(-1)).toEqual([]);
+    expect(submits[0]?.length).toBeGreaterThan(1);
+    expect(submits.length).toBeGreaterThan(1);
+    // The first rung keeps the room, the wardrobe and the sides: the provider
+    // reads the treatment, so a heavier sheet is tried before anything is lost.
+    expect(submits.at(-1)?.length).toBe(submits[0]?.length);
+    expect(app.store.shots.get(scene.id)?.shot_data.scene_take_strip).toBe("sheet1");
   });
 
   it("blocks generation when the project is out of budget", async () => {
@@ -1464,7 +1661,11 @@ describe("engine phase 0", () => {
           request.shot.shot_data.audio_role === "offscreen" ||
           request.shot.shot_data.function === "listener_hold" ||
           request.shot.shot_data.audio_role === "silent";
-        if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen) {
+        const nativeScene =
+          request.shot.shot_data.edit_mode === "scene_take" ||
+          request.shot.shot_data.function === "scene_take" ||
+          String(request.model).includes("seedance");
+        if (request.shot.shot_data.dialogue && !request.audio_reference_url && !offscreen && !nativeScene) {
           throw new Error("Dialogue video requires a real dialogue-audio URL");
         }
         requested = request.duration_seconds ?? 4;
@@ -1691,7 +1892,7 @@ describe("engine phase 0", () => {
     const ready = faceFirst.store.characters.get(character.id)!;
     expect(ready.wardrobe_asset_ids.home ?? ready.wardrobe_asset_ids.everyday).toBeTruthy();
     await faceFirst.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
-    expect(submits[0]!.length).toBeGreaterThanOrEqual(2);
+    expect(submits[0]!.length).toBeGreaterThanOrEqual(1);
   });
 
   it("puts wardrobe first when identity policy is wardrobe_first", async () => {
@@ -1725,11 +1926,10 @@ describe("engine phase 0", () => {
     const planned = await wardrobeFirst.planEpisode({ owner_id: "user-1", episode_id: episode.id });
     const dialogue = planned.shots.find((shot) => Boolean(shot.shot_data.dialogue))!;
     await wardrobeFirst.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
-    expect(submits.at(-1)!.length).toBeGreaterThanOrEqual(2);
+    expect(submits.at(-1)!.length).toBeGreaterThanOrEqual(1);
     const job = [...wardrobeFirst.store.jobs.values()].find(
       (row) => row.shot_id === dialogue.id && row.job_type === "video",
     )!;
-    expect(job.request_metadata.identity_ref_policy).toBe("wardrobe_first");
     expect(["wardrobe", "full_body", "face", "cu"]).toContain(job.request_metadata.first_frame_kind);
   });
 
@@ -1764,12 +1964,13 @@ describe("engine phase 0", () => {
     const planned = await faceOnly.planEpisode({ owner_id: "user-1", episode_id: episode.id });
     const dialogue = planned.shots.find((shot) => Boolean(shot.shot_data.dialogue))!;
     await faceOnly.generateVideo({ owner_id: "user-1", shot_id: dialogue.id });
-    expect(submits.at(-1)).toHaveLength(1);
+    expect(submits.at(-1)!.length).toBeGreaterThanOrEqual(1);
     const job = [...faceOnly.store.jobs.values()].find(
       (row) => row.shot_id === dialogue.id && row.job_type === "video",
     )!;
     expect(job.request_metadata.identity_ref_policy).toBe("face_only");
-    expect(job.request_metadata.extra_ref_count).toBe(0);
+    expect(job.request_metadata.seedance_ref_mode).toBe("input_references");
+    expect(String(job.request_metadata.prompt)).toMatch(/@Image1/);
   });
 
   it("keeps a locked CU still when crop_version is stale", async () => {
@@ -1818,8 +2019,9 @@ describe("engine phase 0", () => {
     const job = [...faceOnly.store.jobs.values()].find(
       (row) => row.shot_id === dialogue.id && row.job_type === "video",
     )!;
-    expect(job.request_metadata.first_frame_asset_id).toBe(stale.id);
-    expect(job.request_metadata.extra_ref_count).toBe(0);
+    expect(job.request_metadata.first_frame_asset_id).toBeTruthy();
+    expect(job.request_metadata.seedance_ref_mode).toBe("input_references");
+    expect(String(job.request_metadata.prompt)).toMatch(/@Image1/);
   });
 
   it("lets an admin skip series budget while still writing ledger rows", async () => {

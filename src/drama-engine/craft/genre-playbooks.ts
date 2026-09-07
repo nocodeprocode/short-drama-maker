@@ -29,7 +29,7 @@ export const GENRE_PLAYBOOKS: Record<GenreId, GenrePlaybook> = {
       "Accidental competence reveal",
       "Rival/ex plants shame",
       "E5 reprice — he’s using her or she’s the heir",
-      "Almost-kiss interrupted",
+      "A confession is interrupted",
       "Pregnancy/heir math or leaked contract",
       "Banquet counter-shame (planted receipt)",
       "Choice: love vs name",

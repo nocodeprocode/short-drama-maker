@@ -1,6 +1,9 @@
 import { foldSpoken, wordErrorRate } from "../media/qc.ts";
 import type { Shot } from "../domain.ts";
+import { spokenTextFromSceneScript } from "../../drama-engine/types/dialogue.ts";
 import { WER_BLOCK, WER_WARN } from "../../drama-engine/types/qc-drama.ts";
+
+export { spokenTextFromSceneScript };
 
 export const DIALOGUE_STT_SAMPLE_EVERY = 1;
 
@@ -20,4 +23,10 @@ export function dialogueWerReasons(expected: string, transcript: string): string
   if (wer > WER_BLOCK) return ["transcript_wer"];
   if (wer > WER_WARN) return ["transcript_wer_warn"];
   return [];
+}
+
+export function expectedSpokenText(shot: Shot): string {
+  const script = (typeof shot.shot_data.scene_script === "string" ? shot.shot_data.scene_script.trim() : "");
+  if (script) return spokenTextFromSceneScript(script);
+  return shot.shot_data.dialogue?.trim() ?? "";
 }

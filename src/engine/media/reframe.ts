@@ -12,7 +12,7 @@ import { ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
 export type DeliverableAspect = "9:16" | "1:1" | "16:9";
 
 export const DELIVERABLE_SIZES: Record<DeliverableAspect, { width: number; height: number }> = {
-  "9:16": { width: 720, height: 1280 },
+  "9:16": { width: 1080, height: 1920 },
   "1:1": { width: 1080, height: 1080 },
   "16:9": { width: 1920, height: 1080 },
 };
@@ -39,9 +39,9 @@ export function reframeFilter(aspect: DeliverableAspect): string {
   const size = DELIVERABLE_SIZES[aspect];
   if (aspect === "9:16") return `scale=${size.width}:${size.height},format=yuv420p`;
   if (aspect === "1:1") {
-    // 720x1280 → crop rows ~342–1062: the face band (CU eyes/mouth ~30–55%)
+    // 1080x1920 → crop rows ~513–1593: the face band (CU eyes/mouth ~30–55%)
     // and the caption band (70–82%) both stay inside the square.
-    return `crop=720:720:0:(ih-720)*0.61,scale=${size.width}:${size.height}:flags=lanczos,format=yuv420p`;
+    return `crop=iw:iw:0:(ih-iw)*0.61,scale=${size.width}:${size.height}:flags=lanczos,format=yuv420p`;
   }
   return (
     `split[bg][fg];` +

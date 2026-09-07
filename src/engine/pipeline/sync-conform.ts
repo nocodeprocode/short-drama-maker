@@ -38,6 +38,7 @@ export function conformCorrections(
     analysis: TakeAnalysis | null | undefined;
     lane: "native" | "tts" | "silent" | null | undefined;
     takeSeconds: number | null;
+    sceneTake?: boolean;
   }>,
 ): SyncCorrection[] {
   const byId = new Map(shots.map((shot) => [shot.id, shot]));
@@ -45,7 +46,7 @@ export function conformCorrections(
   for (const line of audit.lines) {
     if (line.pass) continue;
     const shot = byId.get(line.shot_id);
-    if (!shot || !shot.analysis || shot.lane !== "native") continue;
+    if (!shot || !shot.analysis || shot.lane !== "native" || shot.sceneTake) continue;
     const passes = shot.analysis.conform?.passes ?? 0;
     if (passes >= CONFORM_MAX_PASSES) continue;
 
@@ -118,7 +119,7 @@ export function conformCorrections(
 export function onlyConformable(audit: MuxAudit, corrections: SyncCorrection[]): boolean {
   if (corrections.length === 0) return false;
   return audit.reasons.every((reason) => {
-    if (reason === "loudness_off_target" || reason === "true_peak_over") return true;
+    if (reason === "loudness_off_target" || reason === "true_peak_over" || reason === "final_duration_mismatch") return true;
     const [kind] = reason.split(":");
     return kind === "sync" || kind === "room_morph";
   });

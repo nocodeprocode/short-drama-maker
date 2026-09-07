@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "../domain.ts";
-import { dialogueMatchesTranscript, shouldSampleDialogueStt } from "./stt-qc.ts";
+import { dialogueMatchesTranscript, expectedSpokenText, shouldSampleDialogueStt, spokenTextFromSceneScript } from "./stt-qc.ts";
 
 function shot(id: string, dialogue: string | null, status: Shot["status"] = "generating"): Shot {
   return {
@@ -53,5 +53,19 @@ describe("sample STT QC", () => {
       true,
     );
     expect(dialogueMatchesTranscript("Leave.", "Stay.")).toBe(false);
+  });
+
+  it("strips speaker cues and stage business from a scene script", () => {
+    expect(
+      spokenTextFromSceneScript(
+        "MARA: Petra, where are the scissors — third drawer is stuck.\nPETRA: [opens drawer] There's a pair in the second drawer.",
+      ),
+    ).toBe("Petra, where are the scissors — third drawer is stuck. There's a pair in the second drawer.");
+  });
+
+  it("uses the scene script, not the hook line, as expected speech", () => {
+    const row = shot("s1", "Petra, where are the scissors?");
+    row.shot_data.scene_script = "MARA: Petra, where are the scissors?\nPETRA: Second drawer.";
+    expect(expectedSpokenText(row)).toBe("Petra, where are the scissors? Second drawer.");
   });
 });

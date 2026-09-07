@@ -264,9 +264,13 @@ export async function loadSeriesStore(
   if (shotsRes.error) throw new Error(shotsRes.error.message);
   for (const shot of (shotsRes.data ?? []) as ShotRow[]) store.shots.set(shot.id, shot);
 
+  const knownSceneIds = new Set(scenes.map((row) => row.id));
   for (const job of (jobsRes.data ?? []) as JobRow[]) {
     store.jobs.set(job.id, {
       ...job,
+      // A job whose scene was replaced by a replan must not re-assert the old
+      // scene id on commit (the FK is gone). The shot id is what matters.
+      scene_id: job.scene_id && knownSceneIds.has(job.scene_id) ? job.scene_id : null,
       estimated_cost: Number(job.estimated_cost),
       actual_cost: job.actual_cost == null ? null : Number(job.actual_cost),
     });
@@ -364,10 +368,21 @@ export async function commitSeriesStore(
     if (error) throw new Error(error.message);
   }
 
-  const episodes = store.episodesFor(seriesId);
+  const episodes = store.episodesFor(seriesId).map((episode) => ({
+    ...episode,
+    poster_tone: episode.poster_tone ?? "g1",
+    render_version: episode.render_version ?? 0,
+  }));
   if (episodes.length > 0) {
     const { error } = await client.from("episodes").upsert(episodes);
     if (error) throw new Error(error.message);
+  }
+
+  if (store.deletedSceneIds.size > 0) {
+    const removed = [...store.deletedSceneIds];
+    const { error } = await client.from("scenes").delete().in("id", removed);
+    if (error) throw new Error(error.message);
+    store.deletedSceneIds.clear();
   }
 
   const scenes = episodes.flatMap((episode) => store.scenesFor(episode.id));
@@ -382,13 +397,33 @@ export async function commitSeriesStore(
     if (error) throw new Error(error.message);
   }
 
-  const jobs = [...store.jobs.values()].filter((job) => job.series_id === seriesId);
+  // A replan deletes the old scenes and shots, but the jobs that shot them stay
+  // in the ledger. Their scene and shot ids are dangling references now, so they
+  // are written as orphans rather than failing the whole commit on the FK.
+  const liveSceneIds = new Set(scenes.map((scene) => scene.id));
+  const liveShotIds = new Set(shots.map((shot) => shot.id));
+  const jobs = [...store.jobs.values()]
+    .filter((job) => job.series_id === seriesId)
+    .map((job) => ({
+      ...job,
+      scene_id: job.scene_id && liveSceneIds.has(job.scene_id) ? job.scene_id : null,
+      shot_id: job.shot_id && liveShotIds.has(job.shot_id) ? job.shot_id : null,
+    }));
   if (jobs.length > 0) {
     const { error } = await client.from("generation_jobs").upsert(jobs);
     if (error) throw new Error(error.message);
   }
 
-  const ledger = store.ledger.filter((row) => row.series_id === seriesId);
+  // Money already spent survives the job that spent it: a dropped render job
+  // leaves its reserve and settle behind, so the entry keeps the amount and
+  // loses the link rather than failing the commit.
+  const liveJobIds = new Set(jobs.map((job) => job.id));
+  const ledger = store.ledger
+    .filter((row) => row.series_id === seriesId)
+    .map((row) => ({
+      ...row,
+      generation_job_id: row.generation_job_id && liveJobIds.has(row.generation_job_id) ? row.generation_job_id : null,
+    }));
   if (ledger.length > 0) {
     const { error } = await client.from("project_ledger").upsert(ledger);
     if (error) throw new Error(error.message);

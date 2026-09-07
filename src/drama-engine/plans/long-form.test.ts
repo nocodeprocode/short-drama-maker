@@ -71,14 +71,14 @@ const BIBLE: StoryBible = {
 const CAST = BIBLE.characters.map((row) => row.name);
 
 describe("shotBudget", () => {
-  it("keeps 8–12 for a 60s chapter and a legal long range for 15 min", () => {
-    expect(shotBudget(60)).toEqual({ min_shots: 8, max_shots: 12 });
+  it("keeps 4–6 scene takes for a 90s chapter and a legal long range for 15 min", () => {
+    expect(shotBudget(60)).toEqual({ min_shots: 4, max_shots: 6 });
     const long = shotBudget(900);
     expect(long.min_shots).toBeGreaterThanOrEqual(120);
     expect(long.max_shots).toBeLessThanOrEqual(200);
     expect(long.min_shots).toBeLessThan(long.max_shots);
-    expect(LENGTH_BUDGETS["60_90"].min_shots).toBe(8);
-    expect(LENGTH_BUDGETS["60_90"].max_shots).toBe(12);
+    expect(LENGTH_BUDGETS["60_90"].min_shots).toBe(4);
+    expect(LENGTH_BUDGETS["60_90"].max_shots).toBe(6);
     expect(LENGTH_BUDGETS["900_1080"].min_shots).toBe(120);
     expect(LENGTH_BUDGETS["900_1080"].max_shots).toBe(200);
     expect(lengthFromSeconds(900)).toBe("900_1080");
@@ -161,10 +161,10 @@ describe("planLongFormEpisode with a writer", () => {
 });
 
 describe("short-plan fixture", () => {
-  it("still budgets 8–12 for 60s", () => {
+  it("still budgets 4–6 scene takes for 60–90s", () => {
     const outline = synthesizeLongOutline({ bible: BIBLE });
     expect(outline.blocks.length).toBeGreaterThanOrEqual(12);
-    expect(shotBudget(60).min_shots).toBe(8);
-    expect(shotBudget(60).max_shots).toBe(12);
+    expect(shotBudget(60).min_shots).toBe(4);
+    expect(shotBudget(60).max_shots).toBe(6);
   });
 });

@@ -232,11 +232,11 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST" && path === "/series") {
       const body = await req.json();
-      const sku = body.sku ?? body.target_episode_count ?? 60;
-      if (sku != null && !isSeasonSku(sku) && Number(sku) !== 60) {
+      const sku = body.sku ?? body.target_episode_count ?? 2;
+      if (sku != null && !isSeasonSku(sku)) {
         return json({ error: "sku must be 2|12|24|45|60" }, 400);
       }
-      const target = isSeasonSku(sku) ? sku : 60;
+      const target = isSeasonSku(sku) ? sku : 2;
       const { data, error } = await supabase
         .from("series")
         .insert({

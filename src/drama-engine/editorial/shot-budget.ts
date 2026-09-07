@@ -1,7 +1,7 @@
 import type { EpisodePlan, ShotPlanScene } from "../../engine/domain.ts";
 import type { LengthBudget } from "../types/pacing.ts";
 import { DIALOGUE_MAX_WORDS, wordCount } from "../types/dialogue.ts";
-import type { AudioRole, EditMode, ShotFunction } from "../types/editorial.ts";
+import { isSceneTake, type AudioRole, type EditMode, type ShotFunction } from "../types/editorial.ts";
 
 type PlanShot = ShotPlanScene["shots"][number];
 
@@ -41,6 +41,13 @@ export function mergeTinyShots(shots: PlanShot[], budget: LengthBudget): PlanSho
 export function splitLongShots(shots: PlanShot[], budget: LengthBudget): PlanShot[] {
   const out: PlanShot[] = [];
   for (const shot of shots) {
+    if (isSceneTake(shot)) {
+      out.push({
+        ...shot,
+        duration_hint_seconds: clampDuration(shot.duration_hint_seconds, budget, true),
+      });
+      continue;
+    }
     const tooLong =
       shot.duration_hint_seconds > budget.max_dialogue_s ||
       (shot.dialogue != null && wordCount(shot.dialogue) > DIALOGUE_MAX_WORDS);
@@ -138,17 +145,26 @@ export function collapseToShotBudget(shots: PlanShot[], budget: LengthBudget): P
       break;
     }
     if (changed) continue;
-    const dropAt = out.findIndex(
-      (shot, index) =>
-        index > 0 &&
-        index < out.length - 1 &&
-        !shot.dialogue &&
-        shot.function !== "insert_evidence" &&
-        shot.function !== "hook_cu" &&
-        shot.function !== "button_cu" &&
-        shot.function !== "establishing" &&
-        shot.function !== "stacked_two",
-    );
+    const dropAt = out.findIndex((shot, index) => {
+      if (index <= 0 || index >= out.length - 1) return false;
+      if (shot.dialogue) return false;
+      if (
+        shot.function === "insert_evidence" ||
+        shot.function === "phone_ui" ||
+        shot.function === "hook_cu" ||
+        shot.function === "button_cu" ||
+        shot.function === "establishing" ||
+        shot.function === "stacked_two"
+      ) {
+        return false;
+      }
+      const prev = out[index - 1]!;
+      const next = out[index + 1]!;
+      const prevFace = (prev.speaker_on_camera ?? prev.speaker)?.split(/\s+/)[0]?.toLowerCase();
+      const nextFace = (next.speaker_on_camera ?? next.speaker)?.split(/\s+/)[0]?.toLowerCase();
+      if (prevFace && nextFace && prevFace === nextFace) return false;
+      return true;
+    });
     if (dropAt >= 0) {
       out.splice(dropAt, 1);
       continue;

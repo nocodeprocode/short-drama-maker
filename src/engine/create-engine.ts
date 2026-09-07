@@ -26,7 +26,7 @@ import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
 import { defaultCraftForShot } from "../drama-engine/editorial/shot-budget.ts";
-import { allowsTwoShot, isObjectInsert } from "../drama-engine/types/editorial.ts";
+import { allowsTwoShot, expectedFacesFor, isObjectInsert, isSceneTake } from "../drama-engine/types/editorial.ts";
 import type {
   Actor,
   ActorSource,
@@ -34,6 +34,7 @@ import type {
   AppearanceProfile,
   Character,
   Episode,
+  EpisodePlan,
   GenerationJob,
   LedgerEntry,
   ModerationCheckpoint,
@@ -43,13 +44,16 @@ import type {
   SeasonSku,
   Series,
   Shot,
+  ShotData,
   StoryBible,
   VisualReferenceKind,
   VoiceCandidate,
 } from "./domain.ts";
 import { extractAudioMp3 } from "./media/extract-audio.ts";
 import { alignVoicePrompt } from "./ai/voice-sex.ts";
-import { shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
+import { sceneTakesShareSpokenBeat } from "../drama-engine/types/dialogue.ts";
+import { acceptPolishedTalk } from "../drama-engine/types/talk.ts";
+import { expectedSpokenText, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
 import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
 import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
 import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
@@ -66,11 +70,35 @@ import {
 import { cropStillToCu, CU_CROP_VERSION, firstFrameKind, firstFrameQc } from "./media/face-crop.ts";
 import { identityDrifted, meanRgb } from "./media/identity-drift.ts";
 import { analyzeTake, pickBestTake, scoreTake, type TakeAnalysis, type TakeVerdict } from "./pipeline/take-analysis.ts";
-import { runIdentityStage, shrinkReference } from "./pipeline/identity-check.ts";
+import { runIdentityStage, shrinkReference, sampleJpegFrames } from "./pipeline/identity-check.ts";
+import {
+  BLOCKING_STILL_IDENTITY_MIN,
+  BLOCKING_STILL_KIND,
+  BLOCKING_STILL_MODE,
+  blockingFramingFor,
+  blockingStillKey,
+  selectShotRefs,
+  shouldUseBlockingStill,
+} from "./pipeline/blocking-still.ts";
+import { stampCharacterSheet, type SheetRole, type SheetStrength } from "./pipeline/character-sheet.ts";
+import {
+  applySceneTakeStrip,
+  buildSceneTakeRefs,
+  SCENE_TAKE_PRIVACY_STRIPS,
+  sheetStrengthFor,
+  stripRank,
+  strongestStrip,
+  type SceneTakeLock,
+  type SceneTakeStrip,
+} from "./pipeline/scene-take-refs.ts";
+import { inferPropKind, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockText, propKey, type PropKind } from "./pipeline/prop-bible.ts";
+import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pipeline/last-frame.ts";
 import { wordErrorRate } from "./media/qc.ts";
-import { evidenceMotif, objectPlateCamera } from "../drama-engine/craft/prompt-fragments.ts";
+import { placeLockClause, placePlateRetry } from "../drama-engine/craft/place.ts";
+import { evidenceMotif, identityLockLine, NO_TEXT_CLAUSE, objectPlateCamera, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
+import { cueRows, cueText, exitsIn, peopleInTake } from "../drama-engine/types/continuity.ts";
 import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
-import { isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
+import { assertSeasonBible, buildSeasonBible, isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
 import { failoverRoute } from "./ai/router.ts";
 import {
   orderIdentityRefs,
@@ -165,10 +193,19 @@ export class RenderIncompleteError extends Error {
   }
 }
 
+export class DuplicateSceneTakeError extends Error {
+  constructor(readonly shotId: string, readonly alreadyShotId: string) {
+    super(
+      `Duplicate scene take: ${shotId} restates ${alreadyShotId}. Not submitting a second video job.`,
+    );
+    this.name = "DuplicateSceneTakeError";
+  }
+}
+
 /** Below this many takes an episode renders in one pass; above it, per block with reuse. */
 export const BLOCK_RENDER_MIN_SHOTS = 24;
 /** Bump when the mixer's output for the same inputs changes, so cached blocks re-render. */
-export const MIXER_VERSION = 3;
+export const MIXER_VERSION = 4;
 /** Image attempts for an empty location plate before the lock fails loudly. */
 export const LOCATION_PLATE_ATTEMPTS = 4;
 
@@ -504,6 +541,8 @@ export function createEngine(deps: EngineDeps = {}) {
       title: series.title,
       idea: series.description,
     });
+    if (!bible.season) bible.season = buildSeasonBible(bible);
+    bible.season = assertSeasonBible(bible.season);
     if (bible.characters.length < 3 || bible.characters.length > 8) {
       throw new Error("Story bible needs 3–8 named roles (Engine / Wall / Witness / Nuke)");
     }
@@ -1173,11 +1212,26 @@ export function createEngine(deps: EngineDeps = {}) {
     owner_id: string;
     character_id: string;
     voice_candidate_id?: string;
+    /**
+     * Face only. Scene takes speak natively through the video model, so a TTS
+     * voice is not part of the lock for that SKU; the voice can be added later
+     * when a TTS lane (voice over) needs it.
+     */
+    face_only?: boolean;
   }) {
     const character = requireCharacter(input.character_id, input.owner_id);
-    if (character.locked && character.voice_profile.elevenlabs_voice_id) return character;
+    if (character.locked && (character.voice_profile.elevenlabs_voice_id || input.face_only)) return character;
     if (Object.keys(faceRefsFor(character)).length === 0) {
       await generateAppearance(input);
+    }
+    if (input.face_only) {
+      // The wardrobe states are part of the face lock for scene takes: the
+      // person in this clothing, in that clothing, matched to the rooms.
+      await generateWardrobe({ owner_id: input.owner_id, character_id: character.id });
+      const latest = store.characters.get(character.id)!;
+      const locked: Character = { ...latest, locked: true, updated_at: iso(clock) };
+      store.characters.set(locked.id, locked);
+      return locked;
     }
     const reference = await existingVoiceReference(store.characters.get(character.id)!);
     if (reference && typeof reference.metadata.elevenlabs_voice_id === "string") {
@@ -1269,10 +1323,9 @@ export function createEngine(deps: EngineDeps = {}) {
           characterName: location,
           description:
             attempt === 0
-              ? `Cinematic Hollywood establishing still of ${location}: banquet hall, estate lobby, castle corridor, or night kitchen as the name implies. One locked key light and grade. ` +
-                `EMPTY ROOM. NO people, NO faces, NO extras, NO bodies, NO clothing on a person, no silhouettes, no figures with their back to camera, no reflections of people, no portraits or photographs of people on the walls.`
-              : `Unoccupied interior, architectural photography for a design magazine: ${physical}. Vacant, nobody present, no staff, no figures, no silhouettes, no reflections of people, no portraits or photographs of people on the walls, no mannequins. ` +
-                `Wide 9:16 frame, one key light and grade, cinematic colour. The room is empty and still.`,
+              ? `Cinematic establishing still of ${location}, exactly as its description implies — its time of day, weather, and materials. One locked key light and grade. ` +
+                `${placeLockClause(location)} EMPTY. NO people, NO faces, NO extras, NO bodies, no silhouettes, no figures with their back to camera.`
+              : `${placePlateRetry(location, physical)} Wide 9:16 frame, one key light and grade, cinematic colour. Empty and still.`,
           kind: "location",
         });
         image = candidate;
@@ -1284,7 +1337,14 @@ export function createEngine(deps: EngineDeps = {}) {
           const small = await shrinkReference(candidate.bytes);
           const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
           peoplePresent = described.people_present;
-          notes = { lighting_lock: described.lighting_lock, palette: described.palette, key_light: described.key_light, dressing: described.dressing, people_present: described.people_present };
+          notes = {
+            lighting_lock: described.lighting_lock,
+            palette: described.palette,
+            key_light: described.key_light,
+            dressing: described.dressing,
+            people_present: described.people_present,
+            ...(described.geometry ? { geometry: described.geometry } : {}),
+          };
           if (!described.people_present) break;
         } catch {
           break;
@@ -1307,6 +1367,7 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     const next = { ...series, location_refs: refs };
     store.series.set(series.id, next);
+    await lockProps({ owner_id: input.owner_id, series_id: series.id });
     completeSyncJob(job, job.estimated_cost, { location_refs: refs });
     return next;
   }
@@ -1325,12 +1386,50 @@ export function createEngine(deps: EngineDeps = {}) {
       title: input.title,
       script: "",
       status: "draft",
+      poster_tone: "g1",
+      render_version: 0,
       render_manifest: null,
       created_at: iso(clock),
       updated_at: iso(clock),
     };
     store.episodes.set(episode.id, episode);
     return episode;
+  }
+
+  /**
+   * Copywriter pass: the planner writes the mechanism, the polish makes every
+   * cue one short on-the-nose sentence. Speakers, beats, entrances and exits
+   * survive; a rewrite that loses them or makes the talk more staged is thrown away.
+   */
+  async function polishScenePlan(plan: EpisodePlan, bible: StoryBible): Promise<EpisodePlan> {
+    if (!ai.llm.polishSceneDialogue) return plan;
+    const flat = plan.scenes.flatMap((scene) => scene.shots);
+    const takes = flat
+      .map((shot, index) => ({ shot, index }))
+      .filter(({ shot }) => isSceneTake(shot) && typeof shot.scene_script === "string" && shot.scene_script.trim());
+    if (!takes.length) return plan;
+    let polished: Array<{ index: number; scene_script: string }>;
+    try {
+      polished = await ai.llm.polishSceneDialogue({
+        bible,
+        takes: takes.map(({ shot, index }) => ({ index, scene_script: shot.scene_script!, staging: shot.blocking?.staging ?? null })),
+      });
+    } catch {
+      return plan;
+    }
+    const byIndex = new Map(polished.map((row) => [row.index, row.scene_script]));
+    for (const { shot, index } of takes) {
+      const next = byIndex.get(index);
+      if (typeof next !== "string" || !next.trim()) continue;
+      const before = speakersForSceneTake({ sceneScript: shot.scene_script });
+      const after = speakersForSceneTake({ sceneScript: next });
+      const keptExits = exitsIn(shot.scene_script).every((name) => exitsIn(next).some((row) => sameName(row, name)));
+      if (!sameSpeakerCast(before, after) || !keptExits || !acceptPolishedTalk(shot.scene_script ?? "", next)) continue;
+      shot.scene_script = next;
+      const first = cueRows(next)[0];
+      if (first) shot.dialogue = cueText(first);
+    }
+    return plan;
   }
 
   async function planEpisode(input: {
@@ -1354,8 +1453,11 @@ export function createEngine(deps: EngineDeps = {}) {
       });
     }
     const cast = store.charactersFor(series.id);
-    if (cast.length === 0 || cast.some((character) => !character.locked || !character.voice_profile.elevenlabs_voice_id)) {
-      throw new Error("Lock every character face and voice before planEpisode.");
+    // The scene-take SKU speaks natively through the video model; a TTS voice is
+    // only required where a TTS lane exists (singles, voice over).
+    const needsVoice = length !== "60_90";
+    if (cast.length === 0 || cast.some((character) => !character.locked || (needsVoice && !character.voice_profile.elevenlabs_voice_id))) {
+      throw new Error(needsVoice ? "Lock every character face and voice before planEpisode." : "Lock every character face before planEpisode.");
     }
     const planned = isLongFormLength(length)
       ? await planLongFormEpisode({
@@ -1376,9 +1478,18 @@ export function createEngine(deps: EngineDeps = {}) {
         });
     const namedCast = cast.map((character) => character.name);
     const ledger = ledgerForEpisode(episode.episode_number);
+    const repairedFirst = dramaHooks.repairEpisodePlan({
+      plan: planned,
+      bible,
+      length,
+      namedCast,
+      episodeNumber: episode.episode_number,
+      ...ledger,
+    });
+    const repairedOnce = await polishScenePlan(repairedFirst, bible);
     const plan = dramaHooks.assertEpisodePlan({
       plan: dramaHooks.repairEpisodePlan({
-        plan: planned,
+        plan: repairedOnce,
         bible,
         length,
         namedCast,
@@ -1392,6 +1503,13 @@ export function createEngine(deps: EngineDeps = {}) {
       ...ledger,
     });
     const flat = plan.scenes.flatMap((scene) => scene.shots);
+    const budget = dramaHooks.lengthBudget(length);
+    if (flat.length < budget.min_shots || flat.length > budget.max_shots) {
+      throw new Error(
+        `Refusing to persist ${flat.length} shots for ${length} (need ${budget.min_shots}–${budget.max_shots})`,
+      );
+    }
+    store.purgeEpisodePlan(episode.id);
     for (const [sceneIndex, scenePlan] of plan.scenes.entries()) {
       const location = pinLocationToBible(scenePlan.location, bible.locations ?? []) ?? scenePlan.location;
       const scene = {
@@ -1432,19 +1550,23 @@ export function createEngine(deps: EngineDeps = {}) {
             emotion: shotPlan.emotion,
             delivery: shotPlan.delivery,
             pace: shotPlan.pace,
-            camera: dramaHooks.sanitizeCamera(shotPlan.camera),
+            camera: isSceneTake(shotPlan)
+              ? dramaHooks.sanitizeCamera(shotPlan.camera, { single: false, lockedTake: false })
+              : dramaHooks.sanitizeCamera(shotPlan.camera),
             mouth_visibility_required: shotPlan.mouth_visibility_required,
             duration_hint_seconds: shotPlan.duration_hint_seconds,
             duration_seconds: null,
             dialogue_audio_asset_id: null,
             dialogue_alignment_asset_id: null,
             hero: Boolean(shotPlan.hero),
-            edit_mode: craft.edit_mode,
-            audio_role: craft.audio_role,
+            edit_mode: shotPlan.edit_mode ?? craft.edit_mode,
+            scene_script: shotPlan.scene_script ?? null,
+            heard_audio: isSceneTake(shotPlan) ? "native" : undefined,
+            audio_role: shotPlan.audio_role ?? craft.audio_role,
             speaker_on_camera: shotPlan.speaker_on_camera ?? (craft.audio_role === "offscreen" ? null : shotPlan.speaker),
             speakers_off_camera: shotPlan.speakers_off_camera ?? [],
-            eyeline: craft.eyeline,
-            function: craft.function,
+            eyeline: shotPlan.eyeline ?? craft.eyeline,
+            function: shotPlan.function ?? craft.function,
             block_index: scenePlan.block_index ?? shotPlan.block_index,
             look_id: lookId,
             silence_license: shotPlan.silence_license ?? null,
@@ -1452,6 +1574,7 @@ export function createEngine(deps: EngineDeps = {}) {
             camera_move: shotPlan.camera_move ?? null,
             comic_sting: Boolean(shotPlan.comic_sting),
             sfx: shotPlan.sfx ?? null,
+            blocking: shotPlan.blocking,
           },
         };
         store.shots.set(shot.id, shot);
@@ -1611,6 +1734,32 @@ export function createEngine(deps: EngineDeps = {}) {
     settle(current, actual);
   }
 
+  function sceneTakeAlreadyPaid(other: Shot): boolean {
+    if (other.selected_generation_id) return true;
+    return [...store.jobs.values()].some(
+      (job) =>
+        job.shot_id === other.id &&
+        job.job_type === "video" &&
+        (isActive(job.status) || job.status === "completed" || job.status === "needs_review"),
+    );
+  }
+
+  function assertUniqueSceneTakeSpend(current: Shot, episodeId: string) {
+    const spoken = Boolean(current.shot_data.dialogue?.trim());
+    if (!spoken && !isSceneTake(current.shot_data)) return;
+    for (const other of store.shotsForEpisode(episodeId)) {
+      if (other.id === current.id) continue;
+      const sameTake = isSceneTake(current.shot_data) && isSceneTake(other.shot_data)
+        ? sceneTakesShareSpokenBeat(current.shot_data, other.shot_data)
+        : Boolean(current.shot_data.dialogue?.trim()) &&
+          current.shot_data.dialogue?.trim() === other.shot_data.dialogue?.trim();
+      if (!sameTake) continue;
+      if (sceneTakeAlreadyPaid(other)) {
+        throw new DuplicateSceneTakeError(current.id, other.id);
+      }
+    }
+  }
+
   async function generateVideo(input: {
     owner_id: string;
     shot_id: string;
@@ -1623,10 +1772,16 @@ export function createEngine(deps: EngineDeps = {}) {
     const privacy: PrivacyProfile = input.privacy ?? "standard";
     assertStandardOnly(privacy);
 
-    if (shot.shot_data.dialogue && !shot.shot_data.dialogue_audio_asset_id) {
+    if (
+      shot.shot_data.dialogue &&
+      !shot.shot_data.dialogue_audio_asset_id &&
+      !isSceneTake(shot.shot_data) &&
+      !String(VIDEO_ROUTES.dialogue_default.model).includes("seedance")
+    ) {
       await generateDialogue({ owner_id: input.owner_id, shot_id: shot.id });
     }
     const live = store.shots.get(shot.id)!;
+    assertUniqueSceneTakeSpend(live, episode.id);
     const scene = store.scenes.get(live.scene_id);
     const location = scene?.location || scene?.scene_data.location;
 
@@ -1653,20 +1808,92 @@ export function createEngine(deps: EngineDeps = {}) {
       const fromPlate = await plateTakeForShot(wideNow, series, location);
       if (fromPlate) return fromPlate;
     }
+    if (isObjectInsert(wideNow.shot_data) && !isSceneTake(wideNow.shot_data) && !wideNow.shot_data.dialogue) {
+      await ensureInsertPlate(wideNow, series.id);
+      const insertPlateId = store.shots.get(wideNow.id)?.shot_data.insert_plate_id;
+      const insertPlate = insertPlateId ? await assets.get(insertPlateId).catch(() => null) : null;
+      const magic = insertPlate?.body.subarray(0, 3) ?? new Uint8Array();
+      const realStill =
+        Boolean(deps.plateTake) ||
+        (magic[0] === 0x89 && magic[1] === 0x50 && magic[2] === 0x4e) ||
+        (magic[0] === 0xff && magic[1] === 0xd8);
+      if (insertPlateId && realStill) {
+        const fromInsert = await plateTakeForShot(store.shots.get(wideNow.id)!, series, location, {
+          plateId: insertPlateId,
+          reason: "object insert from still plate",
+        });
+        if (fromInsert) return fromInsert;
+      }
+    }
     const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
     const others = (scene?.scene_data.characters ?? []).filter((name) => !sameName(name, pictured));
+    const takeSpeakers = peopleInTake({
+      speakers: speakersForSceneTake({
+        sceneScript: live.shot_data.scene_script,
+        speaker: live.shot_data.speaker,
+        speakerOnCamera: live.shot_data.speaker_on_camera,
+      }),
+      blocking: live.shot_data.blocking,
+    });
     const partner =
       live.shot_data.audio_role === "offscreen"
         ? live.shot_data.speakers_off_camera?.[0] ?? live.shot_data.speaker
-        : others[0] ?? null;
+        : takeSpeakers.find((name) => !sameName(name, pictured)) ?? others[0] ?? null;
+    const sceneNames = isSceneTake(live.shot_data) ? takeSpeakers : [];
+    const identityLocks = sceneNames.flatMap((name) => {
+      const character = characterBySpeaker(series.id, name);
+      return character ? [identityLockLine(character.name)] : [];
+    });
+    if (isSceneTake(live.shot_data)) {
+      const prev = previousSceneTake({
+        current: live,
+        episodeShots: store.shotsForEpisode(episode.id),
+        locationOf: (row) => store.scenes.get(row.scene_id)?.location ?? null,
+      });
+      const note = prev?.shot_data.continuity?.blocking_note?.trim();
+      const startFrom =
+        note ||
+        live.shot_data.blocking?.start_from ||
+        (prev
+          ? "They have just finished the last spoken line. Same sides. Same staging. Same prop. Do not reset the room. Do not repeat that line. JOIN CUT: open closer — a close-up or both faces stacked. Do not reprint the last frame."
+          : null);
+      if (startFrom || live.shot_data.blocking) {
+        store.shots.set(live.id, {
+          ...live,
+          shot_data: {
+            ...live.shot_data,
+            blocking: {
+              camera_left: live.shot_data.blocking?.camera_left ?? takeSpeakers[0] ?? null,
+              camera_right: live.shot_data.blocking?.camera_right ?? takeSpeakers[1] ?? null,
+              prop: live.shot_data.blocking?.prop ?? null,
+              left_gesture: live.shot_data.blocking?.left_gesture ?? null,
+              right_gesture: live.shot_data.blocking?.right_gesture ?? null,
+              start_from: startFrom,
+              coverage: live.shot_data.blocking?.coverage,
+              pictured: live.shot_data.blocking?.pictured ?? null,
+              present: live.shot_data.blocking?.present,
+              enters: live.shot_data.blocking?.enters,
+              exits: live.shot_data.blocking?.exits,
+              upper_frame: live.shot_data.blocking?.upper_frame ?? null,
+              staging: live.shot_data.blocking?.staging ?? null,
+              anchor: live.shot_data.blocking?.anchor ?? null,
+            },
+          },
+        });
+      }
+    }
+    const prompted = store.shots.get(live.id)!;
     const prompt = dramaHooks.buildVideoPrompt({
       location,
       locationNote: await locationNoteFor(series.id, location),
       genre: seriesGenre(series),
-      shot: live,
+      shot: prompted,
       partner,
-      peopleCount: allowsTwoShot(live.shot_data.function) ? 2 : 1,
-      otherNames: others,
+      peopleCount: isSceneTake(prompted.shot_data) || allowsTwoShot(prompted.shot_data.function) ? 2 : 1,
+      otherNames: isSceneTake(prompted.shot_data) ? takeSpeakers.filter((name) => !sameName(name, pictured)) : others,
+      identityLocks,
+      roomDescription: roomDescriptionFor(series, location),
+      roomGeometry: await roomGeometryFor(series.id, location),
     });
     await moderate(
       `${prompt}\n${live.shot_data.dialogue ?? ""}`,
@@ -1683,7 +1910,10 @@ export function createEngine(deps: EngineDeps = {}) {
     const provisional = silentReaction
       ? Math.min(3, fromWav ?? hint)
       : Math.max(fromWav ?? 0, hint);
-    const padded = Math.max(provisional, VIDEO_ROUTES.economy_default.min_duration_seconds);
+    const padded = Math.min(
+      VIDEO_ROUTES.dialogue_default.max_duration_seconds,
+      Math.max(provisional, VIDEO_ROUTES.dialogue_default.min_duration_seconds),
+    );
     const current: Shot = {
       ...live,
       shot_data: { ...live.shot_data, duration_seconds: padded },
@@ -1751,14 +1981,15 @@ export function createEngine(deps: EngineDeps = {}) {
     shot: Shot,
     series: Series,
     location: string | null | undefined,
+    opts?: { plateId?: string | null; reason?: string },
   ): Promise<{ job: GenerationJob; route: { route: { model: string; provider: string }; reason: string } } | null> {
-    const plateId = locationRefForScene(series.location_refs ?? {}, location);
+    const plateId = opts?.plateId ?? locationRefForScene(series.location_refs ?? {}, location);
     if (!plateId) return null;
     const plate = await assets.get(plateId).catch(() => null);
     if (!plate) return null;
     const seconds = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds ?? 4;
     const move = plateMoveFor(shot.id);
-    const body = await plateFn(plate.body, seconds, move);
+    const body = await plateFn(plate.body, seconds, move).catch(() => null);
     if (!body) return null;
 
     const job = createJob({
@@ -1773,7 +2004,7 @@ export function createEngine(deps: EngineDeps = {}) {
       upstream_job_id: null,
       idempotency_key: `video:${shot.id}:plate:${jobAttemptKey(shot.id)}`,
       status: "queued",
-      request_metadata: { reason: "empty establishing from location plate", plate_asset_id: plateId, move, first_frame_asset_id: plateId },
+      request_metadata: { reason: opts?.reason ?? "empty establishing from location plate", plate_asset_id: plateId, move, first_frame_asset_id: plateId },
       estimated_cost: 0,
       expected_ready_at: iso(clock),
     });
@@ -1840,7 +2071,7 @@ export function createEngine(deps: EngineDeps = {}) {
       },
     });
     settle(current, 0);
-    return { job: current, route: { route: { model: "plate/zoompan", provider: "local" }, reason: "empty establishing from location plate" } };
+    return { job: current, route: { route: { model: "plate/zoompan", provider: "local" }, reason: opts?.reason ?? "empty establishing from location plate" } };
   }
 
   function jobAttemptKey(shotId: string): number {
@@ -1883,6 +2114,73 @@ export function createEngine(deps: EngineDeps = {}) {
     }
   }
 
+  const sheetCache = new Map<string, { url: string; id: string }>();
+  const faceBoxCache = new Map<string, NormalizedFaceBox | null>();
+
+  /**
+   * Where the face sits in a locked still. The character sheet stamp puts its
+   * marker here: on a full-body plate a fixed marker lands on the chest and the
+   * face still reads as a photograph of a real person to the provider.
+   */
+  async function faceBoxFor(assetId: string, bytes: Uint8Array, mime?: string | null): Promise<NormalizedFaceBox | null> {
+    if (faceBoxCache.has(assetId)) return faceBoxCache.get(assetId) ?? null;
+    const locate = ai.vision?.locateFace;
+    let box: NormalizedFaceBox | null = null;
+    if (locate) {
+      try {
+        const small = await shrinkReference(bytes);
+        box = await locate({ image: small?.bytes ?? bytes, imageMime: small?.mime ?? mime ?? "image/png" });
+      } catch {
+        box = null;
+      }
+    }
+    faceBoxCache.set(assetId, box);
+    return box;
+  }
+
+  async function sheetStill(input: {
+    sourceId: string;
+    name: string;
+    role: SheetRole;
+    seriesId: string;
+    strength?: SheetStrength;
+  }): Promise<{ url: string; id: string } | null> {
+    const strength = input.strength ?? 0;
+    const key = `${input.sourceId}:${input.role}:${strength}`;
+    const hit = sheetCache.get(key);
+    if (hit) return hit;
+    const source = await assets.get(input.sourceId).catch(() => null);
+    const face = source ? await faceBoxFor(input.sourceId, source.body, source.asset.mime_type) : null;
+    const stamped = source
+      ? await stampCharacterSheet(source.body, { name: input.name, role: input.role, face, strength })
+      : null;
+    if (!stamped) {
+      const url = await signedOrSkip(input.sourceId);
+      return url ? { url, id: input.sourceId } : null;
+    }
+    const series = store.series.get(input.seriesId);
+    const asset = await putAsset({
+      owner_id: series?.owner_id ?? "system",
+      series_id: input.seriesId,
+      kind: "character_reference",
+      bucket: "private-character",
+      mime_type: "image/png",
+      body: stamped,
+      metadata: {
+        kind: "character_sheet",
+        role: input.role,
+        source_id: input.sourceId,
+        name: input.name,
+        strength,
+      },
+    });
+    const url = await signedOrSkip(asset.id);
+    if (!url) return null;
+    const row = { url, id: asset.id };
+    sheetCache.set(key, row);
+    return row;
+  }
+
   async function cacheCuOnCharacter(character: Character, assetId: string): Promise<void> {
     const nextRefs = { ...character.visual_reference_asset_ids, cu: assetId };
     store.characters.set(character.id, {
@@ -1900,6 +2198,25 @@ export function createEngine(deps: EngineDeps = {}) {
         });
       }
     }
+  }
+
+  async function lockedIdentityStill(character: Character): Promise<{ id: string; kind: string } | null> {
+    const raw = faceRefsFor(character);
+    if (raw.front) {
+      const cached = await assets.get(raw.front).catch(() => null);
+      if (cached) return { id: raw.front, kind: "front" };
+    }
+    return ensureCuStill(character);
+  }
+
+  function castSeed(seriesId: string, names: string[]): number {
+    const key = `${seriesId}:${[...names].sort().join(",")}`;
+    let hash = 2166136261;
+    for (let i = 0; i < key.length; i += 1) {
+      hash ^= key.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return hash & 0x7fffffff;
   }
 
   async function ensureCuStill(character: Character): Promise<{ id: string; kind: string } | null> {
@@ -2016,6 +2333,181 @@ export function createEngine(deps: EngineDeps = {}) {
     return typeof note === "string" && note.trim() ? note : null;
   }
 
+  /** Floor-plan note read off the plate by vision, when the plate was described with one. */
+  async function roomGeometryFor(seriesId: string, location: string | null | undefined): Promise<string | null> {
+    const series = store.series.get(seriesId);
+    const plateId = locationRefForScene(series?.location_refs ?? {}, location);
+    if (!plateId) return null;
+    const plate = (await liveAssetsForSeries(seriesId)).find((asset) => asset.id === plateId);
+    const note = plate?.metadata.geometry;
+    return typeof note === "string" && note.trim() ? note : null;
+  }
+
+  /** "Night delivery driver. Twenty-six. Works doubles…" → "Night delivery driver". Genre convention: label the face when it first appears. */
+  function introLabelFor(description: string | null | undefined): string | null {
+    const first = (description ?? "").split(/[.!?]\s|\.$/)[0]?.replace(/\([^)]*\)/g, "").trim() ?? "";
+    if (!first) return null;
+    const words = first.split(/\s+/).filter(Boolean);
+    if (words.length > 6 || /\b(engine|wall|witness|nuke)\b/i.test(first)) return null;
+    return first.replace(/[.,;:]+$/, "");
+  }
+
+  /** The bible's own line for this room ("ESTATE KITCHEN — stone floor, island…"); the writer's floor plan. */
+  function roomDescriptionFor(series: Series, location: string | null | undefined): string | null {
+    const want = (location ?? "").split(" — ")[0]?.trim().toLowerCase();
+    if (!want) return null;
+    const rows = series.story_bible?.locations ?? [];
+    const hit = rows.find((row) => row.split(" — ")[0]?.trim().toLowerCase() === want) ?? rows.find((row) => row.toLowerCase().includes(want));
+    return hit?.trim() || null;
+  }
+
+  async function findAssetByMeta(seriesId: string, kind: string, extra?: (meta: Record<string, unknown>) => boolean): Promise<string | null> {
+    const listed = await liveAssetsForSeries(seriesId);
+    const hit = listed.find((asset) => asset.metadata.kind === kind && (!extra || extra(asset.metadata)));
+    return hit?.id ?? null;
+  }
+
+  async function lockProps(input: { owner_id: string; series_id: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    for (const kind of PROP_BIBLE_KINDS) {
+      const existing = await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.prop === kind);
+      if (existing) continue;
+      const image = await ai.image.generateReference({
+        characterName: kind,
+        description: PROP_PROMPTS[kind],
+        kind: "object_insert",
+      });
+      await putAsset({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { kind: PROP_KIND, prop: kind, key: propKey(kind) },
+      });
+    }
+  }
+
+  const ROOM_ANGLE_KIND = "room_angle";
+  const ROOM_ANGLES: ReadonlyArray<{ angle: string; prompt: string }> = [
+    {
+      angle: "reverse",
+      prompt: "the same empty set seen from the opposite side, camera turned 180 degrees, showing the wall that was behind the first camera",
+    },
+    {
+      angle: "side",
+      prompt: "the same empty set seen from the side, camera turned 90 degrees, showing the two adjacent walls meeting",
+    },
+  ];
+
+  /**
+   * Two more angles of the locked plate, derived from it, so a cut that faces
+   * another wall has geography to hold instead of inventing a new room.
+   */
+  async function ensureRoomAngles(
+    seriesId: string,
+    location: string | null | undefined,
+    plateId: string,
+  ): Promise<Array<{ url: string; id: string; angle: string }>> {
+    const series = store.series.get(seriesId);
+    if (!series || !location) return [];
+    const out: Array<{ url: string; id: string; angle: string }> = [];
+    for (const row of ROOM_ANGLES) {
+      try {
+        let id = await findAssetByMeta(seriesId, ROOM_ANGLE_KIND, (meta) => meta.location === location && meta.angle === row.angle);
+        if (!id) {
+          const plate = await assets.get(plateId).catch(() => null);
+          if (!plate) break;
+          const image = await ai.image.generateReferenceFromSeed({
+            characterName: location,
+            description:
+              `${row.prompt}. Same walls, same ground, same fixtures at the same size, same key light and colour. ` +
+              `Same kind of place as the plate — do not turn an exterior into a room or a room into a street. ` +
+              `EMPTY: no people, no faces, no silhouettes, no reflections of people. Cinematic 9:16 still. ${NO_TEXT_CLAUSE}.`,
+            kind: "location",
+            seed_bytes: plate.body,
+            seed_mime_type: plate.asset.mime_type,
+          });
+          const asset = await putAsset({
+            owner_id: series.owner_id,
+            series_id: series.id,
+            kind: "character_reference",
+            bucket: "private-character",
+            mime_type: image.mime_type,
+            body: image.bytes,
+            metadata: { kind: ROOM_ANGLE_KIND, location, angle: row.angle, plate_id: plateId },
+          });
+          id = asset.id;
+        }
+        const url = await signedOrSkip(id);
+        if (url) out.push({ url, id, angle: row.angle });
+      } catch {
+        // A missing angle is a weaker lock, not a failed take.
+      }
+    }
+    return out;
+  }
+
+  /** A prop still for whatever the planner locked, generated once per distinct wording. */
+  async function ensurePropStillFromText(seriesId: string, propText: string | null | undefined): Promise<{ url: string; id: string; name: string } | null> {
+    const prop = propFromLockText(propText);
+    if (!prop) return null;
+    try {
+      const existing = await findAssetByMeta(seriesId, PROP_KIND, (meta) => meta.key === prop.key);
+      if (existing) {
+        const url = await signedOrSkip(existing);
+        return url ? { url, id: existing, name: prop.name } : null;
+      }
+      const series = store.series.get(seriesId);
+      if (!series) return null;
+      const image = await ai.image.generateReference({ characterName: prop.name, description: prop.prompt, kind: "object_insert" });
+      const asset = await putAsset({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { kind: PROP_KIND, prop: prop.name, key: prop.key },
+      });
+      const url = await signedOrSkip(asset.id);
+      return url ? { url, id: asset.id, name: prop.name } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function ensurePropStill(seriesId: string, kind: PropKind): Promise<{ url: string; id: string; name: string } | null> {
+    try {
+      const existing = await findAssetByMeta(seriesId, PROP_KIND, (meta) => meta.prop === kind);
+      if (existing) {
+        const url = await signedOrSkip(existing);
+        return url ? { url, id: existing, name: kind } : null;
+      }
+      const series = store.series.get(seriesId);
+      if (!series) return null;
+      const image = await ai.image.generateReference({
+        characterName: kind,
+        description: PROP_PROMPTS[kind],
+        kind: "object_insert",
+      });
+      const asset = await putAsset({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        metadata: { kind: PROP_KIND, prop: kind, key: propKey(kind) },
+      });
+      const url = await signedOrSkip(asset.id);
+      return url ? { url, id: asset.id, name: kind } : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function ensureInsertPlate(shot: Shot, seriesId: string): Promise<string | null> {
     const cached = shot.shot_data.insert_plate_id;
     if (cached) {
@@ -2024,6 +2516,15 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     const series = store.series.get(seriesId);
     if (!series) return null;
+    const prop = inferPropKind(shot.shot_data.camera) ?? (shot.shot_data.function === "phone_ui" ? "phone" : "letter");
+    const reused = await findAssetByMeta(seriesId, PROP_KIND, (meta) => meta.prop === prop);
+    if (reused) {
+      store.shots.set(shot.id, {
+        ...store.shots.get(shot.id)!,
+        shot_data: { ...store.shots.get(shot.id)!.shot_data, insert_plate_id: reused },
+      });
+      return signedOrSkip(reused);
+    }
     const kind = shot.shot_data.function === "phone_ui" ? "phone_ui" : "object_insert";
     const genre = seriesGenre(series);
     const image = await ai.image.generateReference({
@@ -2050,14 +2551,116 @@ export function createEngine(deps: EngineDeps = {}) {
     return signedOrSkip(asset.id);
   }
 
+  async function ensureBlockingStill(input: {
+    seriesId: string;
+    character: Character;
+    location: string;
+    framing: ReturnType<typeof blockingFramingFor>;
+    locationNote: string | null;
+  }): Promise<{ id: string } | null> {
+    const key = blockingStillKey(input.character.id, input.location, input.framing);
+    const cached = await findAssetByMeta(
+      input.seriesId,
+      BLOCKING_STILL_KIND,
+      (meta) => meta.key === key,
+    );
+    if (cached) return { id: cached };
+    const series = store.series.get(input.seriesId);
+    if (!series) return null;
+    const cu = await ensureCuStill(input.character);
+    const face = cu ? await assets.get(cu.id).catch(() => null) : null;
+    const plateId = locationRefForScene(series.location_refs, input.location);
+    const plate = plateId ? await assets.get(plateId).catch(() => null) : null;
+    if (!plate) return null;
+    const framingText =
+      input.framing === "reaction"
+        ? "Medium close-up from the chest up, more of the room visible, turned three-quarters toward an off-screen partner, listening, not speaking"
+        : "Medium close-up from the chest up. Face in the upper third. Shoulders and some of the room visible. Not a face-filling crop.";
+    let image: { bytes: Uint8Array; mime_type: string } | null = null;
+    try {
+      if (BLOCKING_STILL_MODE === "two_ref" && ai.image.generateBlockingStill && face) {
+        image = await ai.image.generateBlockingStill({
+          characterName: input.character.name,
+          description: appearanceDescription({
+            description: input.character.description,
+            ...input.character.appearance_profile,
+          }),
+          framing: framingText,
+          locationNote: input.locationNote,
+          face_bytes: face.body,
+          face_mime_type: face.asset.mime_type,
+          plate_bytes: plate.body,
+          plate_mime_type: plate.asset.mime_type,
+        });
+      } else if (ai.image.generateBlockingStillFromPlate) {
+        image = await ai.image.generateBlockingStillFromPlate({
+          characterName: input.character.name,
+          description: appearanceDescription({
+            description: input.character.description,
+            ...input.character.appearance_profile,
+          }),
+          framing: framingText,
+          locationNote: input.locationNote,
+          plate_bytes: plate.body,
+          plate_mime_type: plate.asset.mime_type,
+        });
+      }
+    } catch {
+      return null;
+    }
+    if (!image) return null;
+    if (ai.vision && face) {
+      try {
+        const smallFace = await shrinkReference(face.body);
+        const smallStill = await shrinkReference(image.bytes);
+        const judgement = await ai.vision.judgeIdentity({
+          reference: smallFace?.bytes ?? face.body,
+          referenceMime: smallFace?.mime ?? face.asset.mime_type,
+          frames: [smallStill?.bytes ?? image.bytes],
+          frameMime: smallStill?.mime ?? image.mime_type,
+          expectedFaces: 1,
+          description: appearanceDescription({
+            description: input.character.description,
+            ...input.character.appearance_profile,
+          }),
+        });
+        if (judgement.same_person < BLOCKING_STILL_IDENTITY_MIN || judgement.face_count !== 1) {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    }
+    const asset = await putAsset({
+      owner_id: series.owner_id,
+      series_id: input.seriesId,
+      actor_id: input.character.actor_id,
+      kind: "character_reference",
+      bucket: "private-character",
+      mime_type: image.mime_type,
+      body: image.bytes,
+      metadata: {
+        kind: BLOCKING_STILL_KIND,
+        key,
+        character_id: input.character.id,
+        location: input.location,
+        framing: input.framing,
+      },
+    });
+    return { id: asset.id };
+  }
+
   async function visualRefsForShot(
     shot: Shot,
     seriesId: string,
     locationOnly: boolean,
+    strip: SceneTakeStrip = "none",
   ): Promise<{
     urls: string[];
     first_frame_kind: ReturnType<typeof firstFrameKind>;
     first_frame_asset_id: string | null;
+    labels?: SceneTakeLock[];
+    videoUrl?: string | null;
   }> {
     const objectInsert = isObjectInsert(shot.shot_data);
     if (objectInsert) {
@@ -2065,10 +2668,118 @@ export function createEngine(deps: EngineDeps = {}) {
       const plateId = store.shots.get(shot.id)?.shot_data.insert_plate_id ?? null;
       return { urls: plate ? [plate] : [], first_frame_kind: "object", first_frame_asset_id: plateId };
     }
-    if (locationOnly) return { urls: [], first_frame_kind: "face", first_frame_asset_id: null };
     const scene = store.scenes.get(shot.scene_id);
     const seriesForLoc = store.series.get(seriesId);
     const locIdEarly = locationRefForScene(seriesForLoc?.location_refs ?? {}, scene?.location);
+    if (isSceneTake(shot.shot_data) && scene) {
+      const names = peopleInTake({
+        speakers: speakersForSceneTake({
+          sceneScript: shot.shot_data.scene_script,
+          speaker: shot.shot_data.speaker,
+          speakerOnCamera: shot.shot_data.speaker_on_camera,
+        }),
+        blocking: shot.shot_data.blocking,
+      });
+      if (!names.length) throw new Error("Scene take has no named speakers");
+      const packNames = names;
+      const people = [];
+      // How hard the sheets are stamped is itself a rung of the escalation, so
+      // it has to be resolved before the stills are made, not after.
+      const rung = strongestStrip(shot.shot_data.scene_take_strip as SceneTakeStrip | undefined, strip);
+      const strength = sheetStrengthFor(rung);
+      for (const name of packNames) {
+        const person = characterBySpeaker(seriesId, name);
+        const refs = faceRefsFor(person);
+        const frontId = refs.front ?? (await lockedIdentityStill(person))?.id ?? null;
+        if (!frontId) throw new Error(`Scene take requires a locked front still for ${name}`);
+        const front = await sheetStill({ sourceId: frontId, name, role: "front", seriesId, strength });
+        if (!front) throw new Error(`Scene take requires a locked front still for ${name}`);
+        // The look this scene wears: the wardrobe state matched to the room
+        // (gala dress at the gala, work jacket on the route), generated from
+        // the locked face so identity and clothes agree.
+        const lookId = wardrobeForScene(person.wardrobe_asset_ids, scene.location);
+        // The look goes in stamped like the fronts: Seedance's photoreal
+        // classifier rejects an unmarked still as a real person.
+        const lookStill = lookId ? await sheetStill({ sourceId: lookId, name, role: "wardrobe", seriesId, strength }) : null;
+        people.push({
+          name,
+          front,
+          wardrobe: lookStill ? { url: lookStill.url, id: lookStill.id } : null,
+        });
+      }
+      const locId = locationRefForScene(seriesForLoc?.location_refs ?? {}, scene.location);
+      const locUrl = locId && !locationOnly ? await signedOrSkip(locId) : null;
+      const propKind =
+        inferPropKind(`${shot.shot_data.camera} ${shot.shot_data.scene_script ?? ""} ${shot.shot_data.blocking?.prop ?? ""}`) ??
+        null;
+      const prop = locationOnly
+        ? null
+        : propKind
+          ? await ensurePropStill(seriesId, propKind)
+          : await ensurePropStillFromText(seriesId, shot.shot_data.blocking?.prop);
+      const angles = locId && !locationOnly ? await ensureRoomAngles(seriesId, scene.location, locId) : [];
+      const pack = buildSceneTakeRefs({
+        characters: people,
+        locationPlate: locUrl && locId ? { url: locUrl, id: locId } : null,
+        locationAngles: angles,
+        weldPlate: null,
+        propPlate: prop,
+      });
+      // A classifier-rejected reference is dropped for this shot. The shot's own
+      // strip is a floor, not a lock: the submit loop's escalation still wins, or
+      // a pinned shot would resubmit the same rejected pack forever.
+      const asked = locationOnly && strip === "none" ? "location" : strip;
+      const stripped = applySceneTakeStrip(pack, strongestStrip(rung, asked));
+      return {
+        urls: stripped.images.map((row) => row.url),
+        first_frame_kind: "face",
+        first_frame_asset_id: stripped.images[0]?.assetId ?? null,
+        labels: stripped.labels.filter((row) => row.role !== "video"),
+        videoUrl: null,
+      };
+    }
+    if (locationOnly) return { urls: [], first_frame_kind: "face", first_frame_asset_id: null };
+    if (
+      shouldUseBlockingStill(shot.shot_data) &&
+      !allowsTwoShot(shot.shot_data.function) &&
+      shot.shot_data.type !== "establishing"
+    ) {
+      const pictured =
+        shot.shot_data.speaker_on_camera ??
+        (shot.shot_data.audio_role === "offscreen" || shot.shot_data.function === "listener_hold"
+          ? scene?.scene_data.characters.find((name) => name !== shot.shot_data.speaker) ?? null
+          : shot.shot_data.speaker);
+      if (pictured) {
+        const character = characterBySpeaker(seriesId, pictured);
+        const cu = await ensureCuStill(character);
+        const faceUrl = cu ? await signedOrSkip(cu.id) : null;
+        const sceneShots = store.shotsFor(shot.scene_id);
+        const prev = previousContinuityShot({ current: shot, sceneShots });
+        const lastId = prev?.shot_data.continuity?.last_frame_asset_id ?? null;
+        const lastUrl = lastId ? await signedOrSkip(lastId) : null;
+        const blocking = lastUrl
+          ? null
+          : await ensureBlockingStill({
+              seriesId,
+              character,
+              location: scene?.location ?? "",
+              framing: blockingFramingFor(shot.shot_data.function),
+              locationNote: await locationNoteFor(seriesId, scene?.location),
+            });
+        const blockingUrl = blocking ? await signedOrSkip(blocking.id) : null;
+        if (lastUrl || blockingUrl) {
+          return selectShotRefs({
+            lastFrameUrl: lastUrl,
+            lastFrameId: lastId,
+            blockingUrl,
+            blockingId: blocking?.id ?? null,
+            faceUrl,
+            faceId: cu?.id ?? null,
+            faceKind: cu?.kind ?? "cu",
+          });
+        }
+      }
+    }
     if (
       (allowsTwoShot(shot.shot_data.function) || shot.shot_data.type === "establishing") &&
       !shot.shot_data.dialogue
@@ -2134,11 +2845,23 @@ export function createEngine(deps: EngineDeps = {}) {
   async function submitVideoJob(job: GenerationJob) {
     if (job.status !== "queued") return job;
     try {
-      const shot = store.shots.get(job.shot_id ?? "");
-      if (!shot) throw new Error("Shot missing for video submit");
+      const found = store.shots.get(job.shot_id ?? "");
+      if (!found) throw new Error("Shot missing for video submit");
+      let shot: Shot = found;
       const refs = await visualRefsForShot(shot, job.series_id, false);
       let visual_reference_urls = refs.urls;
       let frameKind = refs.first_frame_kind;
+      let video_reference_url = isSceneTake(shot.shot_data) ? null : refs.videoUrl ?? null;
+      const imageLocks = refs.labels ?? [];
+      const lockedPrompt = isSceneTake(shot.shot_data) && imageLocks.length
+        ? `${String(job.request_metadata.prompt ?? "")} | ${sceneTakeImageLocks(imageLocks, shot.shot_data.blocking)}`
+        : String(job.request_metadata.prompt ?? "");
+      const seed = isSceneTake(shot.shot_data)
+        ? castSeed(
+            job.series_id,
+            [...new Set(imageLocks.filter((row) => row.role === "front").map((row) => row.name))],
+          )
+        : undefined;
       const frameQc = firstFrameQc({
         shotFunction: shot.shot_data.function ?? shot.shot_data.type,
         firstFrameKind: frameKind,
@@ -2168,6 +2891,14 @@ export function createEngine(deps: EngineDeps = {}) {
           pictured_name:
             shot.shot_data.speaker_on_camera ??
             (isObjectInsert(shot.shot_data) ? null : shot.shot_data.speaker),
+          prompt: lockedPrompt,
+          seed,
+          seedance_ref_mode:
+            String(job.model ?? "").includes("seedance") && visual_reference_urls.length > 0
+              ? "input_references"
+              : null,
+          image_locks: imageLocks,
+          video_reference: Boolean(video_reference_url),
         },
       };
       store.jobs.set(job.id, current);
@@ -2180,28 +2911,82 @@ export function createEngine(deps: EngineDeps = {}) {
       });
       const payload = {
         shot,
-        prompt: String(job.request_metadata.prompt ?? ""),
+        prompt: lockedPrompt,
         visual_reference_urls,
+        video_reference_url,
         audio_reference_url,
         duration_seconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
         model: job.model ?? VIDEO_ROUTES.economy_default.model,
         privacy_profile: "standard" as const,
         callback_url: openRouterCallbackUrl(job.callback_token),
+        seed,
       };
       let submitted;
-      try {
-        submitted = await ai.video.submit(payload);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!isInputImagePrivacyFailure(message) || visual_reference_urls.length === 0) {
-          throw error;
+      const sceneTake = isSceneTake(shot.shot_data);
+      const strips = sceneTake ? SCENE_TAKE_PRIVACY_STRIPS : (["none", "location"] as const);
+      // Resume the ladder where a previous submit for this shot got past the
+      // classifier; rungs below it are known to fail and cost a round trip each.
+      let stripIndex = sceneTake ? Math.max(0, stripRank(shot.shot_data.scene_take_strip)) : 0;
+      while (true) {
+        try {
+          submitted = await ai.video.submit({
+            ...payload,
+            visual_reference_urls,
+            video_reference_url,
+          });
+          break;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const nextStrip = strips[stripIndex + 1];
+          if (process.env.SDM_TRACE) {
+            const packed = (current.request_metadata.image_locks ?? imageLocks) as SceneTakeLock[];
+            const order = packed.map((row, index) => `${index + 1}:${row.name}/${row.role}`).join(" ");
+            process.stderr.write(
+              `[strip] ${shot.id} rung ${strips[stripIndex]} refs ${visual_reference_urls.length} [${order}] privacy ${isInputImagePrivacyFailure(message)} next ${nextStrip ?? "none"}\n`,
+            );
+          }
+          if (!isInputImagePrivacyFailure(message) || !nextStrip) {
+            throw error;
+          }
+          stripIndex += 1;
+          if (sceneTake) {
+            // Remember the rung so the next take of this shot starts here.
+            const pinned: Shot = {
+              ...shot,
+              shot_data: { ...shot.shot_data, scene_take_strip: nextStrip as ShotData["scene_take_strip"] },
+            };
+            store.shots.set(shot.id, pinned);
+            shot = pinned;
+          }
+          const retry = sceneTake
+            ? await visualRefsForShot(shot, job.series_id, false, nextStrip)
+            : visual_reference_urls.length > 1
+              ? await visualRefsForShot(shot, job.series_id, true)
+              : { urls: [] as string[], first_frame_kind: frameKind, labels: [], videoUrl: null };
+          if (!sceneTake && retry.urls.length === visual_reference_urls.length && retry.urls.length > 0) {
+            throw error;
+          }
+          visual_reference_urls = retry.urls;
+          frameKind = retry.first_frame_kind;
+          video_reference_url = sceneTake ? null : retry.videoUrl ?? null;
+          const retryLocks = retry.labels ?? [];
+          const retryPrompt = sceneTake && retryLocks.length
+            ? `${String(job.request_metadata.prompt ?? "")} | ${sceneTakeImageLocks(retryLocks, shot.shot_data.blocking)}`
+            : payload.prompt;
+          payload.prompt = retryPrompt;
+          current = {
+            ...current,
+            request_metadata: {
+              ...current.request_metadata,
+              extra_ref_count: Math.max(0, visual_reference_urls.length - 1),
+              image_locks: retryLocks.length ? retryLocks : current.request_metadata.image_locks,
+              video_reference: Boolean(video_reference_url),
+              prompt: retryPrompt,
+              seedance_privacy_strip: nextStrip,
+            },
+          };
+          store.jobs.set(job.id, current);
         }
-        const retry = visual_reference_urls.length > 1
-          ? await visualRefsForShot(shot, job.series_id, true)
-          : { urls: [] as string[], first_frame_kind: frameKind };
-        visual_reference_urls = retry.urls;
-        frameKind = retry.first_frame_kind;
-        submitted = await ai.video.submit({ ...payload, visual_reference_urls });
       }
       const existing = store.jobByUpstream(submitted.provider, submitted.upstream_job_id);
       if (existing && existing.id !== job.id) {
@@ -2327,6 +3112,10 @@ export function createEngine(deps: EngineDeps = {}) {
 
     current = transitionJob(store.jobs.get(job.id)!, "qc", iso(clock));
     store.jobs.set(job.id, current);
+    const trace = (step: string) => {
+      if (process.env.SDM_TRACE) process.stderr.write(`[ingest ${job.id.slice(0, 8)}] ${step} ${new Date().toISOString()}\n`);
+    };
+    trace("downloaded");
     const alignment = shot.shot_data.dialogue_alignment_asset_id
       ? decodeJson<AlignmentTrack>((await assets.get(shot.shot_data.dialogue_alignment_asset_id))!.body)
       : null;
@@ -2398,9 +3187,11 @@ export function createEngine(deps: EngineDeps = {}) {
     // One measurement pass per take: settle, mouth/voice sync, second body,
     // modesty, and internal cuts (counted after the settle so the I2V morph
     // is not mistaken for a cut). Persisted so the mixer and audits reuse it.
+    trace("mechanical qc done");
     const stillBody = typeof stillId === "string" ? (await assets.get(stillId).catch(() => null))?.body ?? null : null;
     const modestId = shot.shot_data.modest_still_asset_id ?? (await modestStillForShot(shot));
     const modestBody = modestId ? (await assets.get(modestId).catch(() => null))?.body ?? null : null;
+    trace("stills fetched; measuring take");
     let analysis = await measureTake({
       video: downloaded.bytes,
       still: stillBody,
@@ -2415,17 +3206,8 @@ export function createEngine(deps: EngineDeps = {}) {
     // Identity stage: how many people are in frame, and is it the locked cast
     // member. Empty wides expect 0 faces and need no reference; singles expect 1
     // against the CU still; object inserts are never judged.
-    const emptyWide =
-      (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
-      !shot.shot_data.dialogue &&
-      !shot.shot_data.group_still_asset_id;
-    const expectedFaces = isObjectInsert(shot.shot_data)
-      ? null
-      : emptyWide
-        ? 0
-        : allowsTwoShot(shot.shot_data.function) && shot.shot_data.group_still_asset_id
-          ? 2
-          : 1;
+    trace("take measured; identity stage");
+    const expectedFaces = expectedFacesFor(shot.shot_data);
     if (ai.vision && expectedFaces != null) {
       const pictured = shot.shot_data.speaker_on_camera ?? shot.shot_data.speaker;
       let description: string | null = null;
@@ -2456,11 +3238,13 @@ export function createEngine(deps: EngineDeps = {}) {
       store.jobs.set(current.id, current);
     }
 
+    trace("identity done; scoring");
     const verdict = scoreTake(analysis, {
       dialogueCu,
       lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
       expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
       expectedFaces,
+      sceneTake: isSceneTake(shot.shot_data),
     });
     store.shots.set(shot.id, {
       ...store.shots.get(shot.id)!,
@@ -2479,6 +3263,7 @@ export function createEngine(deps: EngineDeps = {}) {
       qc = { pass: false, reasons: [...new Set([...qc.reasons, ...verdict.blockers])] };
     }
 
+    trace("scored; stt lane");
     if (ai.stt && (analysis.transcript || shouldSampleDialogueStt(shot, episodeShots))) {
       try {
         // The take analysis already transcribed a dialogue CU for its speech onset.
@@ -2491,6 +3276,7 @@ export function createEngine(deps: EngineDeps = {}) {
           hasNativeAudio: true,
           nativeTranscript: spoken.text,
           audioConditioned,
+          sceneTake: isSceneTake(shot.shot_data),
         });
         store.shots.set(shot.id, {
           ...store.shots.get(shot.id)!,
@@ -2501,15 +3287,23 @@ export function createEngine(deps: EngineDeps = {}) {
         });
         // Native stays even when the transcript drifts (never mux TTS over lips timed
         // to this take), but the drift is now a real QC reason instead of a comment.
-        if (shot.shot_data.dialogue) {
-          const wer = wordErrorRate(shot.shot_data.dialogue, spoken.text);
+        const expected = expectedSpokenText(shot);
+        if (expected) {
+          const wer = wordErrorRate(expected, spoken.text);
           current = {
             ...current,
             request_metadata: { ...current.request_metadata, native_transcript: spoken.text, native_wer: Number(wer.toFixed(3)) },
           };
           store.jobs.set(current.id, current);
-          if (wer > 0.25) qc = { pass: false, reasons: [...new Set([...qc.reasons, "transcript_wer"])] };
-          else if (wer > 0.15) qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "transcript_wer_warn"])] };
+          // Scene takes speak a whole two-person script. STT on overlapping
+          // voices will never match a single locked line, so WER is a warning.
+          if (isSceneTake(shot.shot_data)) {
+            if (wer > 0.15) qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "transcript_wer_warn"])] };
+          } else if (wer > 0.25) {
+            qc = { pass: false, reasons: [...new Set([...qc.reasons, "transcript_wer"])] };
+          } else if (wer > 0.15) {
+            qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "transcript_wer_warn"])] };
+          }
         }
       } catch {
         qc = { pass: qc.pass, reasons: [...new Set([...qc.reasons, "stt_sample_failed"])] };
@@ -2527,6 +3321,7 @@ export function createEngine(deps: EngineDeps = {}) {
       });
     }
 
+    trace("stt done; finalizing take");
     // Takes that can never ship, regardless of review: a stranger, an extra body,
     // sheer wardrobe, a mouth that opens inside the morph, or a mute dialogue CU.
     const dropTake =
@@ -2573,13 +3368,16 @@ export function createEngine(deps: EngineDeps = {}) {
       store.jobs.set(current.id, current);
     }
 
+    const alreadyApproved = (store.shots.get(shot.id)?.shot_data.take_reviews ?? []).some(
+      (row) => row.decision === "approve",
+    );
     if (blockingQcReasons(qc.reasons).length > 0 || !qc.pass) {
       current = transitionJob(current, "needs_review", iso(clock), {
         result_metadata: takeRecord,
         actual_cost: actualCost,
       });
       store.jobs.set(job.id, current);
-      if (!dropTake) bindShotTake(store.shots.get(shot.id)!, asset.id, "needs_review");
+      if (!dropTake && !alreadyApproved) bindShotTake(store.shots.get(shot.id)!, asset.id, "needs_review");
       settle(current, actualCost);
       if (dropTake) await autoRegenerateAfterDrop(current, shot);
       return current;
@@ -2597,6 +3395,7 @@ export function createEngine(deps: EngineDeps = {}) {
       selected_generation_id: asset.id,
       shot_data: { ...accepted.shot_data, identity_reject: false },
     });
+    await captureLastFrame(store.shots.get(shot.id)!, downloaded.bytes, analysis.duration_seconds, job);
     settle(current, actualCost);
     return current;
   }
@@ -2609,6 +3408,7 @@ export function createEngine(deps: EngineDeps = {}) {
    */
   async function autoRegenerateAfterDrop(job: GenerationJob, shot: Shot) {
     if (!autoRegenerate) return;
+    if (isSceneTake(shot.shot_data)) return;
     const terminalAttempts = [...store.jobs.values()].filter(
       (row) => row.shot_id === shot.id && row.job_type === "video" && isTerminal(row.status),
     ).length;
@@ -2859,13 +3659,26 @@ export function createEngine(deps: EngineDeps = {}) {
       ...live,
       status: input.decision === "approve" ? "complete" : rejectedSelected ? "needs_review" : live.status,
       selected_generation_id: input.decision === "approve" ? input.asset_id : rejectedSelected ? null : live.selected_generation_id,
-      shot_data: { ...live.shot_data, take_reviews: reviews, identity_reject: input.decision === "approve" ? false : live.shot_data.identity_reject },
+      shot_data: {
+        ...live.shot_data,
+        take_reviews: reviews,
+        identity_reject: input.decision === "approve" ? false : live.shot_data.identity_reject,
+        heard_audio:
+          input.decision === "approve" && isSceneTake(live.shot_data) ? "native" : live.shot_data.heard_audio,
+      },
     };
     // The approved take's own measurements drive the manifest for this shot.
     if (input.decision === "approve") {
       const ranked = await rankedTakesForShot(next, series.id);
       const chosen = ranked.find((row) => row.assetId === input.asset_id);
       if (chosen?.analysis) next.shot_data = { ...next.shot_data, take_analysis: chosen.analysis };
+      store.shots.set(next.id, next);
+      if (!next.shot_data.continuity?.last_frame_asset_id) {
+        const take = await assets.get(input.asset_id).catch(() => null);
+        const duration = chosen?.analysis?.duration_seconds ?? next.shot_data.duration_seconds ?? next.shot_data.duration_hint_seconds;
+        if (take && chosen) await captureLastFrame(next, take.body, duration, chosen.job);
+      }
+      return store.shots.get(next.id)!;
     }
     store.shots.set(next.id, next);
     return next;
@@ -2887,11 +3700,7 @@ export function createEngine(deps: EngineDeps = {}) {
       shot.shot_data.audio_role !== "offscreen" &&
       shot.shot_data.audio_role !== "silent" &&
       !isObjectInsert(shot.shot_data);
-    const emptyWide =
-      (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
-      !shot.shot_data.dialogue &&
-      !shot.shot_data.group_still_asset_id;
-    const expectedFaces = isObjectInsert(shot.shot_data) ? null : emptyWide ? 0 : 1;
+    const expectedFaces = expectedFacesFor(shot.shot_data);
     const results: Array<{ job_id: string; before: string[]; after: string[] }> = [];
     for (const job of jobs) {
       const assetId = job.result_metadata.asset_id as string;
@@ -2935,6 +3744,7 @@ export function createEngine(deps: EngineDeps = {}) {
         lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
         expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
         expectedFaces,
+        sceneTake: isSceneTake(shot.shot_data),
       });
       const before = Array.isArray(job.result_metadata.take_blockers) ? (job.result_metadata.take_blockers as string[]) : [];
       store.jobs.set(job.id, {
@@ -3035,6 +3845,70 @@ export function createEngine(deps: EngineDeps = {}) {
         (asset) => asset.kind === "shot_video" && asset.metadata.generation_job_id === job.id,
       ) ?? null
     );
+  }
+
+  async function captureLastFrame(
+    shot: Shot,
+    video: Uint8Array,
+    durationSeconds: number,
+    job: GenerationJob,
+  ): Promise<void> {
+    if (isObjectInsert(shot.shot_data)) return;
+    const at = Math.max(0.2, durationSeconds - 0.35);
+    let frames: Uint8Array[] = [];
+    try {
+      frames = await sampleJpegFrames(video, [at]);
+    } catch {
+      return;
+    }
+    const frame = frames[0];
+    if (!frame || frame.byteLength < 512) return;
+    const stored = await putAsset({
+      owner_id: job.owner_id,
+      series_id: job.series_id,
+      kind: "character_reference",
+      bucket: "private-generation",
+      mime_type: "image/jpeg",
+      body: frame,
+      metadata: { kind: LAST_FRAME_KIND, shot_id: shot.id, character: shot.shot_data.speaker_on_camera ?? shot.shot_data.speaker },
+    });
+    const live = store.shots.get(shot.id);
+    if (!live) return;
+    let blockingNote: string | undefined;
+    if (isSceneTake(shot.shot_data) && ai.vision?.describeBlocking) {
+      try {
+        const names = speakersForSceneTake({
+          sceneScript: shot.shot_data.scene_script,
+          speaker: shot.shot_data.speaker,
+          speakerOnCamera: shot.shot_data.speaker_on_camera,
+        });
+        blockingNote = await ai.vision.describeBlocking({ frame, names });
+      } catch {
+        blockingNote = undefined;
+      }
+    }
+    store.shots.set(live.id, {
+      ...live,
+      shot_data: {
+        ...live.shot_data,
+        continuity: {
+          kind: "weld",
+          prev_shot_id: (() => {
+            const episodeId = store.scenes.get(live.scene_id)?.episode_id;
+            const prevTake = episodeId
+              ? previousSceneTake({
+                  current: live,
+                  episodeShots: store.shotsForEpisode(episodeId),
+                  locationOf: (row) => store.scenes.get(row.scene_id)?.location ?? null,
+                })
+              : null;
+            return prevTake?.id ?? previousContinuityShot({ current: live, sceneShots: store.shotsFor(live.scene_id) })?.id;
+          })(),
+          last_frame_asset_id: stored.id,
+          blocking_note: blockingNote,
+        },
+      },
+    });
   }
 
   function bindShotTake(shot: Shot, assetId: string, status: Shot["status"] = shot.status) {
@@ -3194,9 +4068,13 @@ export function createEngine(deps: EngineDeps = {}) {
       // shoots another (the retry cap still bounds this) and report the cut
       // incomplete. Anything else is refused for a human.
       const rejectRefusedTakes = async (): Promise<never | null> => {
-        const stillBad = muxAudit.lines.filter((line) => !line.pass && laneFor(line.shot_id) === "native");
+        const stillBad = muxAudit.lines.filter((line) => {
+          if (line.pass || laneFor(line.shot_id) !== "native") return false;
+          const row = current.find((take) => take.shot.id === line.shot_id);
+          return !row || !isSceneTake(row.shot.shot_data);
+        });
         const unexplained = muxAudit.reasons.filter((reason) => {
-          if (reason === "loudness_off_target" || reason === "true_peak_over") return false;
+          if (reason === "loudness_off_target" || reason === "true_peak_over" || reason === "final_duration_mismatch") return false;
           const [kind, id] = reason.split(":");
           return !((kind === "sync" || kind === "room_morph") && id && stillBad.some((line) => line.shot_id === id));
         });
@@ -3231,6 +4109,7 @@ export function createEngine(deps: EngineDeps = {}) {
                 analysis: row.shot.shot_data.take_analysis ?? null,
                 lane: heardLanes[index] ?? null,
                 takeSeconds: row.shot.shot_data.take_analysis?.duration_seconds ?? null,
+                sceneTake: isSceneTake(row.shot.shot_data),
               })),
             );
       if (!onlyConformable(muxAudit, corrections)) {
@@ -3419,9 +4298,14 @@ export function createEngine(deps: EngineDeps = {}) {
         const scene = store.scenes.get(shot.scene_id);
         return scene ? { location: scene.location || scene.scene_data.location, time: scene.scene_data.time } : null;
       },
+      labelFor: (name) => {
+        const character = series ? characterBySpeaker(series.id, name) : null;
+        return character ? introLabelFor(character.description) : null;
+      },
       durationFor: (shot) => {
         const planned = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
         const take = takeDuration.get(shot.id);
+        if (isSceneTake(shot.shot_data)) return take ?? planned;
         // The settle trim removes the I2V morph from the head of the take, so the
         // playable picture is what remains after it.
         const settle = shot.shot_data.take_analysis?.settle_in_seconds ?? 0;
@@ -3455,11 +4339,12 @@ export function createEngine(deps: EngineDeps = {}) {
         ttsBodies.push(null);
       }
       let native: Uint8Array | null = null;
-      if (shot.shot_data.heard_audio === "native" && shot.shot_data.audio_role !== "offscreen") {
+      const sceneTake = isSceneTake(shot.shot_data);
+      if ((shot.shot_data.heard_audio === "native" || sceneTake) && shot.shot_data.audio_role !== "offscreen") {
         try {
           native = await extractAudioMp3(shotBodies[index]!);
         } catch {
-          native = null;
+          native = shotBodies[index] ?? null;
         }
       }
       nativeAudio.push(native);
@@ -3471,12 +4356,13 @@ export function createEngine(deps: EngineDeps = {}) {
       );
       // An off-screen line is always the TTS lane: the listener take's own track
       // is room tone at best, and a listener never speaks the line.
+      // Scene takes always keep Seedance's spoken track — there is no TTS to mux.
       heardLanes.push(
         shot.shot_data.audio_role === "silent" || !shot.shot_data.dialogue
           ? "silent"
           : shot.shot_data.audio_role === "offscreen"
             ? "tts"
-            : native
+            : native || sceneTake
               ? "native"
               : audioConditioned
                 ? "silent"
@@ -3493,9 +4379,12 @@ export function createEngine(deps: EngineDeps = {}) {
       ttsBodies,
       nativeAudio,
       heardLanes,
-      visemePadSeconds: analyses.map((row) => (row ? row.viseme_pad_seconds : null)),
+      visemePadSeconds: playable.map((shot, index) =>
+        isSceneTake(shot.shot_data) ? 0 : analyses[index] ? analyses[index]!.viseme_pad_seconds : null,
+      ),
       visemeMouthOpenSeconds: analyses.map((row) => row?.mouth_open_seconds ?? null),
       visemeVoiceOnsetSeconds: analyses.map((row) => row?.voice_onset_seconds ?? null),
+      lockedNative: playable.map((shot) => isSceneTake(shot.shot_data)),
     });
     return { ...rendered, manifest, analyses, heardLanes };
   }
@@ -3518,14 +4407,27 @@ export function createEngine(deps: EngineDeps = {}) {
       body: encodeJson(muxAudit),
       metadata: { episode_id: episode.id, ship: muxAudit.ship, reasons: muxAudit.reasons, checksum: rendered.checksum },
     });
-    if (!muxAudit.ship) {
+    const sceneTakeCut = takes.length > 0 && takes.every((take) => isSceneTake(take.shot.shot_data));
+    const blockingReasons = muxAudit.reasons.filter((reason) => {
+      if (
+        sceneTakeCut &&
+        (reason === "loudness_off_target" || reason === "true_peak_over" || reason === "black_frames")
+      ) {
+        return false;
+      }
+      const [kind, id] = reason.split(":");
+      if (kind !== "sync" && kind !== "room_morph") return true;
+      const row = takes.find((take) => take.shot.id === id);
+      return !row || !isSceneTake(row.shot.shot_data);
+    });
+    if (blockingReasons.length) {
       store.episodes.set(episode.id, {
         ...episode,
         render_manifest: manifest,
         status: "needs_review",
         updated_at: iso(clock),
       });
-      throw new RenderFailedError(`mux audit refused the cut (${muxAudit.reasons.join(", ")}); audit ${auditAsset.id}`);
+      throw new RenderFailedError(`mux audit refused the cut (${blockingReasons.join(", ")}); audit ${auditAsset.id}`);
     }
 
     // Versioned finals: a re-render never overwrites; each accepted cut gets the

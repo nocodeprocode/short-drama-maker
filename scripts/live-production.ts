@@ -29,7 +29,10 @@ type Args = {
   title: string;
   idea: string;
   resume: string | null;
+  series: string | null;
   concurrency: number;
+  episode_start: number;
+  episode_end: number;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -46,7 +49,10 @@ function parseArgs(argv: string[]): Args {
       get("--idea") ??
       "A fictional billionaire's fiancée finds a dated letter in the estate kitchen that names another woman. Public confrontation, a witness who saw more than she says, and a final question no one can pay for yet.",
     resume: get("--resume") ?? null,
+    series: get("--series") ?? null,
     concurrency: Number(get("--concurrency") ?? 3),
+    episode_start: Number(get("--episode_start") ?? get("--episode-start") ?? 1),
+    episode_end: Number(get("--episode_end") ?? get("--episode-end") ?? 1),
   };
 }
 
@@ -66,7 +72,58 @@ async function main() {
   let seriesId: string;
   let ownerId: string;
 
-  if (!productionId) {
+  if (!productionId && args.series) {
+    const { data: series, error: seriesError } = await client.from("series").select("*").eq("id", args.series).single();
+    if (seriesError) throw new Error(seriesError.message);
+    seriesId = series.id;
+    ownerId = series.owner_id;
+    const topUp = Math.max(0, Number(process.argv.includes("--topup") ? (process.argv[process.argv.indexOf("--topup") + 1] ?? 30) : 30));
+    if (topUp > 0) {
+      const { error: ledgerError } = await client.from("project_ledger").insert({
+        owner_id: ownerId,
+        series_id: seriesId,
+        entry_type: "purchase",
+        amount: topUp,
+        generation_job_id: null,
+        stripe_event_id: `live_topup_${Date.now()}`,
+        price_snapshot_version: PRICE_SNAPSHOT_VERSION,
+      });
+      if (ledgerError) throw new Error(ledgerError.message);
+      process.stdout.write(`top-up $${topUp.toFixed(2)} on locked series\n`);
+    }
+    const { data: production, error: productionError } = await client
+      .from("productions")
+      .insert({
+        owner_id: ownerId,
+        series_id: seriesId,
+        mode: "autopilot",
+        sku: "2",
+        priority: "balanced",
+        episode_length: args.length,
+        episode_start: args.episode_start,
+        episode_end: args.episode_end,
+        status: "queued",
+        ui_phase: "preparing",
+        paid_amount: 0,
+        agent_decision: "Scene-take Seedance probe on a locked series.",
+      })
+      .select("*")
+      .single();
+    if (productionError) throw new Error(productionError.message);
+    productionId = production.id;
+    const { error: taskError } = await client.from("engine_tasks").insert({
+      owner_id: ownerId,
+      series_id: seriesId,
+      production_id: productionId,
+      action: "advance_production",
+      payload: { production_id: productionId },
+      status: "queued",
+    });
+    if (taskError) throw new Error(taskError.message);
+    process.stdout.write(
+      `production ${productionId} · series ${seriesId} · ${args.length} · episodes ${args.episode_start}–${args.episode_end} · cap $${args.cap}\n`,
+    );
+  } else if (!productionId) {
     const email = process.env.ADMIN_EMAIL?.trim();
     if (!email) throw new Error("ADMIN_EMAIL is required to own the live production");
     const { data: users, error: usersError } = await client.auth.admin.listUsers({ perPage: 200 });
@@ -113,8 +170,8 @@ async function main() {
         sku: "2",
         priority: "balanced",
         episode_length: args.length,
-        episode_start: 1,
-        episode_end: 1,
+        episode_start: args.episode_start,
+        episode_end: args.episode_end,
         status: "queued",
         ui_phase: "preparing",
         paid_amount: retail,

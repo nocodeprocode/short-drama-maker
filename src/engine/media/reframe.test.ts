@@ -18,13 +18,13 @@ describe("deliverables", () => {
   });
 
   it("keeps the caption band inside the square crop and pillarboxes landscape", () => {
-    // Captions sit at 70–82% of a 1280px frame (896–1050px) and a CU's eyes and
-    // mouth at roughly 30–55% (384–704px). Both must lie inside the square crop.
+    // Captions sit at 70–82% of a 1920px frame (1344–1574px) and a CU's eyes and
+    // mouth at roughly 30–55% (576–1056px). Both must lie inside the square crop.
     const crop = reframeFilter("1:1");
-    expect(crop).toContain("crop=720:720");
-    const top = (1280 - 720) * 0.61;
-    expect(top).toBeLessThanOrEqual(384);
-    expect(top + 720).toBeGreaterThanOrEqual(1050);
+    expect(crop).toContain("crop=iw:iw");
+    const top = (1920 - 1080) * 0.61;
+    expect(top).toBeLessThanOrEqual(576);
+    expect(top + 1080).toBeGreaterThanOrEqual(1574);
     expect(reframeFilter("16:9")).toContain("boxblur");
     expect(DELIVERABLE_SIZES["16:9"]).toEqual({ width: 1920, height: 1080 });
   });

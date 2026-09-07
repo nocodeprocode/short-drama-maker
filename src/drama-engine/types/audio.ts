@@ -65,10 +65,10 @@ export const CAPTION_STYLE = {
   maxLines: 2,
   /** Lower-third title-safe. Chest-center (~50%) and TikTok chrome (bottom ~15%) are both illegal. */
   bandFromTopPct: { min: 70, max: 82 },
-  keepOutBottomPx: 200,
-  keepOutRightPx: 48,
-  keepOutLeftPx: 48,
-  canvas: { width: 720, height: 1280 },
+  keepOutBottomPx: 300,
+  keepOutRightPx: 72,
+  keepOutLeftPx: 72,
+  canvas: { width: 1080, height: 1920 },
   speakerColors: {
     mara: "#F4C36A",
     eli: "#8EC8FF",

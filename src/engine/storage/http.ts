@@ -1,5 +1,5 @@
 import type { Asset } from "../domain.ts";
-import { mediaFetch } from "./fetch.ts";
+import { isTransientStoreFailure, mediaFetch } from "./fetch.ts";
 import { signedGetUrl } from "./sign.ts";
 import type { AssetStore, PutAssetInput } from "./types.ts";
 
@@ -13,6 +13,8 @@ export type HttpAssetStoreConfig = {
 export const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
 /** R2 wants every part but the last the same size, and at least 5 MiB. */
 export const MULTIPART_PART_BYTES = 32 * 1024 * 1024;
+/** Extra tries for an object write the store refused for its own reasons. */
+export const PUT_RETRIES = 3;
 
 export class HttpAssetStore implements AssetStore {
   private readonly assets = new Map<string, Asset>();
@@ -50,17 +52,23 @@ export class HttpAssetStore implements AssetStore {
     if (input.body.byteLength > MULTIPART_THRESHOLD_BYTES) {
       await this.putMultipart(asset.storage_path, asset.mime_type, input.body);
     } else {
-      const response = await mediaFetch(this.objectUrl(asset.storage_path), {
-        method: "PUT",
-        headers: {
-          authorization: `Bearer ${this.config.token}`,
-          "content-type": asset.mime_type,
-        },
-        body: Buffer.from(input.body),
-      });
-      if (!response.ok) {
+      // A shoot runs for hours and writes hundreds of objects; one internal
+      // fault from the store must not end it.
+      for (let attempt = 0; ; attempt += 1) {
+        const response = await mediaFetch(this.objectUrl(asset.storage_path), {
+          method: "PUT",
+          headers: {
+            authorization: `Bearer ${this.config.token}`,
+            "content-type": asset.mime_type,
+          },
+          body: Buffer.from(input.body),
+        });
+        if (response.ok) break;
         const text = await response.text().catch(() => "");
-        throw new Error(`Media store PUT failed HTTP ${response.status}: ${text.slice(0, 200)}`);
+        if (attempt >= PUT_RETRIES || !isTransientStoreFailure(response.status, text)) {
+          throw new Error(`Media store PUT failed HTTP ${response.status}: ${text.slice(0, 200)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
       }
     }
     this.assets.set(asset.id, asset);

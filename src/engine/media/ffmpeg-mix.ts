@@ -26,6 +26,8 @@ export type MixInput = {
   visemeWanDialogue?: Array<boolean | null | undefined>;
   /** Per-take heard delay. When set, skip probe/align for that shot (keep picture in-point). */
   visemePadSeconds?: Array<number | null | undefined>;
+  /** Seedance scene takes: keep the model's own mux. Do not slip, pad, or remux speech. */
+  lockedNative?: boolean[];
   /** Receives the dialogue-only stem (48 kHz stereo WAV) on the programme clock. */
   onDialogueStem?: (stem: Uint8Array) => void | Promise<void>;
 };
@@ -218,13 +220,25 @@ function captionFillRgb(text: string): [number, number, number] {
   return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
 }
 
-async function renderCaptionPlate(file: string, text: string, frameHeight = CAPTION_STYLE.canvas.height): Promise<void> {
-  const bandPct = (CAPTION_STYLE.bandFromTopPct.min + CAPTION_STYLE.bandFromTopPct.max) / 2;
+/** Character intro labels sit high in frame, clear of faces at FaceTime register and of the caption band. */
+export const INTRO_LABEL_SECONDS = 2.2;
+const INTRO_LABEL_FROM_TOP_PCT = 11;
+
+async function renderCaptionPlate(
+  file: string,
+  text: string,
+  frameHeight = CAPTION_STYLE.canvas.height,
+  placement: "caption" | "label" = "caption",
+): Promise<void> {
+  const bandPct =
+    placement === "label" ? INTRO_LABEL_FROM_TOP_PCT : (CAPTION_STYLE.bandFromTopPct.min + CAPTION_STYLE.bandFromTopPct.max) / 2;
   const y = Math.round(frameHeight * (bandPct / 100));
   const width = CAPTION_STYLE.canvas.width;
   const maxW = width - CAPTION_STYLE.keepOutLeftPx - CAPTION_STYLE.keepOutRightPx;
-  const lines = wrapCaptionLines(text.replace(/\n/g, " "));
-  const fill = captionFillRgb(text);
+  const lines = placement === "label" ? [text.replace(/\n/g, " ")] : wrapCaptionLines(text.replace(/\n/g, " "));
+  const fill: [number, number, number] = placement === "label" ? [255, 214, 10] : captionFillRgb(text);
+  const fontSize = placement === "label" ? 40 : 54;
+  const floorPct = placement === "label" ? 0.04 : 0.62;
   const font = DRAW_FONTS.find((row) => existsSync(row)) ?? "";
   // Script name derived from the output file so the same manifest renders the same bytes.
   const script = `${file}.py`;
@@ -234,7 +248,7 @@ async function renderCaptionPlate(file: string, text: string, frameHeight = CAPT
 img = Image.new("RGBA", (${width}, ${frameHeight}), (0, 0, 0, 0))
 draw = ImageDraw.Draw(img)
 try:
-    font = ImageFont.truetype(${JSON.stringify(font)}, 36) if ${JSON.stringify(font)} else ImageFont.load_default()
+    font = ImageFont.truetype(${JSON.stringify(font)}, ${fontSize}) if ${JSON.stringify(font)} else ImageFont.load_default()
 except Exception:
     font = ImageFont.load_default()
 lines = ${JSON.stringify(lines)}
@@ -259,8 +273,8 @@ y0 = ${y} - block_h / 2
 bottom = ${frameHeight} - ${CAPTION_STYLE.keepOutBottomPx}
 if y0 + block_h > bottom:
     y0 = bottom - block_h
-if y0 < ${frameHeight} * 0.62:
-    y0 = ${frameHeight} * 0.62
+if y0 < ${frameHeight} * ${floorPct}:
+    y0 = ${frameHeight} * ${floorPct}
 cursor = y0
 for line, (tw, th) in zip(lines, sizes):
     x = (${width} - min(tw, max_w)) / 2
@@ -275,26 +289,54 @@ img.save(${JSON.stringify(file)})
   await run("python3", [script]);
 }
 
+export const SCENE_TAKE_FADE_SECONDS = 0.4;
+
+export function clipFadeFilters(input: { duration: number; fadeIn?: boolean; fadeOut?: boolean }): string[] {
+  const fade = Math.min(SCENE_TAKE_FADE_SECONDS, Math.max(0.12, input.duration / 6));
+  return [
+    input.fadeIn ? `fade=t=in:st=0:d=${fade.toFixed(3)}` : null,
+    input.fadeOut ? `fade=t=out:st=${Math.max(0, input.duration - fade).toFixed(3)}:d=${fade.toFixed(3)}` : null,
+  ].filter((row): row is string => Boolean(row));
+}
+
+/** Micro-drama grade: a touch more contrast and colour than broadcast neutral; phone screens flatten both. */
+const DRAMA_GRADE = [
+  "eq=contrast=1.07:brightness=0.008:saturation=1.10:gamma=0.97",
+  "colorbalance=rs=0.04:gs=0.01:bs=-0.03",
+  "noise=alls=3:allf=t",
+  "vignette=PI/5",
+];
+
 async function prepareClip(
   dir: string,
   index: number,
   body: Uint8Array,
   shot: RenderManifest["shots"][number] | undefined,
   keepAudio = false,
+  nextTransition?: RenderManifest["shots"][number]["transition_in"],
+  edgeFades = true,
 ): Promise<string> {
   const raw = join(dir, `shot-${index}.mp4`);
   await writeFile(raw, body);
   const out = join(dir, `clip-${index}.mp4`);
   const inPoint = shot?.in_point_seconds ?? 0;
-  const trimmed = Math.max(0.4, (shot?.out_point_seconds ?? inPoint + 4) - inPoint);
+  const rawSpan = Math.max(0.4, (shot?.out_point_seconds ?? inPoint + 4) - inPoint);
+  const trimmed = Math.max(0.4, rawSpan);
   const hold = shot?.hold_tail_seconds ?? 0;
   const vf = [
-    "scale=720:1280:force_original_aspect_ratio=increase",
-    "crop=720:1280",
-    "eq=contrast=1.04:brightness=0.02:saturation=1.04:gamma=1.02",
+    "scale=1080:1920:force_original_aspect_ratio=increase",
+    "crop=1080:1920",
+    ...DRAMA_GRADE,
     "fps=30",
     "format=yuv420p",
     hold > 0 ? `tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)}` : null,
+    ...(edgeFades
+      ? clipFadeFilters({
+          duration: trimmed + Math.max(0, hold),
+          fadeIn: shot?.transition_in === "fade",
+          fadeOut: nextTransition === "fade",
+        })
+      : []),
   ]
     .filter(Boolean)
     .join(",");
@@ -308,7 +350,7 @@ async function prepareClip(
     raw,
     "-vf",
     vf,
-    ...(keepAudio ? ["-c:a", "aac", "-b:a", "192k"] : ["-an"]),
+    ...(keepAudio ? ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"] : ["-an"]),
     "-c:v",
     "libx264",
     "-preset",
@@ -320,17 +362,97 @@ async function prepareClip(
   return out;
 }
 
-export async function encodePortraitSlate(seconds = 2): Promise<Uint8Array | null> {
+export type ClipJoin = { style: "dissolve" | "fadeblack" | "fadewhite" | "cut"; seconds: number };
+
+async function probeDurationSeconds(path: string): Promise<number> {
+  const child = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  let out = "";
+  child.stdout?.on("data", (chunk: Buffer) => {
+    out += String(chunk);
+  });
+  await new Promise<void>((resolve) => child.on("exit", () => resolve()));
+  const seconds = Number(out.trim());
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+}
+
+/**
+ * Real transitions between takes: xfade on picture, acrossfade on sound, so a
+ * scene-take episode reads as one film instead of clips dipped to black.
+ * Returns the picture path and how much each join shortened the timeline.
+ */
+export async function xfadeConcat(
+  dir: string,
+  clips: string[],
+  joins: ClipJoin[],
+  keepAudio: boolean,
+): Promise<{ path: string; overlaps: number[] }> {
+  if (clips.length === 1) return { path: clips[0]!, overlaps: [] };
+  const durations: number[] = [];
+  for (const clip of clips) durations.push(await probeDurationSeconds(clip));
+  const overlaps: number[] = [];
+  const inputs = clips.flatMap((clip) => ["-i", clip]);
+  const video: string[] = [];
+  const audio: string[] = [];
+  let timeline = durations[0]!;
+  let vPrev = "[0:v]";
+  let aPrev = "[0:a]";
+  for (let i = 1; i < clips.length; i += 1) {
+    const join = joins[i - 1] ?? { style: "cut", seconds: 0 };
+    const maxOverlap = Math.max(0.1, Math.min(durations[i - 1]! - 0.3, durations[i]! - 0.3) / 2);
+    // xfade needs at least a few frames of overlap or the chain stops at that join;
+    // three frames at 30fps still reads as a hard cut.
+    const d = join.style === "cut" ? 0.1 : Math.max(0.1, Math.min(join.seconds, maxOverlap));
+    // xfade's own "dissolve" is a speckle dissolve; a true crossfade is "fade".
+    const transition = join.style === "cut" || join.style === "dissolve" ? "fade" : join.style;
+    const offset = Math.max(0, timeline - d);
+    const vOut = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
+    const aOut = i === clips.length - 1 ? "[aout]" : `[a${i}]`;
+    video.push(`${vPrev}[${i}:v]xfade=transition=${transition}:duration=${d.toFixed(3)}:offset=${offset.toFixed(3)}${vOut}`);
+    if (keepAudio) audio.push(`${aPrev}[${i}:a]acrossfade=d=${Math.max(0.04, d).toFixed(3)}:c1=tri:c2=tri${aOut}`);
+    overlaps.push(d);
+    timeline = offset + durations[i]!;
+    vPrev = vOut;
+    aPrev = aOut;
+  }
+  const out = join(dir, "picture.mp4");
+  await run("ffmpeg", [
+    "-y",
+    ...inputs,
+    "-filter_complex",
+    [...video, ...audio].join(";"),
+    "-map",
+    "[vout]",
+    ...(keepAudio ? ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"] : ["-an"]),
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "20",
+    "-pix_fmt",
+    "yuv420p",
+    out,
+  ]);
+  return { path: out, overlaps };
+}
+
+export async function encodePortraitSlate(seconds = 2, withSilentAudio = false): Promise<Uint8Array | null> {
   if (!(await ffmpegAvailable())) return null;
   const dir = await mkdtemp(join(tmpdir(), "sdm-slate-"));
   const out = join(dir, "slate.mp4");
+  const duration = Math.max(0.4, seconds).toFixed(3);
   try {
     await run("ffmpeg", [
       "-y",
       "-f",
       "lavfi",
       "-i",
-      `color=c=0x1a1a1a:s=720x1280:d=${Math.max(0.4, seconds).toFixed(3)}:r=30`,
+      `color=c=0x1a1a1a:s=1080x1920:d=${duration}:r=30`,
+      ...(withSilentAudio
+        ? ["-f", "lavfi", "-i", `anullsrc=channel_layout=stereo:sample_rate=48000:d=${duration}`]
+        : []),
       "-pix_fmt",
       "yuv420p",
       "-c:v",
@@ -339,7 +461,7 @@ export async function encodePortraitSlate(seconds = 2): Promise<Uint8Array | nul
       "veryfast",
       "-crf",
       "20",
-      "-an",
+      ...(withSilentAudio ? ["-c:a", "aac", "-b:a", "128k", "-shortest"] : ["-an"]),
       out,
     ]);
     return new Uint8Array(await readFile(out));
@@ -355,6 +477,7 @@ async function concatClipFiles(
   files: string[],
   outName: string,
   copy = false,
+  keepAudio = false,
 ): Promise<string> {
   const listPath = join(dir, `${outName}.txt`);
   await writeFile(listPath, files.map((file) => `file '${file}'`).join("\n"));
@@ -369,29 +492,44 @@ async function concatClipFiles(
     listPath,
     ...(copy
       ? ["-c", "copy"]
-      : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an"]),
+      : keepAudio
+        ? ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k"]
+        : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-an"]),
     out,
   ]);
   return out;
 }
 
 /** Concat in 12-clip batches so a 15-min episode is not one in-memory bomb. */
-export async function concatClipsIncremental(dir: string, clips: string[], batchSize = 12): Promise<string> {
-  if (clips.length <= batchSize) return concatClipFiles(dir, clips, "picture.mp4");
+export async function concatClipsIncremental(
+  dir: string,
+  clips: string[],
+  batchSize = 12,
+  keepAudio = false,
+): Promise<string> {
+  if (clips.length <= batchSize) return concatClipFiles(dir, clips, "picture.mp4", false, keepAudio);
   const batches: string[] = [];
   for (let i = 0; i < clips.length; i += batchSize) {
-    batches.push(await concatClipFiles(dir, clips.slice(i, i + batchSize), `batch-${i}.mp4`));
+    batches.push(await concatClipFiles(dir, clips.slice(i, i + batchSize), `batch-${i}.mp4`, false, keepAudio));
   }
-  return concatClipFiles(dir, batches, "picture.mp4", true);
+  return concatClipFiles(dir, batches, "picture.mp4", true, keepAudio);
 }
 
-function stingTimesMs(manifest: RenderManifest, total: number): number[] {
+/** A sting in the first frames reads as a trailer whoosh, not a drama open. */
+const OPENING_STING_GUARD_MS = 400;
+
+/**
+ * When the impact sting should hit. Chapter and cliff only — never the first
+ * frame, even if the planner tagged the hook as a sting.
+ */
+export function stingTimesMs(manifest: RenderManifest, total: number): number[] {
   const chapter = manifest.shots
     .filter((shot) => shot.sting)
     .map((shot) => Math.max(0, (shot.picture_start_seconds ?? 0) * 1000));
-  const button = manifest.shots.find((shot) => shot.scene_kind === "button") ?? manifest.shots.at(-1);
+  const button =
+    [...manifest.shots].reverse().find((shot) => shot.scene_kind === "button") ?? manifest.shots.at(-1);
   const end = Math.max(0, (button?.picture_start_seconds ?? total - 1.2) * 1000);
-  return [...new Set([...chapter, end])].slice(0, 16);
+  return [...new Set([...chapter, end])].filter((at) => at >= OPENING_STING_GUARD_MS).slice(0, 16);
 }
 
 export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | null> {
@@ -411,6 +549,14 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     const measuredPad: boolean[] = [];
     for (const [index, shot] of shots.entries()) {
       const lane = input.heardLanes?.[index] ?? shot.heard_audio ?? (shot.audio_role === "silent" ? "silent" : "tts");
+      if (input.lockedNative?.[index]) {
+        visemePads[index] = 0;
+        measuredPad[index] = true;
+        shot.in_point_seconds = 0;
+        shot.audio_slip_seconds = 0;
+        shot.audio_skip_seconds = 0;
+        continue;
+      }
       if (lane !== "native") {
         visemePads[index] = 0;
         measuredPad[index] = true;
@@ -457,29 +603,83 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     }
     const localManifest: RenderManifest = { ...input.manifest, shots };
 
+    const useTakeMux = Boolean(input.lockedNative?.length && input.lockedNative.every(Boolean));
+    // Scene-take episodes join with real transitions (xfade) instead of per-clip
+    // dips to black. Long block renders keep the batch concat.
+    const useXfade = useTakeMux && shots.length <= 12 && shots.some((shot) => shot.transition_in === "fade");
     const clips: string[] = [];
     for (const [index, body] of input.shotBodies.entries()) {
       const lane = input.heardLanes?.[index] ?? shots[index]?.heard_audio;
+      const locked = Boolean(input.lockedNative?.[index]);
       // Picture-only: native heard audio stays on the untrimmed take so a viseme
       // in-point does not also skip the delayed track (that recreates the gap).
-      const clip = await prepareClip(dir, index, body, shots[index], shouldKeepTakeAudio(lane) && (shots[index]?.in_point_seconds ?? 0) < 0.02);
+      const clip = await prepareClip(
+        dir,
+        index,
+        body,
+        shots[index],
+        locked || (shouldKeepTakeAudio(lane) && (shots[index]?.in_point_seconds ?? 0) < 0.02),
+        shots[index + 1]?.transition_in,
+        !useXfade,
+      );
       clips.push(clip);
     }
 
-    let picture = await concatClipsIncremental(dir, clips);
-    if (input.vtt?.includes("-->")) {
-      const cues = cuesFromVtt(input.vtt).map((cue) => {
-        const idx = input.manifest.shots.findIndex((shot, index) => {
-          const start = originalStarts[index] ?? shot.picture_start_seconds ?? 0;
-          const end = start + Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds) + (shot.hold_tail_seconds ?? 0);
-          return cue.start >= start - 0.05 && cue.start < end + 0.05;
-        });
-        const pad = idx >= 0 ? visemePads[idx] ?? 0 : 0;
-        const oldStart = idx >= 0 ? (originalStarts[idx] ?? 0) : 0;
-        const newStart = idx >= 0 ? (shots[idx]?.picture_start_seconds ?? 0) : 0;
-        const rel = cue.start - oldStart;
-        return { ...cue, start: newStart + rel + pad, end: newStart + (cue.end - oldStart) + pad };
-      });
+    const slate = await encodePortraitSlate(2, useTakeMux);
+    if (slate) {
+      const slatePath = join(dir, "end-card.mp4");
+      await writeFile(slatePath, slate);
+      clips.push(slatePath);
+    }
+    let picture: string;
+    if (useXfade) {
+      const joins: ClipJoin[] = shots.slice(1).map((shot) =>
+        shot.transition_in === "fade"
+          ? { style: shot.transition_style ?? "dissolve", seconds: shot.transition_seconds ?? 0.5 }
+          : { style: "cut", seconds: 0 },
+      );
+      if (slate) joins.push({ style: "fadeblack", seconds: 0.4 });
+      const joined = await xfadeConcat(dir, clips, joins, useTakeMux);
+      picture = joined.path;
+      // Every overlap pulls the rest of the timeline earlier; captions, stings
+      // and the bed map must follow the picture that was actually written.
+      let shift = 0;
+      for (const [index, shot] of shots.entries()) {
+        if (index > 0) shift += joined.overlaps[index - 1] ?? 0;
+        shot.picture_start_seconds = Math.max(0, (shot.picture_start_seconds ?? 0) - shift);
+      }
+    } else {
+      picture = await concatClipsIncremental(dir, clips, 12, useTakeMux);
+    }
+    const introPlates: Array<{ file: string; start: number; end: number }> = [];
+    for (const [index, shot] of shots.entries()) {
+      for (const [labelIndex, label] of (shot.intro_labels ?? []).entries()) {
+        const file = join(dir, `label-${index}-${labelIndex}.png`);
+        try {
+          await renderCaptionPlate(file, label, CAPTION_STYLE.canvas.height, "label");
+          // Stagger when two people are introduced in the same clip.
+          const start = (shot.picture_start_seconds ?? 0) + 0.3 + labelIndex * (INTRO_LABEL_SECONDS + 0.2);
+          introPlates.push({ file, start, end: start + INTRO_LABEL_SECONDS });
+        } catch {
+          /* PIL missing — skip that plate */
+        }
+      }
+    }
+    if (input.vtt?.includes("-->") || introPlates.length) {
+      const cues = input.vtt?.includes("-->")
+        ? cuesFromVtt(input.vtt).map((cue) => {
+            const idx = input.manifest.shots.findIndex((shot, index) => {
+              const start = originalStarts[index] ?? shot.picture_start_seconds ?? 0;
+              const end = start + Math.max(0.4, shot.out_point_seconds - shot.in_point_seconds) + (shot.hold_tail_seconds ?? 0);
+              return cue.start >= start - 0.05 && cue.start < end + 0.05;
+            });
+            const pad = idx >= 0 ? visemePads[idx] ?? 0 : 0;
+            const oldStart = idx >= 0 ? (originalStarts[idx] ?? 0) : 0;
+            const newStart = idx >= 0 ? (shots[idx]?.picture_start_seconds ?? 0) : 0;
+            const rel = cue.start - oldStart;
+            return { ...cue, start: newStart + rel + pad, end: newStart + (cue.end - oldStart) + pad };
+          })
+        : [];
       const plates: Array<{ file: string; start: number; end: number }> = [];
       for (const [index, cue] of cues.entries()) {
         const file = join(dir, `cap-${index}.png`);
@@ -490,6 +690,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
           /* PIL missing — skip that plate */
         }
       }
+      plates.push(...introPlates);
       if (plates.length) {
         const captioned = join(dir, "picture-cap.mp4");
         const overlayArgs = ["-y", "-i", picture];
@@ -505,7 +706,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
           "veryfast",
           "-crf",
           "20",
-          "-an",
+          ...(useTakeMux ? ["-map", "0:a?", "-c:a", "copy"] : ["-an"]),
           captioned,
         );
         await run("ffmpeg", overlayArgs);
@@ -534,6 +735,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
 
     const dialogueFiles: Array<{ file: string; delayMs: number; windowSeconds: number }> = [];
     for (const [index, shot] of shots.entries()) {
+      if (useTakeMux) continue;
       const lane = input.heardLanes?.[index] ?? shot.heard_audio ?? (shot.audio_role === "silent" ? "silent" : "tts");
       if (lane === "silent") continue;
       const native = lane === "native" ? (input.shotBodies[index] ?? input.nativeAudio?.[index]) : null;
@@ -587,12 +789,16 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     const sfxFiles: Array<{ file: string; delayMs: number }> = [];
     for (const shot of localManifest.shots) {
       if (!shot.sfx && !shot.sting) continue;
+      const delayMs = Math.max(0, (shot.picture_start_seconds ?? 0) * 1000);
+      // The same impact file is the sting bus. Playing it again at 0:00 is the
+      // "fling" on the first frame.
+      if (delayMs < OPENING_STING_GUARD_MS && (shot.sfx === "impact" || (!shot.sfx && shot.sting))) continue;
       const bytes = libraryStem("sfx", shot.sfx ?? (shot.sting ? "impact" : null))
         ?? libraryStem("sting", shot.sfx ?? "comic");
       if (!bytes) continue;
       const file = join(dir, `sfx-${sfxFiles.length}.bin`);
       await writeFile(file, bytes);
-      sfxFiles.push({ file, delayMs: Math.max(0, (shot.picture_start_seconds ?? 0) * 1000) });
+      sfxFiles.push({ file, delayMs });
     }
 
     const vttPath = join(dir, "captions.vtt");
@@ -637,7 +843,9 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     // Every dialogue edge gets a short fade so cuts never click, and the take's
     // sound is trimmed to its picture window.
     const dlg =
-      dialogueFiles.length === 0
+      useTakeMux
+        ? `[0:a]${fmt}[dlgraw]`
+        : dialogueFiles.length === 0
         ? `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${total.toFixed(3)},${fmt}[dlgraw]`
         : dialogueFiles
             .map((row, i) => {
@@ -667,15 +875,17 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
           `${fmt}[sfx]`;
     const burn = "[0:v]format=yuv420p[v]";
     const stingGraph =
-      stingAts.length <= 1
-        ? `[1:a]${fmt},adelay=${Math.round(stingAts[0] ?? 0)}|${Math.round(stingAts[0] ?? 0)},volume=1.8[sting]`
-        : `[1:a]${fmt},asplit=${stingAts.length}${stingAts.map((_, i) => `[ss${i}]`).join("")};` +
-          stingAts
-            .map((at, i) => `[ss${i}]adelay=${Math.round(at)}|${Math.round(at)},volume=1.8[st${i}]`)
-            .join(";") +
-          ";" +
-          stingAts.map((_, i) => `[st${i}]`).join("") +
-          `amix=inputs=${stingAts.length}:normalize=0:dropout_transition=0[sting]`;
+      stingAts.length === 0
+        ? `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:0.2,volume=0,${fmt}[sting]`
+        : stingAts.length === 1
+          ? `[1:a]${fmt},adelay=${Math.round(stingAts[0]!)}|${Math.round(stingAts[0]!)},volume=1.8[sting]`
+          : `[1:a]${fmt},asplit=${stingAts.length}${stingAts.map((_, i) => `[ss${i}]`).join("")};` +
+            stingAts
+              .map((at, i) => `[ss${i}]adelay=${Math.round(at)}|${Math.round(at)},volume=1.8[st${i}]`)
+              .join(";") +
+            ";" +
+            stingAts.map((_, i) => `[st${i}]`).join("") +
+            `amix=inputs=${stingAts.length}:normalize=0:dropout_transition=0[sting]`;
 
     // The bed is ducked by the dialogue itself (sidechain), so it sits under
     // speech and comes back up in the gaps instead of a flat volume for the

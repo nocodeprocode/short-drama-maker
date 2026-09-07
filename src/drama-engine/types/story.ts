@@ -50,14 +50,14 @@ export const CAST_CONSTRAINT: CastConstraint = {
 };
 
 export type PaywallRule = {
-  freeEpisodes: { min: 5; max: 10 };
+  freeEpisodes: { min: number; max: number };
   lastFreeMustBe: "CliffhangerEp";
   strongestOfSeasonSoFar: true;
   romanceHintAfterFirstKiss: boolean;
 };
 
 export const DEFAULT_PAYWALL: PaywallRule = {
-  freeEpisodes: { min: 5, max: 10 },
+  freeEpisodes: { min: 8, max: 12 },
   lastFreeMustBe: "CliffhangerEp",
   strongestOfSeasonSoFar: true,
   romanceHintAfterFirstKiss: true,

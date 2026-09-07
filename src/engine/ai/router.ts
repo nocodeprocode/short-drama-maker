@@ -1,5 +1,5 @@
 import { VIDEO_ROUTES } from "../config/models.ts";
-import { isObjectInsert } from "../../drama-engine/types/editorial.ts";
+import { isObjectInsert, isSceneTake } from "../../drama-engine/types/editorial.ts";
 import type {
   PrivacyProfile,
   QualityProfile,
@@ -44,7 +44,7 @@ function isAction(shot: Shot): boolean {
 
 export function failoverRoute(_shot: Shot, current: VideoRoute): VideoRoute {
   if (current.model === "alibaba/wan-3.0") return VIDEO_ROUTES.economy_default;
-  if (current.model === "bytedance/seedance-2.5") return VIDEO_ROUTES.dialogue_default;
+  if (current.model === "bytedance/seedance-2.5") return VIDEO_ROUTES.economy_default;
   if (current.model === "bytedance/seedance-2.0-mini") return VIDEO_ROUTES.dialogue_default;
   if (current.model === VIDEO_ROUTES.action.model) return VIDEO_ROUTES.economy_default;
   return VIDEO_ROUTES.economy_default;
@@ -76,18 +76,25 @@ function identityCuDecision(duration: number): RouteDecision | null {
 export const router: AIRouter = {
   selectVideoRoute(shot: Shot, privacy: PrivacyProfile, quality: QualityProfile) {
     assertStandardOnly(privacy);
-    const duration = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+    const raw = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
+    const seedance = VIDEO_ROUTES.dialogue_default;
+    const duration = Math.min(seedance.max_duration_seconds, Math.max(raw, seedance.min_duration_seconds));
 
-    const identity = isIdentityCuShot(shot) ? identityCuDecision(duration) : null;
+    if (isSceneTake(shot.shot_data)) {
+      return pick("hero", duration, "continuous scene take — Seedance 2.5");
+    }
+
+    if (isObjectInsert(shot.shot_data) && !shot.shot_data.dialogue) {
+      return pick("economy_default", duration, "faceless object insert — economy fallback if the still plate cannot be cut");
+    }
+
+    const identity = isIdentityCuShot(shot) ? identityCuDecision(raw) : null;
     if (identity) return identity;
 
-    // Any on-camera spoken line needs a route that returns speech with the
-    // picture. A "hero" button on Seedance came back silent and muted the
-    // cliffhanger; the hero route is for picture-only beats.
     const spokenOnCamera =
       Boolean(shot.shot_data.dialogue) && shot.shot_data.audio_role !== "offscreen" && shot.shot_data.audio_role !== "silent";
-    if (spokenOnCamera && VIDEO_ROUTES.dialogue_default.audio_conditioning_verified) {
-      return pick("dialogue_default", duration, "spoken on camera — audio-capable route");
+    if (spokenOnCamera) {
+      return pick("dialogue_default", duration, "spoken on camera — Seedance 2.5 native audio");
     }
 
     if (shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") {

@@ -167,12 +167,32 @@ describe("take scoring", () => {
     expect(ghost.blockers).toContain("invented_people");
     const sheer = scoreTake(analysis({ sheer_or_bra: true }), { dialogueCu: true, lockedTake: true });
     expect(sheer.blockers).toContain("modest_dress");
+    // On a two-shot scene take the chest band is mid-frame scenery; the pixel gate only warns.
+    const wide = scoreTake(analysis({ sheer_or_bra: true }), { dialogueCu: true, lockedTake: false, sceneTake: true, expectedFaces: 2 });
+    expect(wide.blockers).not.toContain("modest_dress");
+    expect(wide.warnings).toContain("modest_dress_unverified");
     const cut = scoreTake(analysis({ internal_cut_count: 1 }), { dialogueCu: true, lockedTake: true });
     expect(cut.blockers).toContain("internal_cut");
     const stranger = scoreTake(analysis({ face_similarity: 0.3 }), { dialogueCu: true, lockedTake: true });
     expect(stranger.blockers).toContain("identity_drift");
     const twoFaces = scoreTake(analysis({ face_count: 2 }), { dialogueCu: true, lockedTake: true });
     expect(twoFaces.blockers).toContain("invented_people");
+    const sceneTake = scoreTake(analysis({ second_body: true, face_count: 2 }), {
+      dialogueCu: true,
+      lockedTake: false,
+      expectedFaces: 2,
+      sceneTake: true,
+    });
+    expect(sceneTake.blockers).not.toContain("invented_people");
+    const oneFaceScene = scoreTake(analysis({ face_count: 1, speech_fits: false }), {
+      dialogueCu: true,
+      lockedTake: false,
+      expectedFaces: 2,
+      sceneTake: true,
+    });
+    expect(oneFaceScene.blockers).not.toContain("invented_people");
+    expect(oneFaceScene.blockers).not.toContain("voice_leads_mouth_unfixable");
+    expect(oneFaceScene.warnings).toContain("missing_faces");
     const mute = scoreTake(analysis({ has_audio: false }), { dialogueCu: true, lockedTake: true });
     expect(mute.blockers).toContain("native_audio_missing");
   });

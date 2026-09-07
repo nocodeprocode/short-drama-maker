@@ -8,11 +8,14 @@ export async function chooseHeardLane(input: {
   hasNativeAudio?: boolean;
   /** Take was I2V'd with reference_audio / generate_audio — lips follow that file. */
   audioConditioned?: boolean;
+  /** Seedance scene takes already carry the spoken scene; never substitute TTS. */
+  sceneTake?: boolean;
 }): Promise<HeardLane> {
   if (!input.dialogue?.trim()) return "silent";
   if (input.audioRole === "offscreen" || input.audioRole === "silent") return "tts";
   // Onscreen speech: play the audio that drove the mouth. Never lay dry TTS
   // over a take whose visemes were timed to a different file.
+  if (input.sceneTake && input.hasNativeAudio) return "native";
   if (input.audioConditioned && input.hasNativeAudio) return "native";
   if (input.hasNativeAudio && input.nativeTranscript && dialogueMatchesTranscript(input.dialogue, input.nativeTranscript)) {
     return "native";

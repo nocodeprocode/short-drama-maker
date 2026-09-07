@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Shot } from "../../engine/domain.ts";
 import { groupEditorialScenes } from "./scene-groups.ts";
 import { buildRenderManifest, pickTransition } from "./manifest-builder.ts";
-import { buildEditTimeline } from "./timeline.ts";
+import { buildEditTimeline, speechNeedSeconds } from "./timeline.ts";
 
 function shot(partial: Partial<Shot["shot_data"]> & { id: string; position?: number }): Shot {
   return {
@@ -173,6 +173,106 @@ describe("editorial scenes", () => {
     const silent = manifest.shots[2]!;
     const silentPicture = silent.out_point_seconds - silent.in_point_seconds + (silent.hold_tail_seconds ?? 0);
     expect(silentPicture).toBeLessThanOrEqual(3);
+  });
+
+  it("keeps a spoken hook through the last word instead of capping at 2.2s", () => {
+    const hook = shot({
+      id: "h",
+      function: "hook_cu",
+      dialogue: "Where did you hear that name?",
+      audio_role: "onscreen",
+      duration_hint_seconds: 4,
+      duration_seconds: 4,
+    });
+    expect(speechNeedSeconds(hook)).toBeGreaterThan(2.2);
+    const { clips } = buildEditTimeline([hook]);
+    expect(clips[0]!.picture_duration_seconds).toBeGreaterThan(2.2);
+    const manifest = buildRenderManifest({
+      episode_id: "ep-spoken-hook",
+      shots: [hook],
+      assetIdFor: (row) => row.id,
+    });
+    const row = manifest.shots[0]!;
+    expect(row.out_point_seconds - row.in_point_seconds).toBeGreaterThan(2.2);
+  });
+
+  it("plays a scene take in full with no freeze tail", () => {
+    const take = shot({
+      id: "st",
+      function: "button_cu",
+      edit_mode: "scene_take",
+      dialogue: "Then whose name is on it?",
+      audio_role: "onscreen",
+      heard_audio: "native",
+      duration_hint_seconds: 15,
+      duration_seconds: 15,
+    });
+    const { clips } = buildEditTimeline([take], () => 15.07);
+    expect(clips[0]!.picture_duration_seconds).toBeCloseTo(15.07, 2);
+    expect(clips[0]!.hold_tail_seconds).toBe(0);
+    const manifest = buildRenderManifest({
+      episode_id: "ep-scene-take",
+      shots: [take],
+      assetIdFor: (row) => row.id,
+      durationFor: () => 15.07,
+    });
+    expect(manifest.shots[0]?.in_point_seconds).toBe(0);
+    expect(manifest.shots[0]?.out_point_seconds).toBeCloseTo(15.07, 2);
+  });
+
+  it("fades between scene takes instead of a hard cut", () => {
+    const first = shot({
+      id: "st1",
+      function: "hook_cu",
+      edit_mode: "scene_take",
+      dialogue: "Whose name is on that carrier?",
+      scene_script: "MARA: Whose name is on that carrier?",
+      audio_role: "onscreen",
+      duration_hint_seconds: 14,
+      duration_seconds: 14,
+    });
+    const second = shot({
+      id: "st2",
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "COLE",
+      dialogue: "Yours.",
+      scene_script: "COLE: Yours.",
+      audio_role: "onscreen",
+      duration_hint_seconds: 14,
+      duration_seconds: 14,
+    });
+    expect(pickTransition(first, second)).toBe("fade");
+    const { clips } = buildEditTimeline([first, second]);
+    expect(clips[1]?.transition_in).toBe("fade");
+    const manifest = buildRenderManifest({
+      episode_id: "ep-labels",
+      shots: [first, second],
+      assetIdFor: (row) => row.id,
+      labelFor: (name) => (name.toUpperCase() === "MARA" ? "Night delivery driver" : name.toUpperCase() === "COLE" ? "Night clerk" : null),
+    });
+    expect(manifest.shots[0]?.intro_labels).toEqual(["MARA — Night delivery driver"]);
+    expect(manifest.shots[1]?.intro_labels).toEqual(["COLE — Night clerk"]);
+    expect(manifest.shots[1]?.transition_style).toBe("cut");
+  });
+
+  it("does not tail-trim a spoken take", () => {
+    const line = shot({
+      id: "a",
+      function: "accusation_cu",
+      dialogue: "I signed Tuesday.",
+      audio_role: "onscreen",
+      duration_hint_seconds: 4,
+      duration_seconds: 4,
+    });
+    const { clips } = buildEditTimeline([line]);
+    const manifest = buildRenderManifest({
+      episode_id: "ep-no-trim",
+      shots: [line],
+      assetIdFor: (row) => row.id,
+    });
+    const row = manifest.shots[0]!;
+    expect(row.out_point_seconds - row.in_point_seconds).toBeCloseTo(clips[0]!.picture_duration_seconds, 2);
   });
 
   it("does not crush a spoken line that was tagged post_nuke for a reaction pad", () => {

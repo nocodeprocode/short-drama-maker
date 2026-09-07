@@ -36,6 +36,18 @@ export class MemoryStore {
   dailySpendBaseline = 0;
   dailyCap = 2000;
   priceSnapshotVersion = "2026-08-31.v1-720p";
+  /** Scene rows removed from memory during replan; commit deletes them from Postgres. */
+  deletedSceneIds = new Set<string>();
+
+  purgeEpisodePlan(episodeId: string): void {
+    for (const scene of this.scenesFor(episodeId)) {
+      for (const shot of this.shotsFor(scene.id)) {
+        this.shots.delete(shot.id);
+      }
+      this.deletedSceneIds.add(scene.id);
+      this.scenes.delete(scene.id);
+    }
+  }
 
   seriesByOwner(ownerId: string): Series[] {
     return [...this.series.values()].filter(

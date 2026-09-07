@@ -21,7 +21,13 @@ const AGE_UNDER_18 = /\b(?:1[0-7]|[1-9])\s*(?:year|yr)s?\s*old\b/i;
 const ADULT_REFERENCE =
   /\b(went to school with (?:a |the )?(?:girl|boy)|(?:when|since) (?:i|she|he|we|you) (?:was|were) (?:a |just a )?(?:girl|boy|kid|child)|as a (?:girl|boy|kid|child)|my (?:girl|boy)\b(?! ?friend)|(?:our|the|my|your|his|her) (?:kids|children) (?:are|were|have) (?:grown|adults|older)|(?:good|old|big|poor|clever|that) (?:girl|boy)\b)/gi;
 const SEXUAL =
-  /\b(nude|naked|nsfw|porn|sexual|sex scene|erotic|explicit|onlyfans|lingerie|bikini|crop top|midriff|sleep shirt|nightgown)\b/i;
+  /\b(nude|naked|nsfw|porn|sexual|sex scene|erotic|explicit|onlyfans|lingerie|bikini|crop top|midriff|sleep shirt|nightgown|undress|bedroom intimacy|on the bed together)\b/i;
+const DRUGS =
+  /\b(hashish|cannabis|cocaine|heroin|meth|snort(?:ing|s)?)\b/i;
+const VIOLENCE =
+  /\b(gun|pistol|rifle|shoot(?:s|ing|er)?|blood|stab|murder|kill(?:s|ing|ed)?|gore|fight club|punch(?:es|ing)? him|punch(?:es|ing)? her|strangl)\b/i;
+const CRIME_ON_CAMERA =
+  /\b(extort|break-?in|armed robbery|count the cash|launder|hitman|execute him|execute her)\b/i;
 
 export class ContentBlockedError extends Error {
   constructor(readonly verdict: ModerationVerdict) {
@@ -44,14 +50,22 @@ export function moderateText(
     return {
       verdict: "block",
       category: "sexual",
-      reason: "Sexual content is not allowed.",
+      reason: "Sexual or intimate content is not allowed.",
+    };
+  }
+  const pictured = checkpoint === "shot_submit" || checkpoint === "character_create";
+  if (pictured && (DRUGS.test(content) || VIOLENCE.test(content) || CRIME_ON_CAMERA.test(content))) {
+    return {
+      verdict: "block",
+      category: "uae_media",
+      reason: "Drugs, weapons, or crime on camera are not allowed.",
     };
   }
   // A depicted minor is blocked wherever a person is pictured or cast; spoken
   // lines are adults talking, so only explicit minors and ages block there.
-  const pictured = checkpoint !== "dialogue";
+  const shownPerson = checkpoint !== "dialogue";
   const scrubbed = content.replace(ADULT_REFERENCE, " ");
-  const minorHit = MINOR_EXPLICIT.test(content) || AGE_UNDER_18.test(content) || (pictured && MINOR.test(scrubbed));
+  const minorHit = MINOR_EXPLICIT.test(content) || AGE_UNDER_18.test(content) || (shownPerson && MINOR.test(scrubbed));
   if (minorHit) {
     return {
       verdict: "block",

@@ -45,6 +45,8 @@ export type TakeAnalysis = {
   audio_skip_seconds?: number;
   /** Whether the spoken line, placed on the mouth, ends before the picture does. Null when unknown. */
   speech_fits?: boolean | null;
+  /** Length of the spoken line from TTS alignment or transcript, when known. */
+  speech_seconds?: number | null;
   internal_cut_count: number;
   second_body: boolean;
   chest_skin_fraction: number | null;
@@ -550,6 +552,9 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
       base.viseme_pad_seconds = placement.pad;
       base.audio_slip_seconds = placement.slip;
       base.speech_fits = placement.fits;
+      if (input.speechSeconds != null && input.speechSeconds > 0) {
+        base.speech_seconds = input.speechSeconds;
+      }
 
       base.second_body = await inventedSecondBody(input.video, input.still ?? null).catch(() => false);
 
@@ -587,6 +592,8 @@ export type TakeScoreContext = {
   faceSimilarityFloor?: number;
   /** People the plan put in frame; a measured face_count that differs is a blocker. */
   expectedFaces?: number | null;
+  /** Continuous Seedance scene takes speak native audio in a two-shot. */
+  sceneTake?: boolean;
 };
 
 /** Cosine similarity below this reads as a different person. Tuned for ArcFace-style embeddings. */
@@ -602,15 +609,33 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
   if (context.dialogueCu && analysis.has_audio && analysis.voice_onset_seconds == null && analysis.speech_checked) blockers.push("no_speech");
   // The vision judge's face count is authoritative when it ran; the skin-blob
   // heuristic only decides when no judgement exists.
-  if (analysis.second_body && analysis.face_count == null) blockers.push("invented_people");
-  if (analysis.sheer_or_bra) blockers.push("modest_dress");
+  if (analysis.second_body && analysis.face_count == null && (context.expectedFaces ?? 1) < 2) {
+    blockers.push("invented_people");
+  }
+  // The chest-band skin measure is only meaningful on a single-face framing
+  // where the band is the chest. On a two-shot or a staged wide it samples
+  // whatever is mid-frame (warm brick, a table, a hand) and lies. There the
+  // prompt's dress lock and the vision judge own modesty; the pixel gate warns.
+  if (analysis.sheer_or_bra) {
+    if (context.sceneTake || (context.expectedFaces ?? 1) !== 1) {
+      warnings.push("modest_dress_unverified");
+      score -= 5;
+    } else {
+      blockers.push("modest_dress");
+    }
+  }
   if (context.lockedTake && analysis.internal_cut_count > 0) blockers.push("internal_cut");
   if (analysis.face_similarity != null && analysis.face_similarity < (context.faceSimilarityFloor ?? FACE_SIMILARITY_FLOOR)) {
     blockers.push("identity_drift");
   }
   const expectedFaces = context.expectedFaces ?? (context.dialogueCu ? 1 : null);
   if (expectedFaces != null && analysis.face_count != null && analysis.face_count !== expectedFaces) {
-    blockers.push("invented_people");
+    if (context.sceneTake && analysis.face_count < expectedFaces) {
+      warnings.push("missing_faces");
+      score -= 12;
+    } else {
+      blockers.push("invented_people");
+    }
   }
 
   const usable = analysis.duration_seconds - analysis.settle_in_seconds - analysis.audio_slip_seconds;
@@ -647,10 +672,12 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     // A voice that leads the lips is delayed onto them; that only fails when the
     // delayed line would run past the end of the picture.
     if (analysis.speech_fits === false) {
-      blockers.push("voice_leads_mouth_unfixable");
+      if (context.sceneTake) warnings.push("voice_leads_mouth_unfixable");
+      else blockers.push("voice_leads_mouth_unfixable");
     } else if (analysis.speech_fits == null && analysis.viseme_pad_seconds > VOICE_LEAD_PAD_MAX_SECONDS + 1) {
       // No line length to check against: a very large pad is more than a take can absorb.
-      blockers.push("voice_leads_mouth_unfixable");
+      if (context.sceneTake) warnings.push("voice_leads_mouth_unfixable");
+      else blockers.push("voice_leads_mouth_unfixable");
     }
     if (analysis.audio_slip_seconds > 0) {
       warnings.push("mouth_leads_voice_slipped");
@@ -658,7 +685,8 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     }
     if (analysis.mouth_open_seconds != null && analysis.mouth_open_seconds < analysis.settle_in_seconds) {
       // The mouth opened while the room was still morphing: the trimmed cut loses the first syllable.
-      blockers.push("speaks_before_settle");
+      if (context.sceneTake) warnings.push("speaks_before_settle");
+      else blockers.push("speaks_before_settle");
     }
     // The voice starting inside the morph is only a problem if the settle skip
     // would cut it; the placement stops the skip at the voice, so it does not.

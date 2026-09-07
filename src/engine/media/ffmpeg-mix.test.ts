@@ -9,10 +9,12 @@ import {
   assembleEpisodeMp4,
   captionForceStyle,
   captionOverlayFilter,
+  clipFadeFilters,
   encodePortraitSlate,
   heardBodyForShot,
   shouldKeepTakeAudio,
   silentWav,
+  stingTimesMs,
 } from "./ffmpeg-mix.ts";
 import type { RenderManifest } from "../domain.ts";
 
@@ -76,6 +78,28 @@ const manifest: RenderManifest = {
 };
 
 describe("ffmpeg mix", () => {
+  it("does not fire the impact sting on the first frame", () => {
+    expect(stingTimesMs(manifest, 8)).toEqual([2000]);
+    expect(
+      stingTimesMs(
+        {
+          ...manifest,
+          shots: [
+            { ...manifest.shots[0]!, sting: true, picture_start_seconds: 0, scene_kind: "button" },
+            { ...manifest.shots[1]!, sting: true, picture_start_seconds: 14, scene_kind: "button" },
+          ],
+        },
+        16,
+      ),
+    ).toEqual([14000]);
+  });
+
+  it("fades scene-take joins instead of a hard cut", () => {
+    expect(clipFadeFilters({ duration: 14, fadeIn: true, fadeOut: true }).join(",")).toMatch(/fade=t=in:st=0/);
+    expect(clipFadeFilters({ duration: 14, fadeIn: true, fadeOut: true }).join(",")).toMatch(/fade=t=out/);
+    expect(clipFadeFilters({ duration: 14 })).toEqual([]);
+  });
+
   it("does not drop take audio on audio-conditioned native shots", () => {
     const take = new Uint8Array([1, 2, 3, 4]);
     const tts = new Uint8Array([9, 9, 9, 9]);
@@ -601,6 +625,95 @@ describe("ffmpeg mix", () => {
       expect(voiceOut).not.toBeNull();
       expect(voiceOut ?? 0).toBeGreaterThanOrEqual(0.4);
       expect(voiceOut ?? 0).toBeLessThanOrEqual(0.65);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps locked Seedance speech on the picture clock with no pad", async () => {
+    if (!(await ffmpegAvailable())) return;
+    const dir = await mkdtemp(join(tmpdir(), "sdm-locked-mix-"));
+    try {
+      const takePath = join(dir, "take.mp4");
+      await run("ffmpeg", [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=0x222222:s=720x1280:d=2:r=30",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=1000:sample_rate=44100:duration=2",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-c:a",
+        "aac",
+        "-shortest",
+        takePath,
+      ]);
+      const take = new Uint8Array(await readFile(takePath));
+      const mixed = await assembleEpisodeMp4({
+        manifest: {
+          version: 1,
+          episode_id: "ep-locked",
+          shots: [
+            {
+              shot_id: "st",
+              asset_id: "st",
+              in_point_seconds: 0,
+              out_point_seconds: 2,
+              picture_start_seconds: 0,
+              audio_start_seconds: 0,
+              hold_tail_seconds: 0,
+              scene_kind: "dialogue",
+              transition_in: "cut",
+              audio_role: "onscreen",
+              heard_audio: "native",
+            },
+          ],
+          caption_asset_ids: [],
+          music_asset_ids: [],
+          sfx_asset_ids: [],
+          transitions: [],
+          scenes: [{ index: 0, kind: "dialogue", shot_ids: ["st"] }],
+        },
+        shotBodies: [take],
+        heardLanes: ["native"],
+        visemePadSeconds: [1.2],
+        lockedNative: [true],
+      });
+      expect(mixed).toBeTruthy();
+      const out = join(dir, "mixed.mp4");
+      const wav = join(dir, "mixed.wav");
+      await writeFile(out, mixed!);
+      await run("ffmpeg", ["-y", "-i", out, "-ac", "1", "-ar", "44100", "-c:a", "pcm_s16le", wav]);
+      const pcm = await readFile(wav);
+      let dataAt = 12;
+      while (dataAt + 8 <= pcm.byteLength) {
+        const id = pcm.toString("ascii", dataAt, dataAt + 4);
+        const size = pcm.readUInt32LE(dataAt + 4);
+        if (id === "data") {
+          dataAt += 8;
+          break;
+        }
+        dataAt += 8 + size + (size % 2);
+      }
+      const samples = new Int16Array(pcm.buffer, pcm.byteOffset + dataAt, Math.floor((pcm.byteLength - dataAt) / 2));
+      const early = samples.subarray(0, Math.round(0.35 * 44100));
+      const delayed = samples.subarray(Math.round(1.1 * 44100), Math.round(1.4 * 44100));
+      expect(goertzel(early, 44100, 1000)).toBeGreaterThan(1e12);
+      expect(goertzel(early, 44100, 1000)).toBeGreaterThan(goertzel(delayed, 44100, 1000) * 0.15);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
