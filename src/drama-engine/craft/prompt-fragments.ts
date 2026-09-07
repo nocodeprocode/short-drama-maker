@@ -27,7 +27,7 @@ export function sceneTakeBodyClause(_coverage?: string | null): string {
 }
 
 export const SCENE_TAKE_HANDOFF_CLAUSE =
-  "HANDOFF. Hard cuts only between numbered shots. Each cut CHANGES the camera: closer, slightly behind one person, then slightly behind the other, or both faces stacked near the lens. No dissolves, no morphs. A close-up HOLDS for the whole line — two seconds minimum — never a one-frame flash back to the master. A motivated slow push-in on heat is legal. Same place, same key light, same ground. NO DEAD AIR: the next line starts the moment the last one lands.";
+  "HANDOFF. Hard cuts only between numbered shots. Each cut CHANGES the camera: closer, slightly behind one person, then slightly behind the other, or both faces stacked near the lens. No dissolves, no morphs. Shot 1 may open on both upper bodies. Every later take JOINS closer — never reopen on a wide master. A close-up HOLDS for the whole line — two seconds minimum — never a one-frame flash back to the master. A motivated slow push-in on heat is legal. Same place, same key light, same ground. NO DEAD AIR: the next line starts the moment the last one lands. Never speak a character name unless it is inside the braces. Never speak a label.";
 
 export const SCENE_TAKE_PHYSICS_CLAUSE =
   "PHYSICS. Bodies obey gravity and the ground. Everyone is exactly where STAGING puts them — on the ground, kneeling, seated, leaning against a wall, or standing — and stays there in every shot. A person on the ground is low in frame with the ground visibly under them; a standing person has feet on the ground. No torso merges with a wall or a fixture; nothing floats; nobody sits on a surface that is not a seat. Walls, ground, and fixtures keep their size and place; a surface never stretches, shrinks, or becomes a different object. The prop rests where STAGING says with its base flat.";
@@ -104,6 +104,23 @@ export function sameSpeakerCast(before: readonly string[], after: readonly strin
   const fold = (name: string) => name.trim().toLowerCase().split(/\s+/)[0] ?? "";
   const have = new Set(after.map(fold).filter(Boolean));
   return before.every((name) => have.has(fold(name)));
+}
+
+/** Speakers plus anyone already in the room. A silent third person still packs. */
+export function peopleOnSceneTake(input: {
+  sceneScript?: string | null;
+  speaker?: string | null;
+  speakerOnCamera?: string | null;
+  blocking?: LooseBlocking | null;
+}): string[] {
+  return peopleInTake({
+    speakers: speakersForSceneTake({
+      sceneScript: input.sceneScript,
+      speaker: input.speaker,
+      speakerOnCamera: input.speakerOnCamera,
+    }),
+    blocking: input.blocking,
+  });
 }
 
 /** Face lock for Seedance. Never `NAME:` — that colon pattern makes the model say the name. */
@@ -459,12 +476,10 @@ export function sceneTakePrompt(input: {
   roomGeometry?: string | null;
 }): string {
   const lighting = identitySafeLocation(input.location, input.locationNote);
-  const who = peopleInTake({
-    speakers: speakersForSceneTake({
-      sceneScript: input.sceneScript,
-      speaker: input.people[0],
-      speakerOnCamera: input.people[1],
-    }),
+  const who = peopleOnSceneTake({
+    sceneScript: input.sceneScript,
+    speaker: input.people[0],
+    speakerOnCamera: input.people[1],
     blocking: input.blocking,
   });
   const names = who.length ? who.join(" and ") : "the named speakers";

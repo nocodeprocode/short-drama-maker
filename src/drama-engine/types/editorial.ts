@@ -48,6 +48,42 @@ export function isSceneTake(input: { function?: ShotFunction | string | null; ed
   return input.edit_mode === "scene_take" || input.function === "scene_take";
 }
 
+/**
+ * Native speech that must be measured. A scene take speaks even when the
+ * planner left `dialogue` empty and only wrote `scene_script` — skipping STT
+ * or the face box there lets name-leak and JOIN CUT pass in silence.
+ */
+export function spokenTakeNeedsMeasure(input: {
+  edit_mode?: string | null;
+  function?: ShotFunction | string | null;
+  type?: string | null;
+  dialogue?: string | null;
+  camera?: string | null;
+  audio_role?: string | null;
+}): boolean {
+  if (isSceneTake(input)) return true;
+  return (
+    Boolean(input.dialogue) &&
+    input.audio_role !== "offscreen" &&
+    input.audio_role !== "silent" &&
+    !isObjectInsert(input)
+  );
+}
+
+/** 0-based episode take index. Per-scene `position` resets and must not drive JOIN CUT. */
+export function sceneTakeIndexOf(
+  shot: { id?: string },
+  episodeShots: ReadonlyArray<{
+    id?: string;
+    edit_mode?: string | null;
+    function?: string | null;
+    shot_data?: { edit_mode?: string | null; function?: string | null };
+  }>,
+): number {
+  const dataOf = (row: (typeof episodeShots)[number]) => row.shot_data ?? row;
+  return episodeShots.filter((row) => isSceneTake(dataOf(row))).findIndex((row) => row.id === shot.id);
+}
+
 export function expectedFacesFor(input: {
   function?: ShotFunction | string | null;
   type?: string | null;

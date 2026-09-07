@@ -143,14 +143,27 @@ describe("presence ledger", () => {
     expect(ledger[2]!.exits).toEqual(["COLE"]);
     expect(ledger[3]!.present).toEqual(["MARA", "FELIX"]);
     expect(exitsIn("COLE: (storms out) Fine.")).toEqual(["COLE"]);
-    const { expectedFacesFor } = await import("./editorial.ts");
+    const { expectedFacesFor, sceneTakeIndexOf } = await import("./editorial.ts");
     expect(expectedFacesFor({ edit_mode: "scene_take", blocking: { present: ["MARA", "COLE", "FELIX"] } })).toBe(3);
+    expect(
+      sceneTakeIndexOf(
+        { id: "b" },
+        [
+          { id: "a", edit_mode: "scene_take" },
+          { id: "skip", edit_mode: "locked_take" },
+          { id: "b", shot_data: { edit_mode: "scene_take" } },
+        ],
+      ),
+    ).toBe(1);
   });
 });
 
 describe("expected faces", () => {
   it("asks for both locked faces on every scene take", async () => {
-    const { expectedFacesFor } = await import("./editorial.ts");
+    const { expectedFacesFor, spokenTakeNeedsMeasure } = await import("./editorial.ts");
+    expect(spokenTakeNeedsMeasure({ edit_mode: "scene_take", dialogue: null })).toBe(true);
+    expect(spokenTakeNeedsMeasure({ edit_mode: "locked_take", dialogue: null, audio_role: "silent" })).toBe(false);
+    expect(spokenTakeNeedsMeasure({ edit_mode: "locked_take", dialogue: "Stay.", audio_role: "onscreen" })).toBe(true);
     expect(expectedFacesFor({ edit_mode: "scene_take", blocking: { coverage: "single" } })).toBe(2);
     expect(expectedFacesFor({ edit_mode: "scene_take", blocking: { coverage: "cu" } })).toBe(2);
     expect(expectedFacesFor({ edit_mode: "scene_take", blocking: { coverage: "two_shot" } })).toBe(2);

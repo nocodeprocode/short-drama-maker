@@ -38,7 +38,7 @@ export function cameraWho(
 export const SEEDANCE_SPEECH_RULES =
   "Dialogue language: conversational American English. " +
   "Speak only the text inside {braces}. " +
-  "Never speak a character name. Never speak the word says. Never read the prompt. Never read a label.";
+  "Never speak a character name unless it is inside the braces. Never speak the word says. Never read the prompt. Never read a label.";
 
 export const SHORT_DRAMA_SCORE =
   "(low cheap short-drama pulse under the talk, not an orchestra, not a Hollywood swell)";

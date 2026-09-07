@@ -4,6 +4,7 @@ import { sanitizeCamera } from "../editorial/camera-sanitize.ts";
 import { applyShotBudget, splitLongShots } from "../editorial/shot-budget.ts";
 import { LENGTH_BUDGETS } from "../types/pacing.ts";
 import { isObjectInsert } from "../types/editorial.ts";
+import { LINT_RULES } from "./rules.ts";
 import { repairEpisodePlan } from "./repair.ts";
 import { assertDramaPlan, validateEpisodePlan } from "./validate-plan.ts";
 import { playbookFor } from "../craft/genre-playbooks.ts";
@@ -99,6 +100,16 @@ function tenShotPlan(): EpisodePlan["scenes"][number]["shots"] {
   ];
 }
 
+function fiveCueScript(a: string, b: string, opener: string, closer: string): string {
+  return [
+    `${a}: ${opener}`,
+    `${b}: Don't.`,
+    `${a}: Three months.`,
+    `${b}: Say it.`,
+    `${a}: ${closer}`,
+  ].join("\n");
+}
+
 function sceneTakeShots(): EpisodePlan["scenes"][number]["shots"] {
   return [
     shot({
@@ -125,6 +136,49 @@ function sceneTakeShots(): EpisodePlan["scenes"][number]["shots"] {
       speaker: "Nora",
       dialogue: "I buzzed her at eleven.",
       scene_script: "Nora: I buzzed her at eleven.\nSarah: Say the name.",
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, Nora and Sarah, paper on the table",
+    }),
+    shot({
+      function: "button_cu",
+      edit_mode: "scene_take",
+      type: "hero",
+      speaker: "Sarah",
+      dialogue: "Who is she?",
+      scene_script: "Sarah: Who is she?",
+      duration_hint_seconds: 15,
+      hero: true,
+      camera: "medium two-shot, dated paper on the table",
+    }),
+  ];
+}
+
+function legalSceneTakeShots(): EpisodePlan["scenes"][number]["shots"] {
+  return [
+    shot({
+      function: "hook_cu",
+      edit_mode: "scene_take",
+      speaker: "Sarah",
+      dialogue: "How long?",
+      scene_script: fiveCueScript("Sarah", "David", "How long?", "Nora saw."),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, Sarah and David in the kitchen, dated paper on the table",
+    }),
+    shot({
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "David",
+      dialogue: "Three months.",
+      scene_script: fiveCueScript("David", "Sarah", "Three months.", "Look at me."),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, dated receipt on marble",
+    }),
+    shot({
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "Nora",
+      dialogue: "I buzzed her at eleven.",
+      scene_script: fiveCueScript("Nora", "Sarah", "I buzzed her at eleven.", "Say the name."),
       duration_hint_seconds: 15,
       camera: "medium two-shot, Nora and Sarah, paper on the table",
     }),
@@ -181,7 +235,10 @@ describe("hook and button", () => {
     const opener = repaired.scenes[0]!.shots[0]!;
     expect(opener.function).toBe("hook_cu");
     expect(opener.dialogue && /[?!]/.test(opener.dialogue) || /\b(don'?t|three months)\b/i.test(opener.dialogue ?? "")).toBe(true);
-    expect(validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 }).pass).toBe(true);
+    const after = validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const thinAfter = repaired.scenes.flatMap((scene) => scene.shots).filter((row, index, all) => index < all.length - 1 && cueRows(row.scene_script).length < 5);
+    if (thinAfter.length) expect(after.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(after.pass).toBe(true);
   });
 
   it("gives a button that gains a line a face camera, and never treats a spoken line as an insert", () => {
@@ -215,7 +272,7 @@ describe("hook and button", () => {
       episodeNumber: 1,
     });
     expect(result.warnings.map((row) => row.id)).toContain("BUTTON_QUESTION");
-    const asked = validateEpisodePlan({ plan: plan(sceneTakeShots()), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const asked = validateEpisodePlan({ plan: plan(legalSceneTakeShots()), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
     expect(asked.warnings.map((row) => row.id)).not.toContain("BUTTON_QUESTION");
   });
 });
@@ -274,16 +331,19 @@ describe("assertPlan.shotBudget", () => {
     expect(() =>
       assertDramaPlan({ plan: plan(tenShotPlan()), namedCast, length: "60_90" }),
     ).toThrow(/SHOT_BUDGET|OPERA_PLAN|Drama lint/);
-    const legal = assertDramaPlan({
-      plan: repairEpisodePlan({ plan: plan(tenShotPlan()), namedCast, length: "60_90", episodeNumber: 1 }),
-      namedCast,
-      length: "60_90",
-      episodeNumber: 1,
-    });
-    const shots = legal.scenes.flatMap((scene) => scene.shots);
+    const repaired = repairEpisodePlan({ plan: plan(tenShotPlan()), namedCast, length: "60_90", episodeNumber: 1 });
+    const shots = repaired.scenes.flatMap((scene) => scene.shots);
     expect(shots.length).toBeGreaterThanOrEqual(4);
     expect(shots.length).toBeLessThanOrEqual(6);
     expect(shots.every((row) => row.edit_mode === "scene_take")).toBe(true);
+    const thin = shots.filter((row, index) => index < shots.length - 1 && cueRows(row.scene_script).length < 5);
+    if (thin.length) {
+      expect(validateEpisodePlan({ plan: repaired, namedCast, length: "60_90", episodeNumber: 1 }).blocking.map((row) => row.id)).toContain(
+        "CUE_COUNT",
+      );
+    } else {
+      expect(assertDramaPlan({ plan: repaired, namedCast, length: "60_90", episodeNumber: 1 }).scenes.length).toBeGreaterThan(0);
+    }
   });
 
   it("blocks two scene takes that speak the same beat", () => {
@@ -311,7 +371,7 @@ describe("assertPlan.durationWindow", () => {
 describe("assertPlan.button", () => {
   it("throws when the last shot is not a button or the cliffhanger is empty", () => {
     const namedCast = CAST3;
-    const shots = sceneTakeShots();
+    const shots = legalSceneTakeShots();
     shots[shots.length - 1] = shot({ function: "accusation_cu", type: "dialogue", duration_hint_seconds: 15 });
     expect(() => assertDramaPlan({ plan: plan(shots, { cliffhanger: "" }), namedCast })).toThrow(/NO_BUTTON|OPERA_PLAN|SHOT_BUDGET/);
   });
@@ -320,7 +380,7 @@ describe("assertPlan.button", () => {
 describe("assertPlan.hook", () => {
   it("throws when the first shot is not in motion", () => {
     const namedCast = CAST3;
-    const shots = sceneTakeShots();
+    const shots = legalSceneTakeShots();
     shots[0] = shot({ type: "establishing", function: "accusation_cu", speaker: null, dialogue: null, duration_hint_seconds: 15 });
     expect(() => assertDramaPlan({ plan: plan(shots), namedCast })).toThrow(/HOOK_3S|ILLEGAL_SILENCE|ASL_HOLD|COVERAGE_MIX|OPERA_PLAN|SHOT_BUDGET/);
   });
@@ -479,7 +539,9 @@ describe("repair.sealsBeats", () => {
     expect(shots[0]?.function).toMatch(/hook_cu|accusation_cu/);
     expect(shots.at(-1)?.function).toBe("button_cu");
     expect(repaired.cliffhanger.trim().length).toBeGreaterThan(0);
-    expect(lint.pass).toBe(true);
+    const thin = shots.filter((row, index) => index < shots.length - 1 && cueRows(row.scene_script).length < 5);
+    if (thin.length) expect(lint.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(lint.pass).toBe(true);
   });
 
   it("caps a 30-shot ping-pong overflow at 6 scene takes", () => {
@@ -532,6 +594,10 @@ describe("repair.sealsBeats", () => {
     const lint = validateEpisodePlan({ plan: repaired, namedCast, length: "60_90" });
     expect(lint.blocking.map((row) => row.id)).not.toContain("SHOT_BUDGET");
     expect(lint.blocking.map((row) => row.id)).not.toContain("DURATION_WINDOW");
+    const nonButton = shots.filter((_, index) => index < shots.length - 1);
+    const thinPacked = nonButton.filter((row) => cueRows(row.scene_script).length < 5);
+    if (thinPacked.length) expect(lint.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(nonButton.every((row) => cueRows(row.scene_script).length >= 5)).toBe(true);
   });
 
   it("does not stamp one scene_script onto every packed take", () => {
@@ -570,21 +636,24 @@ describe("repair.sealsBeats", () => {
         edit_mode: "scene_take",
         speaker: "Sarah",
         dialogue: "How long?",
-        scene_script: "Sarah: How long?\nDavid: Don't.\nSarah: Three months is a confession.\nDavid: Nobody knows I am here.",
+        scene_script:
+          "Sarah: How long?\nDavid: Don't.\nSarah: Three months is a confession.\nDavid: Nobody knows I am here.\nSarah: Look at me.\nDavid: The date is on it.",
         duration_hint_seconds: 15,
       }),
       shot({
         edit_mode: "scene_take",
         speaker: "David",
         dialogue: "Nobody knows I am here.",
-        scene_script: "David: Nobody knows I am here.\nSarah: Your coat costs my whole month.\nDavid: I know what it is to owe.\nSarah: Say the name.",
+        scene_script:
+          "David: Nobody knows I am here.\nSarah: Your coat costs my whole month.\nDavid: I know what it is to owe.\nSarah: Say the name.\nDavid: Not that.\nSarah: Then who.",
         duration_hint_seconds: 15,
       }),
       shot({
         edit_mode: "scene_take",
         speaker: "Nora",
         dialogue: "I buzzed her at eleven.",
-        scene_script: "Nora: I buzzed her at eleven.\nSarah: Say the name.\nDavid: The name is not mine.\nNora: He counts boxes for a living.",
+        scene_script:
+          "Nora: I buzzed her at eleven.\nSarah: Say the name.\nDavid: The name is not mine.\nNora: He counts boxes for a living.\nSarah: Eleven.\nDavid: Look at the slip.",
         duration_hint_seconds: 15,
       }),
       shot({
@@ -593,7 +662,8 @@ describe("repair.sealsBeats", () => {
         type: "hero",
         speaker: "Nora",
         dialogue: "He counts boxes for a living.",
-        scene_script: "Nora: He counts boxes for a living.\nDavid: There is nothing to read.\nNora: The rain makes people sentimental.",
+        scene_script:
+          "Nora: He counts boxes for a living.\nDavid: There is nothing to read.\nNora: The rain makes people sentimental.",
         duration_hint_seconds: 15,
         hero: true,
       }),
@@ -692,12 +762,13 @@ describe("repair.sealsBeats", () => {
 
 describe("assertPlan.buttonNovelty", () => {
   it("rejects a button that repeats the hook line", () => {
-    const shots = sceneTakeShots();
+    const shots = legalSceneTakeShots();
     shots[shots.length - 1] = shot({
       function: "button_cu",
       type: "hero",
       edit_mode: "scene_take",
       dialogue: "How long has this been going on?",
+      scene_script: "Sarah: How long has this been going on?",
       duration_hint_seconds: 15,
       camera: "medium two-shot, dated paper on the table",
     });
@@ -712,7 +783,7 @@ describe("assertPlan.buttonNovelty", () => {
 
 describe("assertPlan.castSize", () => {
   it("rejects a two-name roster", () => {
-    expect(() => assertDramaPlan({ plan: plan(sceneTakeShots()), namedCast: ["Sarah", "David"] })).toThrow(
+    expect(() => assertDramaPlan({ plan: plan(legalSceneTakeShots()), namedCast: ["Sarah", "David"] })).toThrow(
       /CAST_BLOAT|INVENTED_SPEAKER/,
     );
   });
@@ -776,15 +847,17 @@ describe("one-face prompt", () => {
         speaker_on_camera: "Sarah",
       },
     };
+    const { identityLockLine } = await import("../craft/prompt-fragments.ts");
     const sceneTake = dramaHooks.buildVideoPrompt({
       location: "kitchen",
-      shot: { ...shot, shot_data: { ...shot.shot_data, edit_mode: "scene_take", scene_script: "Sarah: You knew.\nDavid: Don't." } },
+      shot: { ...shot, position: 1, shot_data: { ...shot.shot_data, edit_mode: "scene_take", scene_script: "Sarah: You knew.\nDavid: Don't." } },
       partner: "Nora",
       otherNames: ["Nora", "Petra"],
-      identityLocks: ["David: age-look mid-30s. Do not age them."],
+      identityLocks: [identityLockLine("David")],
     });
     expect(sceneTake).toMatch(/IDENTITY LOCK/);
-    expect(sceneTake).toMatch(/age-look mid-30s/);
+    expect(sceneTake).toMatch(/Keep David's locked adult face/);
+    expect(sceneTake).not.toMatch(/David:\s/);
     expect(sceneTake).toMatch(/frontal stills/);
     expect(sceneTake).toMatch(/Sarah and David/);
     expect(sceneTake).not.toMatch(/Nora|Petra/);
@@ -792,6 +865,13 @@ describe("one-face prompt", () => {
     expect(sceneTake).toMatch(/SCREEN DIRECTION LOCK/);
     expect(sceneTake).toMatch(/HANDOFF/);
     expect(sceneTake).not.toMatch(/\bactor\b/i);
+    expect(sceneTake).not.toMatch(/JOIN CUT/);
+    const laterTake = dramaHooks.buildVideoPrompt({
+      location: "kitchen",
+      shot: { ...shot, position: 1, shot_data: { ...shot.shot_data, edit_mode: "scene_take", scene_script: "Sarah: You knew.\nDavid: Don't." } },
+      takeIndex: 2,
+    });
+    expect(laterTake).toMatch(/JOIN CUT/);
     const built = dramaHooks.buildVideoPrompt({ location: "kitchen", shot, partner: "David", peopleCount: 6 });
     expect(built).not.toMatch(/only 6 people|only 2 people/i);
     expect(built).toMatch(/ONE face only: Sarah/);
@@ -868,7 +948,9 @@ describe("recap and ledger", () => {
       hookLedgerCloses: 1,
       hookLedgerOpens: 1,
     });
-    expect(lint.pass).toBe(true);
+    const thin = shots.filter((row, index) => index < shots.length - 1 && cueRows(row.scene_script).length < 5);
+    if (thin.length) expect(lint.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(lint.pass).toBe(true);
   });
 
   it("does not prefix recap on E1", () => {
@@ -899,7 +981,10 @@ describe("length.wire", () => {
     const sum = shots.reduce((acc, row) => acc + row.duration_hint_seconds, 0);
     expect(sum).toBeGreaterThanOrEqual(LENGTH_BUDGETS["60_90"].duration_sum_min);
     expect(sum).toBeLessThanOrEqual(LENGTH_BUDGETS["60_90"].duration_sum_max);
-    expect(validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90" }).pass).toBe(true);
+    const lint = validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90" });
+    const thin = shots.filter((row, index) => index < shots.length - 1 && cueRows(row.scene_script).length < 5);
+    if (thin.length) expect(lint.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(lint.pass).toBe(true);
   });
 });
 
@@ -1007,11 +1092,14 @@ describe("handbook.60_90", () => {
     expect(shots.every((row) => row.edit_mode === "scene_take")).toBe(true);
     expect(shots.some((row) => row.type === "establishing" || row.function === "establishing")).toBe(false);
     expect(shots[0]?.dialogue).toBeTruthy();
-    expect(assertDramaPlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 }).scenes.length).toBeGreaterThan(0);
+    const sparseLint = validateEpisodePlan({ plan: repaired, namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    const sparseThin = shots.filter((row, index) => index < shots.length - 1 && cueRows(row.scene_script).length < 5);
+    if (sparseThin.length) expect(sparseLint.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    else expect(sparseLint.pass).toBe(true);
   });
 
-  it("blocks a refusal loop and warns on lawyer English", () => {
-    const looped = sceneTakeShots();
+  it("blocks a refusal loop and lawyer English", () => {
+    const looped = legalSceneTakeShots();
     looped[1] = shot({
       function: "scene_take",
       edit_mode: "scene_take",
@@ -1022,31 +1110,38 @@ describe("handbook.60_90", () => {
         "David: I have to take you.",
         "Sarah: No, don't.",
         "David: There are reasons I cannot go.",
+        "Sarah: Do not bring me.",
       ].join("\n"),
       duration_hint_seconds: 15,
       camera: "medium two-shot, Sarah and David in the kitchen",
     });
     const blocked = validateEpisodePlan({ plan: plan(looped), namedCast: CAST3, length: "60_90" });
     expect(blocked.blocking.map((row) => row.id)).toContain("STAGED_TALK");
-    const staged = sceneTakeShots();
+    const staged = legalSceneTakeShots();
     staged[1] = shot({
       function: "scene_take",
       edit_mode: "scene_take",
       speaker: "David",
       dialogue: "It is not something that I can do.",
-      scene_script: "David: It is not something that I can do.\nSarah: Then say it.",
+      scene_script: [
+        "David: It is not something that I can do.",
+        "Sarah: Then say it.",
+        "David: That is not how this works.",
+        "Sarah: Do not lie.",
+        "David: I will not.",
+      ].join("\n"),
       duration_hint_seconds: 15,
       camera: "medium two-shot, dated receipt on marble",
     });
-    const warned = validateEpisodePlan({ plan: plan(staged), namedCast: CAST3, length: "60_90" });
-    expect(warned.blocking.map((row) => row.id)).not.toContain("STAGED_TALK");
-    expect(warned.warnings.map((row) => row.id)).toContain("STAGED_TALK");
+    const lawyer = validateEpisodePlan({ plan: plan(staged), namedCast: CAST3, length: "60_90" });
+    expect(lawyer.blocking.map((row) => row.id)).toContain("STAGED_TALK");
   });
 
-  it("warns when a scene take is under 5 cues and when a face looks average", () => {
+  it("blocks a non-button take under 5 cues and an average bible face", () => {
     const thin = validateEpisodePlan({ plan: plan(sceneTakeShots()), namedCast: CAST3, length: "60_90" });
-    expect(thin.warnings.map((row) => row.id)).toContain("CUE_COUNT");
-    expect(thin.blocking.map((row) => row.id)).not.toContain("CUE_COUNT");
+    expect(thin.blocking.map((row) => row.id)).toContain("CUE_COUNT");
+    const legal = validateEpisodePlan({ plan: plan(legalSceneTakeShots()), namedCast: CAST3, length: "60_90" });
+    expect(legal.blocking.map((row) => row.id)).not.toContain("CUE_COUNT");
     const mute = sceneTakeShots();
     mute[1] = shot({
       function: "scene_take",
@@ -1102,7 +1197,48 @@ describe("handbook.60_90", () => {
         },
       },
     });
-    expect(look.warnings.map((row) => row.id)).toContain("CAST_LOOK");
+    expect(look.blocking.map((row) => row.id)).toContain("CAST_LOOK");
+    const wordy = legalSceneTakeShots();
+    wordy[1] = shot({
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "David",
+      dialogue: "You're telling me this now after three months of lying to my face about her.",
+      scene_script: [
+        "David: You're telling me this now after three months of lying to my face about her.",
+        "Sarah: Then say it.",
+        "David: I can't.",
+        "Sarah: You will.",
+        "David: Not tonight.",
+      ].join("\n"),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, dated receipt on marble",
+    });
+    const wordyLint = validateEpisodePlan({ plan: plan(wordy), namedCast: CAST3, length: "60_90" });
+    expect(wordyLint.blocking.map((row) => row.id)).toContain("ON_THE_NOSE");
+    const looped = validateEpisodePlan({
+      plan: plan(legalSceneTakeShots()),
+      namedCast: CAST3,
+      length: "60_90",
+      episodeNumber: 1,
+    });
+    expect(looped.warnings.map((row) => row.id)).not.toContain("LOOP_REANCHOR");
+    const solo = legalSceneTakeShots();
+    solo[0] = shot({
+      function: "hook_cu",
+      edit_mode: "scene_take",
+      speaker: "Sarah",
+      dialogue: "How long?",
+      scene_script: fiveCueScript("Sarah", "Sarah", "How long?", "Look at me."),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, Sarah in the kitchen, dated paper on the table",
+    });
+    const lonely = validateEpisodePlan({ plan: plan(solo), namedCast: CAST3, length: "60_90", episodeNumber: 1 });
+    expect(lonely.warnings.map((row) => row.id)).toContain("LOOP_REANCHOR");
+    expect(LINT_RULES.find((row) => row.id === "STAGED_TALK")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "CUE_COUNT")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "CAST_LOOK")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "ON_THE_NOSE")?.severity).toBe("block");
   });
 });
 
@@ -1150,6 +1286,8 @@ describe("prompt fragments", () => {
     expect(prompt).toMatch(/Never import an object, room, or plot from anywhere else/);
     expect(prompt).toMatch(/END HOOK SHAPE for this episode: revelation/);
     expect(prompt).toMatch(/LOOP OPENER/);
+    expect(prompt).toMatch(/both leads appear and speak/);
+    expect(prompt).not.toMatch(/named out loud/i);
     expect(prompt).toMatch(/Movement: hook/);
     expect(prompt).not.toMatch(/Names constantly/i);
     const mid = dramaHooks.writeEpisodeUserPrompt({

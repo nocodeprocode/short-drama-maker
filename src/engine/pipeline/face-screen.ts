@@ -3,6 +3,48 @@ import type { VideoEngine } from "../ai/types.ts";
 
 export type FaceScreenVerdict = "accepted" | "refused" | "error";
 
+export type CastLookVerdict = { pass: boolean; reasons: string[] };
+
+/** FaceTime-close on a 9:16 still: head-and-shoulders or tighter. */
+export const CAST_LOOK_FACE_MIN_HEIGHT = 0.18;
+
+export const CAST_LOOK_PLAIN =
+  /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i;
+
+export function castLookFromFaceBox(box: { width: number; height: number } | null | undefined): string[] {
+  if (!box) return ["face_missing"];
+  if (box.height < CAST_LOOK_FACE_MIN_HEIGHT) return ["face_too_far"];
+  return [];
+}
+
+export function castLookFromNotes(notes: string | null | undefined): string[] {
+  if (!notes) return [];
+  return CAST_LOOK_PLAIN.test(notes) ? ["face_plain"] : [];
+}
+
+/**
+ * Beauty gate for NEW character stills only. Old locked Mara/Cole PNGs are not
+ * re-gated; the next generated still that is average or far cannot lock.
+ */
+export function screenCastLook(input: {
+  faceBox?: { width: number; height: number } | null;
+  notes?: string | null;
+  beauty?: boolean | null;
+  modest?: boolean | null;
+  close?: boolean | null;
+  checkDistance?: boolean;
+}): CastLookVerdict {
+  const reasons: string[] = [];
+  if (input.checkDistance !== false) {
+    if (input.close === false) reasons.push("face_too_far");
+    else if (input.close !== true) reasons.push(...castLookFromFaceBox(input.faceBox));
+  }
+  reasons.push(...castLookFromNotes(input.notes));
+  if (input.beauty === false) reasons.push("face_plain");
+  if (input.modest === false) reasons.push("modest_dress");
+  return { pass: reasons.length === 0, reasons: [...new Set(reasons)] };
+}
+
 /** The provider's own words when it will not take a still as a reference. */
 export function isPrivacyRefusal(message: string): boolean {
   return /InputImageSensitiveContentDetected|PrivacyInformation|may contain real person/i.test(message);

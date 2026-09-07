@@ -16,6 +16,7 @@ import {
   VOICE_LEAD_PAD_MAX_SECONDS,
   type NormalizedFaceBox,
 } from "../media/viseme-align.ts";
+import { sceneTakeObedienceReasons } from "./seedance-qc.ts";
 
 /**
  * Everything the cut needs to know about one generated take, measured once at
@@ -62,6 +63,10 @@ export type TakeAnalysis = {
   voice_onset_source?: "stt" | "level" | null;
   /** True when the audio was actually probed for speech (level and/or transcript). */
   speech_checked?: boolean;
+  /** Pixel/audio measurement threw; do not treat an empty analysis as a clean take. */
+  measurement_failed?: boolean;
+  /** STT was asked and threw; name-leak QC did not run. */
+  transcript_error?: boolean;
   /** Set by the sync conform loop: measured on the cut's dialogue stem and folded into pad/skip/settle. */
   conform?: { passes: number; shift_seconds: number; last_lag_ms: number | null };
   measured_at: string;
@@ -525,7 +530,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
             }
           }
         } catch {
-          /* level-based onset stands */
+          base.transcript_error = true;
         }
       }
       // Speech-driven mouth motion cannot lead the voice by more than the pad ceiling,
@@ -572,7 +577,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
     }
     return base;
   } catch {
-    return base;
+    return { ...base, measurement_failed: true };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -594,6 +599,12 @@ export type TakeScoreContext = {
   expectedFaces?: number | null;
   /** Continuous Seedance scene takes speak native audio in a two-shot. */
   sceneTake?: boolean;
+  /** 0-based scene-take index in the episode; take 0 may open wider. */
+  takeIndex?: number;
+  transcript?: string | null;
+  namedCast?: readonly string[] | null;
+  speakers?: readonly string[] | null;
+  sceneScript?: string | null;
 };
 
 /** Cosine similarity below this reads as a different person. Tuned for ArcFace-style embeddings. */
@@ -604,6 +615,10 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
   const warnings: string[] = [];
   let score = 100;
 
+  if ((context.dialogueCu || context.sceneTake) && analysis.measurement_failed) blockers.push("measurement_failed");
+  if (context.sceneTake && (context.namedCast?.length ?? 0) > 0 && analysis.transcript_error) {
+    blockers.push("speech_unchecked");
+  }
   if (context.dialogueCu && !analysis.has_audio) blockers.push("native_audio_missing");
   // An audio track with no voice on it is a silent line, not a performance.
   if (context.dialogueCu && analysis.has_audio && analysis.voice_onset_seconds == null && analysis.speech_checked) blockers.push("no_speech");
@@ -698,6 +713,19 @@ export function scoreTake(analysis: TakeAnalysis, context: TakeScoreContext): Ta
     const off = Math.abs(analysis.duration_seconds - context.expectedDurationSeconds);
     if (off > 2) warnings.push("duration_mismatch");
     score -= Math.min(10, off * 3);
+  }
+
+  if (context.sceneTake) {
+    blockers.push(
+      ...sceneTakeObedienceReasons({
+        transcript: context.transcript,
+        namedCast: context.namedCast,
+        speakers: context.speakers,
+        script: context.sceneScript,
+        analysis,
+        takeIndex: context.takeIndex,
+      }),
+    );
   }
 
   return { score: Math.max(0, Math.round(score)), blockers: [...new Set(blockers)], warnings };

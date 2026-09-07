@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPrivacyRefusal, screenFaceReference } from "./face-screen.ts";
+import { isPrivacyRefusal, screenCastLook, screenFaceReference } from "./face-screen.ts";
 import type { Shot } from "../domain.ts";
 
 const shot = { id: "shot-1" } as unknown as Shot;
@@ -36,5 +36,15 @@ describe("face screen", () => {
     });
     expect(refused.verdict).toBe("refused");
     expect(broken.verdict).toBe("error");
+  });
+
+  it("rejects a far or plain NEW still and accepts FaceTime-close beauty", () => {
+    expect(screenCastLook({ faceBox: { width: 0.08, height: 0.09 } }).pass).toBe(false);
+    expect(screenCastLook({ faceBox: { width: 0.08, height: 0.09 } }).reasons).toContain("face_too_far");
+    expect(screenCastLook({ notes: "average tired face", checkDistance: false }).reasons).toContain("face_plain");
+    expect(screenCastLook({ beauty: false, checkDistance: false }).reasons).toContain("face_plain");
+    expect(
+      screenCastLook({ faceBox: { width: 0.42, height: 0.38 }, beauty: true, modest: true }).pass,
+    ).toBe(true);
   });
 });

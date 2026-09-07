@@ -4,7 +4,7 @@ import {
   evidenceMotif,
   lockedTakePrompt,
   sceneTakePrompt,
-  speakersForSceneTake,
+  peopleOnSceneTake,
   objectPlateCamera,
   playbookPrompt,
   stripCopyrightBait,
@@ -52,6 +52,8 @@ export type DramaEngineHooks = {
     /** Bible line for the room and a vision floor-plan note; both lock geometry across takes. */
     roomDescription?: string | null;
     roomGeometry?: string | null;
+    /** 0-based episode take index. Per-scene position resets and must not drive JOIN CUT. */
+    takeIndex?: number;
   }): string;
   allocateDurations(input: {
     wavSeconds: number;
@@ -105,10 +107,11 @@ Do not write a 90-minute movie and slice it.`;
     buildVideoPrompt(input) {
       const data = input.shot.shot_data;
       if (isSceneTake(data)) {
-        const people = speakersForSceneTake({
+        const people = peopleOnSceneTake({
           sceneScript: data.scene_script,
           speaker: data.speaker,
           speakerOnCamera: data.speaker_on_camera,
+          blocking: data.blocking,
         });
         return sceneTakePrompt({
           location: input.location,
@@ -120,7 +123,7 @@ Do not write a 90-minute movie and slice it.`;
           identityLocks: input.identityLocks,
           blocking: data.blocking,
           durationSeconds: data.duration_seconds ?? data.duration_hint_seconds,
-          takeIndex: Math.max(0, (input.shot.position ?? 1) - 1),
+          takeIndex: input.takeIndex ?? 0,
           roomDescription: input.roomDescription,
           roomGeometry: input.roomGeometry,
         });
@@ -209,7 +212,7 @@ SEASON POSITION. Movement: ${movement.movement} — ${movement.mission}. Loop ${
 END HOOK SHAPE for this episode: ${shape} — ${CLIFF_SHAPE_NOTES[shape]}. The last cue is that shape and no other; the previous episode ended differently.
 ${
   opener
-    ? "LOOP OPENER. A viewer may start here cold. Inside the first take, through conflict and never recap: both leads are named out loud, their relationship is stated on the nose in one line, and the staging shows who holds power. By the end of the episode a cold viewer knows who these people are and what they want from each other."
+    ? "LOOP OPENER. A viewer may start here cold. Inside the first take, through conflict and never recap: both leads appear and speak, their relationship is stated on the nose in one line, and the staging shows who holds power. Name someone at most once, and only when it lands. By the end of the episode a cold viewer knows who these people are and what they want from each other."
     : "MID-LOOP. A viewer who joined two episodes ago must still be able to say who wants what from whom — through conflict, not by saying names every line. Name someone at most once per take."
 }
 ${input.episodeNumber === 1 ? "Episode 1 opens mid-crisis at the height of the conflict, puts both leads on screen together, plants every kernel the season will pay off (the secret, the debt, the rival), and ends on the first unpaid question between the leads." : ""}

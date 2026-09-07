@@ -60,8 +60,40 @@ export interface VisionEngine {
   describeLocation?(input: { plate: Uint8Array; plateMime?: string; location: string }): Promise<LocationNotes>;
   /** Where the (single) face is in a character still; null when none is visible. */
   locateFace?(input: { image: Uint8Array; imageMime?: string }): Promise<FaceBox | null>;
+  /** Phone-close beauty / modest clothes on a NEW character still. */
+  judgeCastLook?(input: { image: Uint8Array; imageMime?: string }): Promise<CastLookJudgement>;
   /** One-sentence blocking note from a last frame: sides, hands, prop place. */
   describeBlocking?(input: { frame: Uint8Array; frameMime?: string; names: string[] }): Promise<string>;
+}
+
+export type CastLookJudgement = {
+  beauty: boolean;
+  close: boolean;
+  modest: boolean;
+  notes: string;
+  model: string;
+};
+
+const CAST_LOOK_RUBRIC = `You judge a short-drama character still for phone-close beauty.
+Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "notes": "<one sentence>"}.
+beauty is true only if the face is strikingly beautiful and camera-ready — not tired, plain, average, or unremarkable.
+close is true only if the face is FaceTime-close or closer (eyes readable, head-and-shoulders or tighter), not a wide or full-body.
+modest is true if clothes are on and opaque.
+Fictional adult. Never explain outside the JSON.`;
+
+export function parseCastLook(content: string, model: string): CastLookJudgement {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const raw = JSON.parse(start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed) as Record<string, unknown>;
+  const flag = (key: string) => raw[key] === true || raw[key] === "true";
+  return {
+    beauty: flag("beauty"),
+    close: flag("close"),
+    modest: raw.modest === false || raw.modest === "false" ? false : true,
+    notes: typeof raw.notes === "string" ? raw.notes.slice(0, 240) : "",
+    model,
+  };
 }
 
 const FACE_RUBRIC = `You locate the face in a character reference still.
@@ -254,6 +286,27 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the blocking note");
       return parseBlockingNote(content);
+    },
+
+    async judgeCastLook(input) {
+      const body = await openRouterJson<ChatResponse>("/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          usage: { include: true },
+          provider: openRouterProvider("text"),
+          messages: [
+            { role: "system", content: CAST_LOOK_RUBRIC },
+            { role: "user", content: [{ type: "image_url", image_url: { url: dataUrl(input.image, input.imageMime ?? "image/jpeg") } }] },
+          ],
+        }),
+      }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter returned no text for the cast-look judgement");
+      return parseCastLook(content, model);
     },
 
     async locateFace(input) {

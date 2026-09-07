@@ -14,6 +14,20 @@ export function wordCount(text: string | null | undefined): number {
   return (text ?? "").trim().split(/\s+/).filter(Boolean).length;
 }
 
+/** One breath, one caption. Keep the speaker tag and a parenthetical; clip the spoken words. */
+export function clipCueToBreath(row: string, maxWords = DIALOGUE_MAX_WORDS): string {
+  const limit = Number.isFinite(maxWords) && maxWords >= 1 ? maxWords : DIALOGUE_MAX_WORDS;
+  const match = row.match(/^([A-Za-z][A-Za-z0-9' .-]{0,40}:\s*)([\s\S]*)$/);
+  const prefix = match?.[1] ?? "";
+  const rest = (match?.[2] ?? row).trim();
+  const paren = rest.match(/^(\([^)]*\)\s*)/);
+  const stage = paren?.[1] ?? "";
+  const spoken = rest.slice(stage.length).replace(/\s+/g, " ").trim();
+  const words = spoken.split(/\s+/).filter(Boolean);
+  if (!words.length || words.length <= limit) return row;
+  return `${prefix}${stage}${words.slice(0, limit).join(" ")}`.trim();
+}
+
 export function lineSurvivesCaption(text: string | null | undefined): boolean {
   const words = wordCount(text);
   return words >= 1 && words <= DIALOGUE_MAX_WORDS;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptPolishedTalk, isRefusalLoop, soundsStaged, talkProblems } from "./talk.ts";
+import { acceptPolishedTalk, keepPlanAfterPolishFailure, isRefusalLoop, soundsStaged, talkProblems } from "./talk.ts";
 
 describe("short-drama talk", () => {
   it("flags lawyer English and hospital loops", () => {
@@ -48,5 +48,34 @@ describe("short-drama talk", () => {
     expect(acceptPolishedTalk(thin, "ELENA: I can't go there.\nALYSSA: You're burning up.\nELENA: Not that place.")).toBe(
       true,
     );
+  });
+
+  it("rethrows polish failure when the current scripts are staged", () => {
+    const dirty = {
+      scenes: [
+        {
+          shots: [
+            {
+              edit_mode: "scene_take" as const,
+              scene_script: "ELENA: It is not something that I can do.\nALYSSA: Then say it.",
+            },
+          ],
+        },
+      ],
+    };
+    expect(() => keepPlanAfterPolishFailure(dirty, new Error("polish down"))).toThrow(/staged/);
+    const clean = {
+      scenes: [
+        {
+          shots: [
+            {
+              edit_mode: "scene_take" as const,
+              scene_script: "ELENA: I can't go there.\nALYSSA: You're burning up.",
+            },
+          ],
+        },
+      ],
+    };
+    expect(keepPlanAfterPolishFailure(clean, new Error("polish down"))).toBe(clean);
   });
 });

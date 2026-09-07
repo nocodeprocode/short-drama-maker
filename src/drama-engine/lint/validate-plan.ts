@@ -321,9 +321,9 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     qc(
       "ON_THE_NOSE",
       wordyCues.length === 0,
-      wordyCues.length ? `${wordyCues.length} cue(s) over 12 words or two sentences` : "every cue is one short sentence",
+      wordyCues.length ? `${wordyCues.length} cue(s) over 12 words or two sentences` :       "every cue is one short sentence",
       "every cue ≤12 words, one sentence",
-      "warn",
+      "block",
     ),
   );
 
@@ -340,12 +340,12 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
           : staged.length
             ? `${staged.length} take(s) sound staged`
             : "talk is casual",
-        "casual spoken English; a refusal loop blocks",
-        looped.length ? "block" : "warn",
+        "casual spoken English; staged/lawyer talk blocks",
+        "block",
       ),
     );
     const isButton = (shot: (typeof takes)[number]) => shot.function === "button_cu" || shot === takes.at(-1);
-    const mute = takes.filter((shot) => !isButton(shot) && cueRows(shot.scene_script).length < 1);
+    const mute = takes.filter((shot) => cueRows(shot.scene_script).length < 1);
     const thin = takes.filter((shot) => !isButton(shot) && cueRows(shot.scene_script).length < 5);
     reports.push(
       qc(
@@ -355,19 +355,21 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
           ? `${mute.length} take(s) with an empty script`
           : thin.length
             ? `${thin.length} take(s) under 5 cues`
-            : "each take has 5–8 cues",
-        "5–8 cues per scene take",
-        mute.length ? "block" : "warn",
+            : "each non-button take has 5–8 cues",
+        "5–8 cues per non-button scene take; button may be 1–4",
+        "block",
       ),
     );
   }
 
   const faces = input.bible?.characters ?? [];
   if (faces.length) {
+    // Empty face text is skipped so historical bibles without a look note still lint.
+    // A new bible that writes average|plain|ordinary|tired|unremarkable cannot ship.
     const plain = faces.filter((row) => {
       const face = row.appearance?.face?.trim() ?? "";
       if (!face) return false;
-      return face.length < 12 || /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i.test(face);
+      return /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i.test(face);
     });
     reports.push(
       qc(
@@ -375,7 +377,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
         plain.length === 0,
         plain.length ? `${plain.length} face(s) look average or thin` : "faces are specific beauty",
         "phone-close beauty on every named face",
-        "warn",
+        "block",
       ),
     );
   }
@@ -687,21 +689,23 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     reports.push(...lintHandbookGrammar({ plan: input.plan, shots, episodeNumber: input.episodeNumber, bible: input.bible }));
   }
 
-  // A loop opener must let a cold viewer in: the first take names at least two
-  // cast members out loud. Any 7 minutes of the season should stand on its own.
+  // A loop opener must let a cold viewer in: both leads appear and speak in
+  // take 1. Do not require them to say each other's names. Any 7 minutes of
+  // the season should stand on its own.
   if (handbookSku && input.episodeNumber && isLoopOpener(input.episodeNumber)) {
     const first = shots.find((shot) => isSceneTake(shot));
-    const script = `${first?.scene_script ?? ""} ${first?.dialogue ?? ""}`.toLowerCase();
-    const cast = (input.namedCast ?? input.bible?.characters.map((row) => row.name) ?? [])
-      .map((name) => name.trim().toLowerCase().split(/\s+/)[0] ?? "")
-      .filter(Boolean);
-    const named = cast.filter((name) => new RegExp(`\\b${name}\\b`).test(script));
+    const speakers = speakersForSceneTake({
+      sceneScript: first?.scene_script,
+      speaker: first?.speaker,
+      speakerOnCamera: first?.speaker_on_camera,
+    });
+    const roster = (input.namedCast ?? input.bible?.characters.map((row) => row.name) ?? []).filter(Boolean);
     reports.push(
       qc(
         "LOOP_REANCHOR",
-        cast.length < 2 || named.length >= 2,
-        `${named.length} cast named in the first take`,
-        "loop opener names both leads out loud in take 1",
+        roster.length < 2 || speakers.length >= 2,
+        `${speakers.length} speakers in the first take`,
+        "loop opener puts both leads in take 1 through conflict, not by saying names",
         "warn",
       ),
     );

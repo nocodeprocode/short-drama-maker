@@ -120,6 +120,7 @@ export function createOpenRouterImages(): ImageEngine {
           tight
             ? "Photorealistic vertical 9:16 HEAD-AND-SHOULDERS close-up. Face fills the frame. Cropped at the chest. NOT a full-body standing pose. NOT a wide master."
             : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
+          // create-engine/face-screen rejects a NEW still that fails CAST_LOOK; old locked PNGs are not recut.
           "Short-drama lead: strikingly beautiful adult, camera-ready, the kind of face a viewer pauses for. Clear skin, defined features, catchlight in the eyes. Flattering, not tired, not plain.",
           `Character: ${input.characterName}.`,
           input.description,

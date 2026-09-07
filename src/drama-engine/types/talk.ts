@@ -43,6 +43,24 @@ export function acceptPolishedTalk(before: string, next: string): boolean {
   return true;
 }
 
+type TalkPlanShot = { edit_mode?: string | null; scene_script?: string | null };
+type TalkPlan = { scenes: Array<{ shots: TalkPlanShot[] }> };
+
+/**
+ * Polish must not swallow a staged plan. If the copywriter throws and the
+ * current scripts already fail talkProblems, rethrow so assertDramaPlan blocks.
+ * A clean plan can keep the pre-polish scripts.
+ */
+export function keepPlanAfterPolishFailure<T extends TalkPlan>(plan: T, _error?: unknown): T {
+  const dirty = plan.scenes.some((scene) =>
+    scene.shots.some((shot) => shot.edit_mode === "scene_take" && talkProblems(shot.scene_script).length > 0),
+  );
+  if (dirty) {
+    throw new Error("Polish failed while talk is staged; refusing to keep a dirty plan");
+  }
+  return plan;
+}
+
 export function talkProblems(script?: string | null): string[] {
   const out: string[] = [];
   const rows = cueRows(script);

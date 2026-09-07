@@ -26,7 +26,7 @@ import { estimateSeries as estimateSeriesCost, type CatalogSku } from "./config/
 import { episodeLengthFromProfile, type EpisodeLength } from "./config/catalog.ts";
 import { dramaHooks } from "../drama-engine/index.ts";
 import { defaultCraftForShot } from "../drama-engine/editorial/shot-budget.ts";
-import { allowsTwoShot, expectedFacesFor, isObjectInsert, isSceneTake } from "../drama-engine/types/editorial.ts";
+import { allowsTwoShot, expectedFacesFor, isObjectInsert, isSceneTake, sceneTakeIndexOf, spokenTakeNeedsMeasure } from "../drama-engine/types/editorial.ts";
 import type {
   Actor,
   ActorSource,
@@ -52,8 +52,10 @@ import type {
 import { extractAudioMp3 } from "./media/extract-audio.ts";
 import { alignVoicePrompt } from "./ai/voice-sex.ts";
 import { sceneTakesShareSpokenBeat } from "../drama-engine/types/dialogue.ts";
-import { acceptPolishedTalk } from "../drama-engine/types/talk.ts";
+import { acceptPolishedTalk, keepPlanAfterPolishFailure } from "../drama-engine/types/talk.ts";
 import { expectedSpokenText, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
+import { nameLeakReasons } from "./pipeline/seedance-qc.ts";
+import { screenCastLook } from "./pipeline/face-screen.ts";
 import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
 import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
 import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
@@ -95,8 +97,8 @@ import { inferPropKind, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockT
 import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pipeline/last-frame.ts";
 import { wordErrorRate } from "./media/qc.ts";
 import { placeLockClause, placePlateRetry } from "../drama-engine/craft/place.ts";
-import { evidenceMotif, identityLockLine, NO_TEXT_CLAUSE, objectPlateCamera, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
-import { cueRows, cueText, exitsIn, peopleInTake } from "../drama-engine/types/continuity.ts";
+import { evidenceMotif, identityLockLine, NO_TEXT_CLAUSE, objectPlateCamera, peopleOnSceneTake, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
+import { cueRows, cueText, exitsIn } from "../drama-engine/types/continuity.ts";
 import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
 import { assertSeasonBible, buildSeasonBible, isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
 import { failoverRoute } from "./ai/router.ts";
@@ -211,6 +213,15 @@ export const LOCATION_PLATE_ATTEMPTS = 4;
 
 function emptyAppearance(): AppearanceProfile {
   return { age_look: "", ethnicity_notes: "", hair: "", face: "", body: "", default_wardrobe: "" };
+}
+
+function speakersOnShot(shot: Shot): string[] {
+  return peopleOnSceneTake({
+    sceneScript: shot.shot_data.scene_script,
+    speaker: shot.shot_data.speaker,
+    speakerOnCamera: shot.shot_data.speaker_on_camera,
+    blocking: shot.shot_data.blocking,
+  });
 }
 
 export function createEngine(deps: EngineDeps = {}) {
@@ -631,6 +642,89 @@ export function createEngine(deps: EngineDeps = {}) {
     return next;
   }
 
+  const STILL_LOOK_ATTEMPTS = 2;
+
+  /**
+   * Beauty gate for NEW stills only. Old locked Mara/Cole PNGs are not re-gated.
+   */
+  async function gateNewCharacterStill(input: {
+    bytes: Uint8Array;
+    mime: string;
+    kind: string;
+    faceText?: string | null;
+  }): Promise<void> {
+    const tight = input.kind === "cu" || input.kind === "front" || input.kind === "three_quarter" || input.kind === "profile";
+    const text = screenCastLook({ notes: input.faceText, checkDistance: false });
+    if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
+    const locate = ai.vision?.locateFace;
+    const judge = ai.vision?.judgeCastLook;
+    if (!locate && !judge) return;
+    let box: { width: number; height: number } | null = null;
+    if (locate) {
+      const found = await locate({ image: input.bytes, imageMime: input.mime });
+      box = found ? { width: found.width, height: found.height } : null;
+    }
+    let beauty: boolean | null = null;
+    let modest: boolean | null = null;
+    let close: boolean | null = null;
+    let notes: string | null = null;
+    if (judge) {
+      const look = await judge({ image: input.bytes, imageMime: input.mime });
+      beauty = look.beauty;
+      modest = look.modest;
+      close = look.close;
+      notes = look.notes;
+    }
+    const verdict = screenCastLook({
+      faceBox: box,
+      notes,
+      beauty,
+      modest,
+      close,
+      checkDistance: tight,
+    });
+    if (!verdict.pass) throw new Error(`CAST_LOOK: ${verdict.reasons.join(", ")}`);
+  }
+
+  async function generateGatedStill(input: {
+    characterName: string;
+    description: string;
+    kind: string;
+    faceText?: string | null;
+    seed?: { bytes: Uint8Array; mime_type: string } | null;
+  }): Promise<{ bytes: Uint8Array; mime_type: string }> {
+    const text = screenCastLook({ notes: input.faceText, checkDistance: false });
+    if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < STILL_LOOK_ATTEMPTS; attempt += 1) {
+      const candidate = input.seed
+        ? await ai.image.generateReferenceFromSeed({
+            characterName: input.characterName,
+            description: input.description,
+            kind: input.kind,
+            seed_bytes: input.seed.bytes,
+            seed_mime_type: input.seed.mime_type,
+          })
+        : await ai.image.generateReference({
+            characterName: input.characterName,
+            description: input.description,
+            kind: input.kind,
+          });
+      try {
+        await gateNewCharacterStill({
+          bytes: candidate.bytes,
+          mime: candidate.mime_type,
+          kind: input.kind,
+          faceText: input.faceText,
+        });
+        return candidate;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("CAST_LOOK: still failed the beauty gate");
+  }
+
   async function generateAppearance(input: { owner_id: string; character_id: string }) {
     let character = requireCharacter(input.character_id, input.owner_id);
     const restored = await restoreAppearance(character);
@@ -674,10 +768,11 @@ export function createEngine(deps: EngineDeps = {}) {
     const refs: Partial<Record<VisualReferenceKind, string>> = { ...actor.visual_reference_asset_ids };
     for (const kind of FACE_KIND_ORDER) {
       if (refs[kind]) continue;
-      const image = await ai.image.generateReference({
+      const image = await generateGatedStill({
         characterName: character.name,
         description,
         kind,
+        faceText: character.appearance_profile.face,
       });
       const asset = await putAsset({
         owner_id: input.owner_id,
@@ -791,19 +886,13 @@ export function createEngine(deps: EngineDeps = {}) {
     const refs: Partial<Record<VisualReferenceKind, string>> = {};
     const seed = actor.seed_asset_id ? await assets.get(actor.seed_asset_id) : null;
     for (const kind of FACE_KIND_ORDER) {
-      const image = seed
-        ? await ai.image.generateReferenceFromSeed({
-            characterName: actor.name,
-            description,
-            kind,
-            seed_bytes: seed.body,
-            seed_mime_type: seed.asset.mime_type,
-          })
-        : await ai.image.generateReference({
-            characterName: actor.name,
-            description,
-            kind,
-          });
+      const image = await generateGatedStill({
+        characterName: actor.name,
+        description,
+        kind,
+        faceText: actor.appearance_profile.face,
+        seed: seed ? { bytes: seed.body, mime_type: seed.asset.mime_type } : null,
+      });
       const asset = await putAsset({
         owner_id: input.owner_id,
         series_id: input.series_id,
@@ -1414,8 +1503,8 @@ export function createEngine(deps: EngineDeps = {}) {
         bible,
         takes: takes.map(({ shot, index }) => ({ index, scene_script: shot.scene_script!, staging: shot.blocking?.staging ?? null })),
       });
-    } catch {
-      return plan;
+    } catch (error) {
+      return keepPlanAfterPolishFailure(plan, error);
     }
     const byIndex = new Map(polished.map((row) => [row.index, row.scene_script]));
     for (const { shot, index } of takes) {
@@ -1827,14 +1916,7 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     const pictured = live.shot_data.speaker_on_camera ?? (live.shot_data.audio_role === "offscreen" ? null : live.shot_data.speaker);
     const others = (scene?.scene_data.characters ?? []).filter((name) => !sameName(name, pictured));
-    const takeSpeakers = peopleInTake({
-      speakers: speakersForSceneTake({
-        sceneScript: live.shot_data.scene_script,
-        speaker: live.shot_data.speaker,
-        speakerOnCamera: live.shot_data.speaker_on_camera,
-      }),
-      blocking: live.shot_data.blocking,
-    });
+    const takeSpeakers = speakersOnShot(live);
     const partner =
       live.shot_data.audio_role === "offscreen"
         ? live.shot_data.speakers_off_camera?.[0] ?? live.shot_data.speaker
@@ -1883,17 +1965,19 @@ export function createEngine(deps: EngineDeps = {}) {
       }
     }
     const prompted = store.shots.get(live.id)!;
+    const episodeTakes = store.shotsForEpisode(episode.id);
     const prompt = dramaHooks.buildVideoPrompt({
       location,
       locationNote: await locationNoteFor(series.id, location),
       genre: seriesGenre(series),
       shot: prompted,
       partner,
-      peopleCount: isSceneTake(prompted.shot_data) || allowsTwoShot(prompted.shot_data.function) ? 2 : 1,
+      peopleCount: isSceneTake(prompted.shot_data) ? takeSpeakers.length : allowsTwoShot(prompted.shot_data.function) ? 2 : 1,
       otherNames: isSceneTake(prompted.shot_data) ? takeSpeakers.filter((name) => !sameName(name, pictured)) : others,
       identityLocks,
       roomDescription: roomDescriptionFor(series, location),
       roomGeometry: await roomGeometryFor(series.id, location),
+      takeIndex: Math.max(0, sceneTakeIndexOf(prompted, episodeTakes)),
     });
     await moderate(
       `${prompt}\n${live.shot_data.dialogue ?? ""}`,
@@ -2672,14 +2756,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const seriesForLoc = store.series.get(seriesId);
     const locIdEarly = locationRefForScene(seriesForLoc?.location_refs ?? {}, scene?.location);
     if (isSceneTake(shot.shot_data) && scene) {
-      const names = peopleInTake({
-        speakers: speakersForSceneTake({
-          sceneScript: shot.shot_data.scene_script,
-          speaker: shot.shot_data.speaker,
-          speakerOnCamera: shot.shot_data.speaker_on_camera,
-        }),
-        blocking: shot.shot_data.blocking,
-      });
+      const names = speakersOnShot(shot);
       if (!names.length) throw new Error("Scene take has no named speakers");
       const packNames = names;
       const people = [];
@@ -3172,11 +3249,7 @@ export function createEngine(deps: EngineDeps = {}) {
         }
       }
     }
-    const dialogueCu =
-      Boolean(shot.shot_data.dialogue) &&
-      shot.shot_data.audio_role !== "offscreen" &&
-      shot.shot_data.audio_role !== "silent" &&
-      !isObjectInsert(shot.shot_data);
+    const dialogueCu = spokenTakeNeedsMeasure(shot.shot_data);
     const audioConditioned = Boolean(
       shot.shot_data.dialogue &&
         shot.shot_data.audio_role !== "offscreen" &&
@@ -3239,12 +3312,20 @@ export function createEngine(deps: EngineDeps = {}) {
     }
 
     trace("identity done; scoring");
+    const sceneTakeIndex = sceneTakeIndexOf(shot, episodeShots);
+    const namedCast = store.charactersFor(job.series_id).map((row) => row.name);
+    const takeSpeakers = speakersOnShot(shot);
     const verdict = scoreTake(analysis, {
       dialogueCu,
       lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
       expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
       expectedFaces,
       sceneTake: isSceneTake(shot.shot_data),
+      takeIndex: sceneTakeIndex >= 0 ? sceneTakeIndex : 0,
+      transcript: analysis.transcript ?? null,
+      namedCast,
+      speakers: takeSpeakers,
+      sceneScript: typeof shot.shot_data.scene_script === "string" ? shot.shot_data.scene_script : null,
     });
     store.shots.set(shot.id, {
       ...store.shots.get(shot.id)!,
@@ -3285,6 +3366,14 @@ export function createEngine(deps: EngineDeps = {}) {
             heard_audio: lane,
           },
         });
+        if (isSceneTake(shot.shot_data) && spoken.text) {
+          const leaks = nameLeakReasons(spoken.text, {
+            namedCast,
+            speakers: takeSpeakers,
+            script: typeof shot.shot_data.scene_script === "string" ? shot.shot_data.scene_script : null,
+          });
+          if (leaks.length) qc = { pass: false, reasons: [...new Set([...qc.reasons, ...leaks])] };
+        }
         // Native stays even when the transcript drifts (never mux TTS over lips timed
         // to this take), but the drift is now a real QC reason instead of a comment.
         const expected = expectedSpokenText(shot);
@@ -3335,7 +3424,12 @@ export function createEngine(deps: EngineDeps = {}) {
       (qc.reasons.includes("identity_drift") &&
         (analysis.face_similarity != null ||
           ((shot.shot_data.function === "establishing" || shot.shot_data.type === "establishing") &&
-            !shot.shot_data.dialogue)));
+            !shot.shot_data.dialogue))) ||
+      qc.reasons.includes("name_label_spoken") ||
+      qc.reasons.includes("name_spoken") ||
+      qc.reasons.includes("join_cut_wide") ||
+      qc.reasons.includes("measurement_failed") ||
+      qc.reasons.includes("speech_unchecked");
     if (dropTake) {
       const live = store.shots.get(shot.id)!;
       store.shots.set(live.id, {
@@ -3695,11 +3789,7 @@ export function createEngine(deps: EngineDeps = {}) {
       (job) => job.shot_id === shot.id && job.job_type === "video" && typeof job.result_metadata.asset_id === "string",
     );
     const live = new Set((await liveAssetsForSeries(series.id)).map((asset) => asset.id));
-    const dialogueCu =
-      Boolean(shot.shot_data.dialogue) &&
-      shot.shot_data.audio_role !== "offscreen" &&
-      shot.shot_data.audio_role !== "silent" &&
-      !isObjectInsert(shot.shot_data);
+    const dialogueCu = spokenTakeNeedsMeasure(shot.shot_data);
     const expectedFaces = expectedFacesFor(shot.shot_data);
     const results: Array<{ job_id: string; before: string[]; after: string[] }> = [];
     for (const job of jobs) {
@@ -3739,12 +3829,21 @@ export function createEngine(deps: EngineDeps = {}) {
           request_metadata: { ...job.request_metadata, identity_judgement: identity.judgement, identity_skipped: identity.skipped, rejudged_at: iso(clock) },
         });
       }
+      const episodeShots = store.scenes.get(shot.scene_id)
+        ? store.shotsForEpisode(store.scenes.get(shot.scene_id)!.episode_id)
+        : [shot];
+      const sceneTakeIndex = sceneTakeIndexOf(shot, episodeShots);
       const verdict = scoreTake(analysis, {
         dialogueCu,
         lockedTake: (shot.shot_data.edit_mode ?? "locked_take") === "locked_take",
         expectedDurationSeconds: shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds,
         expectedFaces,
         sceneTake: isSceneTake(shot.shot_data),
+        takeIndex: sceneTakeIndex >= 0 ? sceneTakeIndex : 0,
+        transcript: analysis.transcript ?? null,
+        namedCast: store.charactersFor(series.id).map((row) => row.name),
+        speakers: speakersOnShot(shot),
+        sceneScript: typeof shot.shot_data.scene_script === "string" ? shot.shot_data.scene_script : null,
       });
       const before = Array.isArray(job.result_metadata.take_blockers) ? (job.result_metadata.take_blockers as string[]) : [];
       store.jobs.set(job.id, {
@@ -3877,11 +3976,7 @@ export function createEngine(deps: EngineDeps = {}) {
     let blockingNote: string | undefined;
     if (isSceneTake(shot.shot_data) && ai.vision?.describeBlocking) {
       try {
-        const names = speakersForSceneTake({
-          sceneScript: shot.shot_data.scene_script,
-          speaker: shot.shot_data.speaker,
-          speakerOnCamera: shot.shot_data.speaker_on_camera,
-        });
+        const names = speakersOnShot(shot);
         blockingNote = await ai.vision.describeBlocking({ frame, names });
       } catch {
         blockingNote = undefined;

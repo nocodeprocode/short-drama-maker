@@ -195,6 +195,29 @@ describe("take scoring", () => {
     expect(oneFaceScene.warnings).toContain("missing_faces");
     const mute = scoreTake(analysis({ has_audio: false }), { dialogueCu: true, lockedTake: true });
     expect(mute.blockers).toContain("native_audio_missing");
+    const leak = scoreTake(analysis({ face_box: { x: 0.4, y: 0.4, width: 0.08, height: 0.09 } }), {
+      dialogueCu: true,
+      lockedTake: false,
+      sceneTake: true,
+      takeIndex: 1,
+      transcript: "Mara says don't",
+      namedCast: ["Mara", "Cole"],
+      sceneScript: "the person on camera-left: {Don't.}",
+    });
+    expect(leak.blockers).toEqual(expect.arrayContaining(["name_label_spoken", "join_cut_wide"]));
+    const failed = scoreTake(analysis({ measurement_failed: true }), {
+      dialogueCu: true,
+      lockedTake: false,
+      sceneTake: true,
+    });
+    expect(failed.blockers).toContain("measurement_failed");
+    const unchecked = scoreTake(analysis({ transcript_error: true }), {
+      dialogueCu: true,
+      lockedTake: false,
+      sceneTake: true,
+      namedCast: ["Mara", "Cole"],
+    });
+    expect(unchecked.blockers).toContain("speech_unchecked");
   });
 
   it("blocks a take whose mouth opens before the settle point", () => {

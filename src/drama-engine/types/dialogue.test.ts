@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { sceneTakesAreCopies, sceneTakesShareSpokenBeat, spokenTextFromSceneScript } from "./dialogue.ts";
+import { clipCueToBreath, sceneTakesAreCopies, sceneTakesShareSpokenBeat, spokenTextFromSceneScript } from "./dialogue.ts";
+
+describe("clipCueToBreath", () => {
+  it("keeps a short cue and clips a wordy one without dropping the speaker tag", () => {
+    expect(clipCueToBreath("SARAH: I can't go there.")).toBe("SARAH: I can't go there.");
+    expect(clipCueToBreath("SARAH: (freezes) I can't go there.")).toBe("SARAH: (freezes) I can't go there.");
+    expect(clipCueToBreath("SARAH: This is not something that I can do in this kitchen tonight after everything.")).toBe(
+      "SARAH: This is not something that I can do in this kitchen tonight",
+    );
+    expect(clipCueToBreath("david: Don't.", 0)).toBe("david: Don't.");
+    expect(["david: Don't.", "sarah: Three months.", "david: Look at me."].map((row) => clipCueToBreath(row))).toEqual([
+      "david: Don't.",
+      "sarah: Three months.",
+      "david: Look at me.",
+    ]);
+  });
+});
 
 describe("sceneTakesShareSpokenBeat", () => {
   it("treats the same scene script as one beat", () => {

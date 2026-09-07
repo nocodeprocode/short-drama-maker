@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { identityLockLine, sceneTakeImageLocks, sceneTakePrompt, speakersForSceneTake, speakersFromSceneScript } from "../../drama-engine/craft/prompt-fragments.ts";
+import { identityLockLine, peopleOnSceneTake, sceneTakeImageLocks, sceneTakePrompt, speakersForSceneTake, speakersFromSceneScript } from "../../drama-engine/craft/prompt-fragments.ts";
 import { applySceneTakeStrip, buildSceneTakeRefs, MissingFrontStillError, sheetStrengthFor, strongestStrip } from "./scene-take-refs.ts";
 
 describe("scene-take ref pack", () => {
@@ -105,6 +105,12 @@ describe("scene-take ref pack", () => {
     expect(
       speakersForSceneTake({
         sceneScript: "MARA: Stay.\nCOLE: Felix.\nFELIX: Boss—",
+      }),
+    ).toEqual(["MARA", "COLE", "FELIX"]);
+    expect(
+      peopleOnSceneTake({
+        sceneScript: "MARA: Stay.\nCOLE: My ride.",
+        blocking: { present: ["MARA", "COLE", "FELIX"] },
       }),
     ).toEqual(["MARA", "COLE", "FELIX"]);
     expect(identityLockLine("MARA")).toMatch(/Keep MARA's locked adult face/);

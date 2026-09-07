@@ -10,7 +10,7 @@ import {
   defaultCraftForShot,
 } from "../editorial/shot-budget.ts";
 import { consumeReactionPad, silenceLegal } from "../pacing/reaction-pad.ts";
-import { DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesAreCopies, wordCount } from "../types/dialogue.ts";
+import { clipCueToBreath, DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesAreCopies, wordCount } from "../types/dialogue.ts";
 import { channelOf, coreExpectationFrom, isOneSentence } from "../types/micro-drama.ts";
 import {
   assignSceneSides,
@@ -1485,9 +1485,8 @@ function dropRepeatedBoundaryCues(takes: PlanShot[]): PlanShot[] {
     // paraphrase of the previous line is the same repeat to a viewer. Drop each
     // one while the take still holds a conversation.
     const kept: string[] = [];
-    // Three cues is the floor for a conversation, except on the last take: it
-    // gains the button line after this, so it can go down to two here.
-    let budget = rows.length - (i === out.length - 1 ? 2 : 3);
+    // Five cues is the floor for a non-button conversation. The button may be 1–4.
+    let budget = rows.length - (i === out.length - 1 ? 1 : 5);
     for (const row of rows) {
       if (budget > 0 && previous.some((said) => dialogueTooClose(cueText(row), said))) {
         budget -= 1;
@@ -1571,10 +1570,11 @@ function rebuildSceneTake(
     cues.map(cueText).find((line) => lineInMotion(line)) ??
     (opener && lineInMotion(source.dialogue) ? source.dialogue : null) ??
     (opener ? punch : cueText(first));
-  const nextCues =
+  const nextCues = (
     opener && firstLive && !cues.some((row) => cueText(row) === firstLive)
       ? [`${firstName}: ${firstLive}`, ...cues.slice(1)]
-      : cues;
+      : cues
+  ).map((row) => clipCueToBreath(row));
   return {
     ...source,
     speaker: (closer ? lastName : firstName) ?? source.speaker,
@@ -1597,7 +1597,7 @@ function fitSceneTakeSpeech(takes: PlanShot[], plan: EpisodePlan, budget: Length
   type Cue = { text: string; origin: number };
   const queue = takes.map((source, origin) => ({
     source,
-    cues: splitCueSentences(cueRows(source.scene_script)).map((text) => ({ text, origin })),
+    cues: splitCueSentences(cueRows(source.scene_script)).map((text) => ({ text: clipCueToBreath(text), origin })),
   }));
   const packed: Array<{ cues: Cue[] }> = [];
   for (let i = 0; i < queue.length; i += 1) {
@@ -1625,17 +1625,32 @@ function fitSceneTakeSpeech(takes: PlanShot[], plan: EpisodePlan, budget: Length
   }
   const kept = packed.filter((row) => row.cues.length).slice(0, budget.max_shots);
   if (!kept.length) return takes;
-  // A take that fit under the window with one cue is a card, not a scene. Pull
-  // the next take's first cue up so every take carries a conversation — but not
-  // across a staging change, or the bodies would be doing the previous beat.
+  // Non-button takes target 5–8 cues. Steal surplus from the next take — never
+  // invent lines, never empty the button, never cross a staging origin.
   for (let i = 0; i < kept.length - 1; i += 1) {
+    const nextFloor = i + 1 === kept.length - 1 ? 1 : 5;
     while (
-      kept[i]!.cues.length < 3 &&
-      kept[i + 1]!.cues.length > 3 &&
+      kept[i]!.cues.length < 5 &&
+      kept[i + 1]!.cues.length > nextFloor &&
       kept[i + 1]!.cues[0]!.origin === kept[i]!.cues[0]!.origin
     ) {
       kept[i]!.cues.push(kept[i + 1]!.cues.shift()!);
     }
+  }
+  // Merge adjacent thin non-button takes of the same origin when we have a spare slot.
+  for (let i = 0; i < kept.length - 1; ) {
+    const nextIsButton = i + 1 === kept.length - 1;
+    if (
+      !nextIsButton &&
+      kept[i]!.cues.length < 5 &&
+      kept.length > budget.min_shots &&
+      kept[i + 1]!.cues[0]!.origin === kept[i]!.cues[0]!.origin
+    ) {
+      kept[i]!.cues.push(...kept[i + 1]!.cues);
+      kept.splice(i + 1, 1);
+      continue;
+    }
+    i += 1;
   }
   return kept.map((row, index) =>
     rebuildSceneTake(
@@ -1753,7 +1768,7 @@ function packSceneTake(
   const spoken = group.filter((shot) => isSpokenLine(shot));
   const lines = linesForPackedTake(group, copiedInheritedScript);
   const spokenLines = spoken.map((shot) => cueLine(shot));
-  if (lines.length < 3) {
+  if (lines.length < 5 && index < total - 1) {
     for (const row of spokenLines) {
       if (!lines.includes(row)) lines.push(row);
     }
