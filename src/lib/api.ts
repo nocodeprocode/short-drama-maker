@@ -465,7 +465,7 @@ export type DesignLocation = {
   plate_url: string | null;
   /** Lighting note from the plate; every close-up in this room carries it. */
   lighting_lock: string | null;
-  /** Reverse and side views of the same set, built when a cut needs them. */
+  /** Every wall plus overhead of the same empty set, built with the plate. */
   angles: Array<{ angle: string; url: string }>;
   status: DesignStatus;
   locked: boolean;
@@ -481,6 +481,8 @@ export type DesignProp = {
   origin: "slate" | "buyer" | "story" | "cast_device";
   position: number;
   still_url: string | null;
+  /** Extra faces of the same object when it has a back or an open state. */
+  angles: Array<{ angle: string; url: string }>;
   kind: string | null;
   state: string | null;
   status: DesignStatus;

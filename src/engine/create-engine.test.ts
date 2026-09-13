@@ -445,6 +445,7 @@ describe("production design", () => {
         key_light: "window left",
         dressing: ["bare desk", "glass wall"],
         people_present: seen < 3,
+        placeholder_lettering: false,
         model: "test",
       };
     };
@@ -464,7 +465,8 @@ describe("production design", () => {
       amount: 25,
     });
     const built = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
-    expect(seen).toBe(3);
+    // Three plate attempts, then one judge per wall of the pack.
+    expect(seen).toBe(8);
     const asset = (await app.assets.listBySeries(series.id)).find((row) => row.id === built.asset_id);
     expect(asset?.metadata.people_present).toBe(false);
     // Every close-up in this room carries this note.
@@ -476,11 +478,43 @@ describe("production design", () => {
       key_light: "x",
       dressing: ["x"],
       people_present: true,
+      placeholder_lettering: false,
       model: "test",
     });
     await expect(
       app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "board room", force: true }),
     ).rejects.toThrow(/still shows a human figure/);
+  });
+
+  it("refuses a plate that stamps dummy lettering on a fixture", async () => {
+    const ai = testGateway();
+    ai.vision!.describeLocation = async () => ({
+      lighting_lock: "overhead fluorescent",
+      palette: "steel and cream",
+      key_light: "window right",
+      dressing: ["steel doors", "floor lamp"],
+      people_present: false,
+      placeholder_lettering: true,
+      model: "test",
+    });
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_design_lettering",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await expect(
+      app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "elevator", force: true }),
+    ).rejects.toThrow(/dummy lettering or a leaked prop/);
   });
 
   it("reuses a built room instead of paying for it twice", async () => {
@@ -499,6 +533,32 @@ describe("production design", () => {
     expect(forced.reused).toBe(false);
     expect(forced.asset_id).not.toBe(first.asset_id);
     expect(app.store.series.get(series.id)!.location_refs["glass office"]).toBe(forced.asset_id);
+
+    const assets = await app.assets.listBySeries(series.id);
+    const firstWalls = assets.filter(
+      (row) => row.metadata.kind === "room_angle" && row.metadata.plate_id === first.asset_id,
+    );
+    const forcedWalls = assets.filter(
+      (row) => row.metadata.kind === "room_angle" && row.metadata.plate_id === forced.asset_id,
+    );
+    expect(firstWalls.map((row) => row.metadata.angle).sort()).toEqual(
+      ["facing", "left", "opposite", "overhead", "right"].sort(),
+    );
+    expect(forcedWalls.map((row) => row.metadata.angle).sort()).toEqual(
+      ["facing", "left", "opposite", "overhead", "right"].sort(),
+    );
+    expect(forcedWalls.every((row) => !firstWalls.some((old) => old.id === row.id))).toBe(true);
+  });
+
+  it("writes a room pack when a place is built", async () => {
+    const { app, series } = await designApp("evt_design_room_pack");
+    const built = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
+    const assets = await app.assets.listBySeries(series.id);
+    const walls = assets.filter(
+      (row) => row.metadata.kind === "room_angle" && row.metadata.plate_id === built.asset_id,
+    );
+    expect(walls).toHaveLength(5);
+    expect(walls.every((row) => row.metadata.location === "glass office")).toBe(true);
   });
 
   it("keys an object the way the planner keys the same words", async () => {
@@ -518,6 +578,20 @@ describe("production design", () => {
     const again = await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "leaked NDA" });
     expect(again.reused).toBe(true);
     expect(again.asset_id).toBe(prop.asset_id);
+
+    const extras = (await app.assets.listBySeries(series.id)).filter(
+      (row) => row.metadata.kind === "object_angle" && row.metadata.still_id === prop.asset_id,
+    );
+    expect(extras.map((row) => row.metadata.angle)).toEqual(["reverse"]);
+  });
+
+  it("does not invent extra views for a one-faced object", async () => {
+    const { app, series } = await designApp("evt_design_prop_lamp");
+    const lamp = await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "brass lamp" });
+    const extras = (await app.assets.listBySeries(series.id)).filter(
+      (row) => row.metadata.kind === "object_angle" && row.metadata.still_id === lamp.asset_id,
+    );
+    expect(extras).toEqual([]);
   });
 
   it("refuses a prop with no object in its name", async () => {

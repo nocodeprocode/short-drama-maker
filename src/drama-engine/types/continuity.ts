@@ -1,4 +1,4 @@
-import { placeEntrance, placeExit, placeKind, placeNoun } from "../craft/place.ts";
+import { isOutdoorPlace, placeEntrance, placeExit, placeNoun } from "../craft/place.ts";
 import { inferPropLock, lockDoorSide, type ScreenSide } from "./physics.ts";
 
 export type { ScreenSide };
@@ -218,7 +218,7 @@ export function blockingPrompt(block: SceneBlocking, location?: string | null): 
       ? `${third} is the third person in the ${noun}: one step back, between them in depth, never in either lead's position.`
       : null,
     entering.length
-      ? placeKind(location) === "outdoor"
+      ? isOutdoorPlace(location)
         ? `ENTRANCE PHYSICS. ${entering.join(" and ")} ${entering.length > 1 ? "were" : "was"} not in the ${noun} before. ${entering.join(" and ")} ${placeEntrance(location)} during Shot 1 and stays there. Nobody else moves.`
         : `ENTRANCE PHYSICS. ${entering.join(" and ")} ${entering.length > 1 ? "are" : "is"} NOT in the ${noun} at frame 0. The locked door stays ${block.door_side ?? "camera-right"}. Shot 1 is a full-page of ${entering.join(" and ")} coming through THAT door. Only after they cross the threshold do they stand one step back. They cannot already be inside.`
       : `Nobody enters. The ${noun} holds the same people it had.`,

@@ -13,6 +13,8 @@ import {
   type ObjectEntry,
   type PlaceEntry,
 } from "@/lib/api.ts";
+import { roomAngleLabel } from "@/drama-engine/craft/place.ts";
+import { objectViewLabel } from "@/engine/pipeline/prop-bible.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
 
@@ -146,7 +148,6 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
     const [places, objects] = await Promise.all([studio.places(), studio.objects()]);
     return { places: places.items, objects: objects.items };
   });
-  const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [addPlace, setAddPlace] = useState("");
   const [addObject, setAddObject] = useState("");
@@ -176,15 +177,12 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
   const isWorking = (row: { id: string; status: DesignStatus }) => row.status === "building" || asked.has(row.id);
 
   const run = async (work: () => Promise<unknown>, fallback: string) => {
-    setBusy(true);
     setSaveError(null);
     try {
       await work();
       await reload();
     } catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : fallback);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -283,9 +281,9 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
   return (
     <div className="space-y-10">
       <p className="max-w-2xl text-sm text-secondary">
-        The sets and the objects, kept apart from the cast. A place is built once as an empty plate and reused from
-        several angles, so every scene there is the same room. An object is shot alone, so the same contract or letter
-        looks the same every time it appears.
+        The sets and the objects, kept apart from the cast. A place is built as an empty set from every wall plus above,
+        so later scenes keep the same room. An object is shot alone, and from the other side when it has two faces, so
+        the same contract or letter looks the same every time it appears.
       </p>
 
       {saveError ? <p className="text-sm text-error-primary">{saveError}</p> : null}
@@ -301,8 +299,8 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
             </p>
           </div>
           {missingLocations.length ? (
-            <Button color="secondary" size="sm" isDisabled={busy} onClick={() => void buildAll("locations")}>
-              {busy ? "Working…" : `Build ${missingLocations.length} missing place${missingLocations.length > 1 ? "s" : ""}`}
+            <Button color="secondary" size="sm" onClick={() => void buildAll("locations")}>
+              {`Build ${missingLocations.length} missing place${missingLocations.length > 1 ? "s" : ""}`}
             </Button>
           ) : null}
         </div>
@@ -313,7 +311,6 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
               <LocationCard
                 key={row.id}
                 row={row}
-                busy={busy}
                 working={isWorking(row)}
                 entries={placeEntries}
                 picking={picking === row.id}
@@ -336,7 +333,7 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
             value={addPlace}
             onChange={setAddPlace}
           />
-          <Button color="secondary" size="sm" isDisabled={busy || !addPlace.trim()} onClick={() => void add("locations")}>
+          <Button color="secondary" size="sm" isDisabled={!addPlace.trim()} onClick={() => void add("locations")}>
             Add
           </Button>
         </div>
@@ -351,8 +348,8 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
             </p>
           </div>
           {missingProps.length ? (
-            <Button color="secondary" size="sm" isDisabled={busy} onClick={() => void buildAll("props")}>
-              {busy ? "Working…" : `Build ${missingProps.length} missing object${missingProps.length > 1 ? "s" : ""}`}
+            <Button color="secondary" size="sm" onClick={() => void buildAll("props")}>
+              {`Build ${missingProps.length} missing object${missingProps.length > 1 ? "s" : ""}`}
             </Button>
           ) : null}
         </div>
@@ -363,7 +360,6 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
               <PropCard
                 key={row.id}
                 row={row}
-                busy={busy}
                 working={isWorking(row)}
                 entries={objectEntries}
                 picking={picking === row.id}
@@ -386,7 +382,7 @@ export function DesignSheet({ seriesId }: { seriesId: string }) {
             value={addObject}
             onChange={setAddObject}
           />
-          <Button color="secondary" size="sm" isDisabled={busy || !addObject.trim()} onClick={() => void add("props")}>
+          <Button color="secondary" size="sm" isDisabled={!addObject.trim()} onClick={() => void add("props")}>
             Add
           </Button>
         </div>
@@ -401,7 +397,6 @@ function CardShell({ children }: { children: ReactNode }) {
 
 function LocationCard({
   row,
-  busy,
   working,
   entries,
   picking,
@@ -412,7 +407,6 @@ function LocationCard({
   onUpload,
 }: {
   row: DesignLocation;
-  busy: boolean;
   working: boolean;
   entries: Entry[];
   picking: boolean;
@@ -446,17 +440,19 @@ function LocationCard({
 
         {row.lighting_lock ? <p className="mt-2 text-xs text-tertiary">{row.lighting_lock}</p> : null}
 
-        {row.angles.length ? (
+        {row.angles?.length ? (
           <div className="mt-3">
-            <div className="text-xs font-semibold text-tertiary">Same room, other angles</div>
-            <div className="mt-2 flex gap-2">
+            <div className="text-xs font-semibold text-tertiary">Every wall, plus above</div>
+            <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
               {row.angles.map((angle) => (
-                <img
-                  key={angle.angle}
-                  src={angle.url}
-                  alt={angle.angle}
-                  className="h-16 w-10 rounded-md object-cover"
-                />
+                <div key={angle.angle} className="min-w-0">
+                  <img
+                    src={angle.url}
+                    alt={roomAngleLabel(angle.angle)}
+                    className="aspect-[9/16] w-full rounded-md object-cover"
+                  />
+                  <div className="mt-1 truncate text-[10px] text-tertiary">{roomAngleLabel(angle.angle)}</div>
+                </div>
               ))}
             </div>
           </div>
@@ -469,21 +465,21 @@ function LocationCard({
         ) : (
           <>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button color="secondary" size="sm" isDisabled={busy || working} onClick={() => onBuild(Boolean(row.plate_url))}>
+              <Button color="secondary" size="sm" isDisabled={working} onClick={() => onBuild(Boolean(row.plate_url))}>
                 {working ? "Building…" : row.plate_url ? "Build it again" : "Build this place"}
               </Button>
-              <UploadButton label="Use my own" busy={busy || working} onFile={onUpload} />
-              <Button color="tertiary" size="sm" isDisabled={busy || working} onClick={() => onPicking(!picking)}>
+              <UploadButton label="Use my own" busy={working} onFile={onUpload} />
+              <Button color="tertiary" size="sm" isDisabled={working} onClick={() => onPicking(!picking)}>
                 Library
               </Button>
               {row.origin === "story" ? null : (
-                <Button color="tertiary" size="sm" isDisabled={busy || working} onClick={onRemove}>
+                <Button color="tertiary" size="sm" isDisabled={working} onClick={onRemove}>
                   Remove
                 </Button>
               )}
             </div>
             {picking ? (
-              <LibraryStrip entries={entries} busy={busy} onPick={onPick} onClose={() => onPicking(false)} />
+              <LibraryStrip entries={entries} busy={working} onPick={onPick} onClose={() => onPicking(false)} />
             ) : null}
           </>
         )}
@@ -494,7 +490,6 @@ function LocationCard({
 
 function PropCard({
   row,
-  busy,
   working,
   entries,
   picking,
@@ -505,7 +500,6 @@ function PropCard({
   onUpload,
 }: {
   row: DesignProp;
-  busy: boolean;
   working: boolean;
   entries: Entry[];
   picking: boolean;
@@ -524,25 +518,42 @@ function PropCard({
         </div>
         <div className="mt-1 text-md font-semibold">{row.name}</div>
         {row.state ? <p className="mt-1 text-xs text-tertiary">{row.state} state</p> : null}
+        {row.angles?.length ? (
+          <div className="mt-3">
+            <div className="text-xs font-semibold text-tertiary">Other views</div>
+            <div className="mt-2 flex gap-2">
+              {row.angles.map((angle) => (
+                <div key={angle.angle} className="min-w-0">
+                  <img
+                    src={angle.url}
+                    alt={objectViewLabel(angle.angle)}
+                    className="h-16 w-10 rounded-md object-cover"
+                  />
+                  <div className="mt-1 truncate text-[10px] text-tertiary">{objectViewLabel(angle.angle)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {row.error ? <p className="mt-2 text-xs text-error-primary">{row.error}</p> : null}
         {row.locked ? (
           <p className="mt-3 text-sm text-tertiary">Already on screen. It stays the same object.</p>
         ) : (
           <>
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button color="secondary" size="sm" isDisabled={busy || working} onClick={() => onBuild(Boolean(row.still_url))}>
+              <Button color="secondary" size="sm" isDisabled={working} onClick={() => onBuild(Boolean(row.still_url))}>
                 {working ? "Building…" : row.still_url ? "Again" : "Build it"}
               </Button>
-              <UploadButton label="Use my own" busy={busy || working} onFile={onUpload} />
-              <Button color="tertiary" size="sm" isDisabled={busy || working} onClick={() => onPicking(!picking)}>
+              <UploadButton label="Use my own" busy={working} onFile={onUpload} />
+              <Button color="tertiary" size="sm" isDisabled={working} onClick={() => onPicking(!picking)}>
                 Library
               </Button>
-              <Button color="tertiary" size="sm" isDisabled={busy || working} onClick={onRemove}>
+              <Button color="tertiary" size="sm" isDisabled={working} onClick={onRemove}>
                 Remove
               </Button>
             </div>
             {picking ? (
-              <LibraryStrip entries={entries} busy={busy} onPick={onPick} onClose={() => onPicking(false)} />
+              <LibraryStrip entries={entries} busy={working} onPick={onPick} onClose={() => onPicking(false)} />
             ) : null}
           </>
         )}

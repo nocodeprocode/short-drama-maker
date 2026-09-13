@@ -30,7 +30,7 @@ export const DESIGN_PROP_MIN = 2;
 
 const GENRE_DESIGN: Record<GenreId, { setPieces: string[]; visualMotifs: string[] }> = {
   billionaire: {
-    setPieces: ["signing table", "elevator", "gala", "board vote", "hospital corridor"],
+    setPieces: ["signing table", "elevator", "gala", "boardroom", "hospital corridor"],
     visualMotifs: ["glass office", "penthouse rain", "ring box", "NDA", "black car"],
   },
   werewolf: {
@@ -38,7 +38,7 @@ const GENRE_DESIGN: Record<GenreId, { setPieces: string[]; visualMotifs: string[
     visualMotifs: ["black envelope", "brass lamp", "private office", "wrist mark", "wet courier jacket"],
   },
   revenge: {
-    setPieces: ["wedding", "board", "pack original crime"],
+    setPieces: ["wedding", "boardroom", "pack original crime"],
     visualMotifs: ["receipts", "vow catchphrase"],
   },
   hidden_identity: {
@@ -72,7 +72,22 @@ const FALLBACK_PROPS = ["sealed letter", "face-down phone", "closed contract fol
 
 /** A place we can stand a camera in. Wins over an object word in the same phrase. */
 const PLACE_NEEDLE =
-  /\b(office|penthouse|hall|corridor|gala|elevator|car|warehouse|church|room|house|gate|banquet|palace|board|gallery|table|doorway|safehouse|study|wedding|hospital|street|apartment|kitchen|bar|club|garden|courtyard|lobby|rooftop|alley|estate|mansion|suite|bedroom|stairwell|dock|station|temple|shrine|prison|courtroom)\b/i;
+  /\b(office|penthouse|hall|corridor|gala|elevator|car|warehouse|church|room|house|gate|banquet|palace|boardroom|board|gallery|table|doorway|safehouse|study|wedding|hospital|street|apartment|kitchen|bar|club|garden|courtyard|lobby|rooftop|alley|estate|mansion|suite|bedroom|stairwell|dock|station|temple|shrine|prison|courtroom)\b/i;
+
+/**
+ * Playbook shorthand the image model will misread if we send it as-is.
+ * "board" is a film clapperboard. "board vote" is a beat, not a room.
+ */
+const PLACE_EXPAND: Record<string, string> = {
+  board: "boardroom",
+  "board vote": "boardroom",
+};
+
+/** The name we actually generate and store, so the plate is a room. */
+export function expandPlaceName(name: string): string {
+  const trimmed = name.replace(/\s+/g, " ").trim();
+  return PLACE_EXPAND[trimmed.toLowerCase()] ?? trimmed;
+}
 
 /** An object we can shoot alone on a surface. */
 const OBJECT_NEEDLE =
@@ -84,7 +99,7 @@ const OBJECT_NEEDLE =
  */
 const SKIP_NEEDLE = /\b(implied|off-frame|catchphrase|timeline|morph|tattoo|tattoos|gun|guns|blood)\b/i;
 
-const LOCATION_NOTE = "Empty set, no people. One locked key light and grade, cinematic 9:16 still.";
+const LOCATION_NOTE = "Empty set, no people. One motivated light and grade, cinematic 9:16 still.";
 const PROP_NOTE = "Object alone on a plain dark surface. No people, no hands, no brand, no readable text.";
 
 /** The phrase up to and including its last matching word, so a qualifier tail falls off. */
@@ -117,7 +132,7 @@ export function classifyDesignPhrase(phrase: string): { kind: DesignKind; name: 
   const text = cleanFragment(phrase);
   if (!text || SKIP_NEEDLE.test(text)) return null;
   if (PLACE_NEEDLE.test(text)) {
-    return { kind: "location", name: truncateToLastMatch(text, PLACE_NEEDLE) };
+    return { kind: "location", name: expandPlaceName(truncateToLastMatch(text, PLACE_NEEDLE)) };
   }
   if (OBJECT_NEEDLE.test(text)) {
     return { kind: "prop", name: truncateToLastMatch(text, OBJECT_NEEDLE) };

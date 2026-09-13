@@ -14,7 +14,7 @@ export const GENRE_PLAYBOOKS: Record<GenreId, GenrePlaybook> = {
       { job: "nuke", role: "hidden heir / leaked NDA" },
     ],
     visualMotifs: ["glass office", "penthouse rain", "ring box", "NDA", "black car"],
-    setPieces: ["signing table", "elevator", "gala", "board vote", "hospital corridor"],
+    setPieces: ["signing table", "elevator", "gala", "boardroom", "hospital corridor"],
     cliffPatterns: ["identity", "humiliation", "choice", "interruption"],
     punish: [
       "soft rom-com pace",
@@ -88,7 +88,7 @@ export const GENRE_PLAYBOOKS: Record<GenreId, GenrePlaybook> = {
       { job: "nuke", role: "unfinished name on the ledger" },
     ],
     visualMotifs: ["receipts", "vow catchphrase"],
-    setPieces: ["wedding", "board", "pack original crime"],
+    setPieces: ["wedding", "boardroom", "pack original crime"],
     cliffPatterns: ["humiliation", "information", "danger"],
     punish: ["only hurt, no slap-back", "violent blood revenge", "NRTA violent revenge"],
     skuPolicy: ["en_iap"],

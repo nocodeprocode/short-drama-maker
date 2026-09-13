@@ -47,6 +47,8 @@ export type LocationNotes = {
   dressing: string[];
   /** Any human figure at all: face, silhouette, back to camera, reflection, portrait on a wall. */
   people_present: boolean;
+  /** Dummy words on a fixture, or a leaked metaphor prop (padlock, key, slate). */
+  placeholder_lettering: boolean;
   /** Floor plan in one sentence: main surface and its height, window wall, shelf wall, floor. */
   geometry?: string;
   model: string;
@@ -120,9 +122,11 @@ export function parseFaceBox(content: string): FaceBox | null {
 }
 
 const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
-Answer only with JSON: {"people_present": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact place and light>", "geometry": "<one sentence of real geography>"}.
+Answer only with JSON: {"people_present": true|false, "placeholder_lettering": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact place and light>", "geometry": "<one sentence of real geography>"}.
 people_present is true if ANY human figure is visible in any form: a face, a body, a silhouette, someone with their back to camera, a reflection, a mannequin, or a person in a painting or photograph on the wall. Be strict.
-If the still is OUTDOOR (alley, street, rain, pavement): geometry names the wall, the ground, the light (street lamp or window), the opening, and that there are no indoor curtains or furniture in the street. lighting_lock must not invent a room.
+placeholder_lettering is true if any fixture shows dummy or leaked copy: LOCATION, SAMPLE, LOREM, TEST, INSERT, PLATE, 9:16, garbled lettering, or the name of the place written as a title. A real floor number such as 10 is not dummy copy. Also true if a padlock, key, chain, clapperboard, or film slate is sitting in the place as a prop.
+If the still is OUTDOOR (alley, street, rain, pavement, a parked car): geometry names the wall or the car, the ground, the light (street lamp or window), the opening, and that there are no indoor curtains or furniture in the street. lighting_lock must not invent a room.
+If the location is a car and the still is a furnished room, placeholder_lettering is true — a car does not belong in a living room.
 If the still is INDOOR: geometry is the floor plan — the main surface, window side, shelves, floor material. lighting_lock must not invent open sky or rain inside.
 Rules: name real visible things only; no brands or readable text; keep lighting_lock under 40 words and geometry under 45 words.`;
 
@@ -140,6 +144,7 @@ export function parseLocationNotes(content: string, model: string): LocationNote
     key_light: typeof raw.key_light === "string" ? raw.key_light.slice(0, 120) : "",
     dressing,
     people_present: raw.people_present === true || raw.people_present === "true",
+    placeholder_lettering: raw.placeholder_lettering === true || raw.placeholder_lettering === "true",
     geometry: typeof raw.geometry === "string" && raw.geometry.trim() ? raw.geometry.trim().slice(0, 320) : undefined,
     model,
   };

@@ -73,9 +73,11 @@ export class MissingFrontStillError extends Error {
 export function buildSceneTakeRefs(input: {
   characters: SceneTakePersonStills[];
   locationPlate?: { url: string; id?: string | null } | null;
-  /** Extra angles of the same empty set (reverse, side); the model uses them when a cut faces that way. */
+  /** Extra angles of the same empty set; the model uses them when a cut faces that way. */
   locationAngles?: Array<{ url: string; id?: string | null; angle: string }> | null;
   propPlate?: { url: string; id?: string | null; name?: string | null } | null;
+  /** Extra faces of the same object (back, open) when the take uses that prop. */
+  propAngles?: Array<{ url: string; id?: string | null; angle: string; name?: string | null }> | null;
   weldPlate?: { url: string; id?: string | null } | null;
 }): { images: SceneTakeRef[]; video: SceneTakeRef | null; labels: SceneTakeLock[] } {
   const images: SceneTakeRef[] = [];
@@ -140,6 +142,15 @@ export function buildSceneTakeRefs(input: {
       role: "prop",
       name: input.propPlate.name ?? "prop",
     });
+    for (const angle of input.propAngles ?? []) {
+      if (!angle.url) continue;
+      push({
+        url: angle.url,
+        assetId: angle.id ?? null,
+        role: "prop",
+        name: `${input.propPlate.name ?? angle.name ?? "prop"}-${angle.angle}`,
+      });
+    }
   }
 
   return applySceneTakeStrip({ images, video: null, labels: [] }, "none");

@@ -2,7 +2,7 @@ import type { EpisodeLength } from "../../engine/config/catalog.ts";
 import { LENGTH_BUDGETS } from "../types/pacing.ts";
 import type { GenrePlaybook } from "../types/genre.ts";
 import { blockingPrompt, peopleInTake, sceneBlockingOf, type LooseBlocking } from "../types/continuity.ts";
-import { placeKind, placeLockClause, placeNoun } from "./place.ts";
+import { isOutdoorPlace, placeLockClause, placeNoun } from "./place.ts";
 import { COVERAGE_CLAUSE, JOIN_CUT_CLAUSE } from "./coverage.ts";
 import { CUT_RULES, type CutFraming } from "../types/cut.ts";
 import { SEEDANCE_SPEECH_RULES, SHORT_DRAMA_SCORE } from "./seedance-speech.ts";
@@ -77,7 +77,7 @@ export function roomGeometryClause(input: { location?: string | null; descriptio
   if (!parts.length && !input.doorSide) return null;
   const name = (input.location ?? "this place").split(" — ")[0];
   const noun = placeNoun(input.location);
-  const outdoor = placeKind(input.location) === "outdoor";
+  const outdoor = isOutdoorPlace(input.location);
   const extras = outdoor
     ? "Do not add a wall, curtain, or piece of furniture that is not in the plates."
     : "The camera never shows a wall or object that is not in the plates.";
@@ -182,9 +182,9 @@ const COPYRIGHT_SAFE =
   "no logo, no brand name, no barcode, no printed merchant, no printed personal name, no readable date that looks like an ID";
 
 export function identitySafeLocation(location?: string | null, note?: string | null): string {
-  const place = (location ?? (placeKind(location) === "outdoor" ? "night street" : "night interior")).replace(/\s+/g, " ").trim();
+  const place = (location ?? (isOutdoorPlace(location) ? "night street" : "night interior")).replace(/\s+/g, " ").trim();
   const described = note?.trim() ? ` ${note.trim().replace(/\.?$/, ".")}` : "";
-  const other = placeKind(location) === "outdoor" ? "no random other street, no indoor room" : "no random other room";
+  const other = isOutdoorPlace(location) ? "no random other street, no indoor room" : "no random other room";
   return `same ${place}, same key light and grade as the location plate.${described} No night-forest bokeh, ${other}, no readable signage`;
 }
 

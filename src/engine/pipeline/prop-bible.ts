@@ -15,6 +15,85 @@ export function propKey(kind: PropKind): string {
 }
 
 /**
+ * Lettering on an object plate.
+ *
+ * Prefer none. A ring box does not need a jeweller's name, and asking the
+ * model to "keep printed names readable" is how ESTHERY / Mer Yandex lands
+ * on the lid. If the object is a document that must show a word, that word
+ * is one real heading — never dummy brands or sample copy. A date is 10.
+ */
+export function objectLettering(name?: string | null): string {
+  const text = (name ?? "").trim();
+  if (/\b(ring|watch|jewel|necklace|locket|bracelet|earring)\b/i.test(text)) {
+    return "The object has no printed lettering. Blank lid and lining. No brand, no date, no name.";
+  }
+  if (/\b(nda|contract|letter|newspaper|receipt|clause|deed|folder|envelope)\b/i.test(text)) {
+    return (
+      "If this document must show a heading, one short real heading only. " +
+      "A date reads 10. No dummy brands, no sample copy, no garbled names."
+    );
+  }
+  return "No printed lettering on the object. No brand, no date, no name, unless this object is a document that must show one real heading.";
+}
+
+/** Extra stills of the same object when it has two faces or an open state. */
+export type ObjectView = { angle: string; prompt: string };
+
+export const OBJECT_ANGLE_KIND = "object_angle";
+
+const OBJECT_VIEW_LABELS: Record<string, string> = {
+  reverse: "Back",
+  open: "Open",
+  profile: "Edge",
+};
+
+export function objectViewLabel(angle: string): string {
+  return OBJECT_VIEW_LABELS[angle] ?? angle.replaceAll("_", " ");
+}
+
+/**
+ * Only objects that change when you turn them or open them.
+ * A lamp is one picture. A contract has a back. A ring box opens.
+ */
+export function objectViews(name?: string | null): ObjectView[] {
+  const text = (name ?? "").trim();
+  if (!text) return [];
+  if (/\b(box|envelope|carrier)\b/i.test(text)) {
+    return [
+      {
+        angle: "open",
+        prompt: "the same object open, lid or flap up, same object, same lining, same surface",
+      },
+    ];
+  }
+  if (/\b(nda|contract|letter|newspaper|receipt|clause|deed|folder|paper|note)\b/i.test(text)) {
+    return [
+      {
+        angle: "reverse",
+        prompt: "the same object from the back, same paper, same size, same surface",
+      },
+    ];
+  }
+  if (/\bphone\b/i.test(text)) {
+    return [
+      {
+        angle: "reverse",
+        prompt: "the same phone flipped to the other face, same device, same surface, screen off",
+      },
+    ];
+  }
+  if (/\bwatch\b/i.test(text)) {
+    return [
+      {
+        angle: "profile",
+        prompt: "the same watch from the side, clasp and edge visible, same watch, same surface",
+      },
+    ];
+  }
+  return [];
+}
+
+/**
  * Any story's prop, from the planner's own words ("the same soaked parcel on
  * the wet ground"). The fixed kinds above are only a cache for the commonest
  * objects; this is what makes the prop bible work for any script.

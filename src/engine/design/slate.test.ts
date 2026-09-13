@@ -17,6 +17,9 @@ describe("classifyDesignPhrase", () => {
   it("reads a room as a location and an object as a prop", () => {
     expect(classifyDesignPhrase("glass office")).toEqual({ kind: "location", name: "glass office" });
     expect(classifyDesignPhrase("hospital corridor")).toEqual({ kind: "location", name: "hospital corridor" });
+    // "board" is a film slate unless we expand it into the room the playbook meant.
+    expect(classifyDesignPhrase("board")).toEqual({ kind: "location", name: "boardroom" });
+    expect(classifyDesignPhrase("board vote")).toEqual({ kind: "location", name: "boardroom" });
     expect(classifyDesignPhrase("ring box")).toEqual({ kind: "prop", name: "ring box" });
     expect(classifyDesignPhrase("NDA")).toEqual({ kind: "prop", name: "NDA" });
   });
@@ -68,6 +71,8 @@ describe("buildDesignSlate", () => {
     const props = slate.props.map((row) => row.name);
     expect(locations).toContain("glass office");
     expect(locations).toContain("hospital corridor");
+    expect(locations).toContain("boardroom");
+    expect(locations).not.toContain("board");
     expect(props).toContain("NDA");
     expect(props).toContain("ring box");
     // A car is somewhere we shoot, not an object on a table.

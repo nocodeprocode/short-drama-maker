@@ -4,6 +4,7 @@ import { GENRE_IDS } from "@/drama-engine/types/genre.ts";
 import {
   buildDesignSlate,
   classifyDesignPhrase,
+  expandPlaceName,
   propAssetKey,
   propKindFor,
   propsFromArchetype,
@@ -32,6 +33,8 @@ const PHRASES = [
   "wake node",
   "ring box",
   "NDA",
+  "board",
+  "board vote",
 ];
 
 describe("design slate parity", () => {
@@ -64,6 +67,11 @@ describe("design slate parity", () => {
     for (const [a, b] of pairs) {
       expect(edge.sameDesignThing(a, b)).toEqual(sameDesignThing(a, b));
     }
+  });
+
+  it("agrees on expanding a shorthand place into a room", () => {
+    expect(edge.expandPlaceName("board")).toEqual(expandPlaceName("board"));
+    expect(expandPlaceName("board")).toBe("boardroom");
   });
 
   it("agrees on prop asset keys and cached kinds", () => {

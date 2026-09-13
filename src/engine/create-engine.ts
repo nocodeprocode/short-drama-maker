@@ -94,11 +94,12 @@ import {
   type SceneTakeStrip,
 } from "./pipeline/scene-take-refs.ts";
 import { publicLog } from "./logging.ts";
-import { inferPropKind, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockText, propKey, type PropKind } from "./pipeline/prop-bible.ts";
+import { inferPropKind, OBJECT_ANGLE_KIND, objectLettering, objectViews, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockText, propKey, type PropKind } from "./pipeline/prop-bible.ts";
 import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pipeline/last-frame.ts";
 import { wordErrorRate } from "./media/qc.ts";
-import { placeLockClause, placePlateRetry } from "../drama-engine/craft/place.ts";
-import { evidenceMotif, identityLockLine, NO_TEXT_CLAUSE, objectPlateCamera, peopleOnSceneTake, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
+import { placeLettering, placeLockClause, placePlateRetry, roomAnglesFor } from "../drama-engine/craft/place.ts";
+import { expandPlaceName } from "./design/slate.ts";
+import { evidenceMotif, identityLockLine, objectPlateCamera, peopleOnSceneTake, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
 import { dropOpeningEcho } from "../drama-engine/types/dialogue.ts";
 import { cueRows, cueText, exitsIn } from "../drama-engine/types/continuity.ts";
 import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
@@ -1477,10 +1478,13 @@ export function createEngine(deps: EngineDeps = {}) {
    */
   async function renderLocationPlate(
     series: { id: string; owner_id: string },
-    location: string,
+    rawLocation: string,
   ): Promise<{ assetId: string; notes: Record<string, unknown> }> {
+    // "board" is a clapperboard to the image model. Expand before we ask it.
+    const location = expandPlaceName(rawLocation);
     let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
     let peoplePresent: boolean | null = null;
+    let placeholderLettering: boolean | null = null;
     let notes: Record<string, unknown> = {};
     // The physical description only; a name like "wall of household files"
     // reads as a household and the model staffs it.
@@ -1490,9 +1494,9 @@ export function createEngine(deps: EngineDeps = {}) {
         characterName: location,
         description:
           attempt === 0
-            ? `Cinematic establishing still of ${location}, exactly as its description implies — its time of day, weather, and materials. One locked key light and grade. ` +
-              `${placeLockClause(location)} EMPTY. NO people, NO faces, NO extras, NO bodies, no silhouettes, no figures with their back to camera.`
-            : `${placePlateRetry(location, physical)} Wide 9:16 frame, one key light and grade, cinematic colour. Empty and still.`,
+            ? `Cinematic establishing still of ${location}, exactly as its description implies — its time of day, weather, and materials. One motivated light and grade. ` +
+              `${placeLockClause(location)} EMPTY. NO people, NO faces, NO extras, NO bodies, no silhouettes, no figures with their back to camera. ${placeLettering(location)}`
+            : `${placePlateRetry(location, physical)} Wide 9:16 frame, one key light and grade, cinematic colour. Empty and still. ${placeLettering(location)}`,
         kind: "location",
       });
       image = candidate;
@@ -1504,15 +1508,17 @@ export function createEngine(deps: EngineDeps = {}) {
         const small = await shrinkReference(candidate.bytes);
         const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
         peoplePresent = described.people_present;
+        placeholderLettering = described.placeholder_lettering;
         notes = {
           lighting_lock: described.lighting_lock,
           palette: described.palette,
           key_light: described.key_light,
           dressing: described.dressing,
           people_present: described.people_present,
+          placeholder_lettering: described.placeholder_lettering,
           ...(described.geometry ? { geometry: described.geometry } : {}),
         };
-        if (!described.people_present) break;
+        if (!described.people_present && !described.placeholder_lettering) break;
       } catch (caught) {
         // Without vision nothing checks the room is empty, so say so loudly
         // rather than shipping an unjudged plate in silence.
@@ -1532,6 +1538,9 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!image) throw new Error(`Could not generate a location plate for ${location}`);
     if (peoplePresent) {
       throw new Error(`Location plate for ${location} still shows a human figure after ${LOCATION_PLATE_ATTEMPTS} attempts`);
+    }
+    if (placeholderLettering) {
+      throw new Error(`Location plate for ${location} still shows dummy lettering or a leaked prop after ${LOCATION_PLATE_ATTEMPTS} attempts`);
     }
     const asset = await putAsset({
       owner_id: series.owner_id,
@@ -1560,9 +1569,14 @@ export function createEngine(deps: EngineDeps = {}) {
     const location = input.location.trim();
     if (!location) throw new Error("A location name is required");
     const existing = series.location_refs?.[location];
-    if (existing && !input.force) {
+    const views = roomAnglesFor(location);
+    const existingPack = existing
+      ? await listedRoomAngles(series.id, location, existing)
+      : [];
+    if (existing && !input.force && existingPack.length >= views.length) {
       return { series, asset_id: existing, notes: {} as Record<string, unknown>, reused: true };
     }
+    const remaining = existing && !input.force ? Math.max(0, views.length - existingPack.length) : 1 + views.length;
     const job = createJob({
       owner_id: series.owner_id,
       series_id: series.id,
@@ -1575,17 +1589,21 @@ export function createEngine(deps: EngineDeps = {}) {
       upstream_job_id: null,
       idempotency_key: freshJobKey(`location:${series.id}:${location}`),
       status: "queued",
-      request_metadata: { location },
-      estimated_cost: ai.pricing.estimateImage(),
-      expected_ready_at: addSeconds(clock, 30),
+      request_metadata: { location, pack: views.map((row) => row.angle) },
+      estimated_cost: ai.pricing.estimateImage() * Math.max(1, remaining),
+      expected_ready_at: addSeconds(clock, 180),
     });
     reserve(job);
-    const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, location);
+    const plate =
+      existing && !input.force
+        ? { assetId: existing, notes: {} as Record<string, unknown> }
+        : await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, location);
     const refs = { ...series.location_refs, [location]: plate.assetId };
     const next = { ...series, location_refs: refs };
     store.series.set(series.id, next);
+    await ensureRoomAngles(series.id, location, plate.assetId, { required: true });
     completeSyncJob(job, job.estimated_cost, { location, asset_id: plate.assetId });
-    return { series: next, asset_id: plate.assetId, notes: plate.notes, reused: false };
+    return { series: next, asset_id: plate.assetId, notes: plate.notes, reused: Boolean(existing && !input.force) };
   }
 
   /**
@@ -1612,11 +1630,12 @@ export function createEngine(deps: EngineDeps = {}) {
       idempotency_key: freshJobKey(`library-place:${series.owner_id}:${name}`),
       status: "queued",
       request_metadata: { location: name, library: true },
-      estimated_cost: ai.pricing.estimateImage(),
-      expected_ready_at: addSeconds(clock, 30),
+      estimated_cost: ai.pricing.estimateImage() * (1 + roomAnglesFor(name).length),
+      expected_ready_at: addSeconds(clock, 180),
     });
     reserve(job);
     const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, name);
+    await ensureRoomAngles(series.id, name, plate.assetId, { required: true });
     completeSyncJob(job, job.estimated_cost, { location: name, asset_id: plate.assetId });
     return { asset_id: plate.assetId, notes: plate.notes };
   }
@@ -1642,13 +1661,15 @@ export function createEngine(deps: EngineDeps = {}) {
       idempotency_key: freshJobKey(`locations:${series.id}:${missing.join(",")}`),
       status: "queued",
       request_metadata: { locations: missing },
-      estimated_cost: ai.pricing.estimateImage() * missing.length,
-      expected_ready_at: addSeconds(clock, 30),
+      estimated_cost: ai.pricing.estimateImage() * missing.reduce((sum, name) => sum + 1 + roomAnglesFor(name).length, 0),
+      expected_ready_at: addSeconds(clock, 180),
     });
     reserve(job);
     for (const location of missing) {
       const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, location);
       refs[location] = plate.assetId;
+      store.series.set(series.id, { ...series, location_refs: refs });
+      await ensureRoomAngles(series.id, location, plate.assetId, { required: true });
     }
     const next = { ...series, location_refs: refs };
     store.series.set(series.id, next);
@@ -2771,9 +2792,12 @@ export function createEngine(deps: EngineDeps = {}) {
     const parsed = propFromLockText(input.name);
     if (!parsed) throw new Error("Name the object so it can be shot on its own");
     const existing = await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.key);
-    if (existing && !input.force) {
+    const views = objectViews(parsed.name);
+    const existingViews = existing ? await listedObjectViews(series.id, existing) : [];
+    if (existing && !input.force && existingViews.length >= views.length) {
       return { asset_id: existing, key: parsed.key, name: parsed.name, state: parsed.state, reused: true };
     }
+    const remaining = existing && !input.force ? Math.max(0, views.length - existingViews.length) : 1 + views.length;
     const job = createJob({
       owner_id: series.owner_id,
       series_id: series.id,
@@ -2787,83 +2811,216 @@ export function createEngine(deps: EngineDeps = {}) {
       idempotency_key: freshJobKey(`prop:${series.id}:${parsed.key}`),
       status: "queued",
       request_metadata: { prop: parsed.name, key: parsed.key },
-      estimated_cost: ai.pricing.estimateImage(),
-      expected_ready_at: addSeconds(clock, 30),
+      estimated_cost: ai.pricing.estimateImage() * Math.max(1, remaining),
+      expected_ready_at: addSeconds(clock, views.length ? 90 : 30),
     });
     reserve(job);
-    // A state change ("open") is the sealed object again, not a new object.
-    const seedId = parsed.seedKey
-      ? await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.seedKey)
-      : null;
-    const seed = seedId ? await assets.get(seedId).catch(() => null) : null;
-    const image = seed
-      ? await ai.image.generateReferenceFromSeed({
-          characterName: parsed.name,
-          description: `${parsed.prompt}. Same object as the attached still, only the state changes.`,
-          kind: "object_insert",
-          seed_bytes: seed.body,
-          seed_mime_type: seed.asset.mime_type,
-        })
-      : await ai.image.generateReference({
-          characterName: parsed.name,
-          description: parsed.prompt,
-          kind: "object_insert",
-        });
-    const kind = inferPropKind(parsed.name);
-    const asset = await putAsset({
-      owner_id: series.owner_id,
-      series_id: series.id,
-      kind: "character_reference",
-      bucket: "private-character",
-      mime_type: image.mime_type,
-      body: image.bytes,
-      // `prop` carries the cached kind so the generic prop bible reuses this
-      // show's own object instead of generating a stock one beside it.
-      metadata: { kind: PROP_KIND, prop: kind ?? parsed.name, key: parsed.key, state: parsed.state, name: parsed.name },
-    });
-    completeSyncJob(job, job.estimated_cost, { key: parsed.key, asset_id: asset.id });
-    return { asset_id: asset.id, key: parsed.key, name: parsed.name, state: parsed.state, reused: false };
+    let stillId = existing && !input.force ? existing : null;
+    if (!stillId) {
+      // A state change ("open") is the sealed object again, not a new object.
+      const seedId = parsed.seedKey
+        ? await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.seedKey)
+        : null;
+      const seed = seedId ? await assets.get(seedId).catch(() => null) : null;
+      const image = seed
+        ? await ai.image.generateReferenceFromSeed({
+            characterName: parsed.name,
+            description: `${parsed.prompt}. Same object as the attached still, only the state changes.`,
+            kind: "object_insert",
+            seed_bytes: seed.body,
+            seed_mime_type: seed.asset.mime_type,
+          })
+        : await ai.image.generateReference({
+            characterName: parsed.name,
+            description: parsed.prompt,
+            kind: "object_insert",
+          });
+      const kind = inferPropKind(parsed.name);
+      const asset = await putAsset({
+        owner_id: series.owner_id,
+        series_id: series.id,
+        kind: "character_reference",
+        bucket: "private-character",
+        mime_type: image.mime_type,
+        body: image.bytes,
+        // `prop` carries the cached kind so the generic prop bible reuses this
+        // show's own object instead of generating a stock one beside it.
+        metadata: { kind: PROP_KIND, prop: kind ?? parsed.name, key: parsed.key, state: parsed.state, name: parsed.name },
+      });
+      stillId = asset.id;
+    }
+    await ensureObjectViews(series.id, parsed.name, stillId, { required: true });
+    completeSyncJob(job, job.estimated_cost, { key: parsed.key, asset_id: stillId });
+    return {
+      asset_id: stillId,
+      key: parsed.key,
+      name: parsed.name,
+      state: parsed.state,
+      reused: Boolean(existing && !input.force),
+    };
   }
 
   const ROOM_ANGLE_KIND = "room_angle";
-  const ROOM_ANGLES: ReadonlyArray<{ angle: string; prompt: string }> = [
-    {
-      angle: "reverse",
-      prompt: "the same empty set seen from the opposite side, camera turned 180 degrees, showing the wall that was behind the first camera",
-    },
-    {
-      angle: "side",
-      prompt: "the same empty set seen from the side, camera turned 90 degrees, showing the two adjacent walls meeting",
-    },
-  ];
+  const ROOM_ANGLE_ATTEMPTS = 2;
+
+  async function listedRoomAngles(
+    seriesId: string,
+    location: string,
+    plateId: string,
+  ): Promise<Array<{ id: string; angle: string }>> {
+    const listed = await liveAssetsForSeries(seriesId);
+    return listed.flatMap((asset) => {
+      const meta = asset.metadata ?? {};
+      if (meta.kind !== ROOM_ANGLE_KIND) return [];
+      if (meta.location !== location || meta.plate_id !== plateId) return [];
+      const angle = typeof meta.angle === "string" ? meta.angle : "";
+      return angle ? [{ id: asset.id, angle }] : [];
+    });
+  }
+
+  async function judgeEmptyPlace(
+    image: { bytes: Uint8Array; mime_type: string },
+    location: string,
+  ): Promise<{ peoplePresent: boolean | null; placeholderLettering: boolean | null }> {
+    if (!ai.vision?.describeLocation) return { peoplePresent: null, placeholderLettering: null };
+    try {
+      const small = await shrinkReference(image.bytes);
+      const described = await ai.vision.describeLocation({
+        plate: small?.bytes ?? image.bytes,
+        plateMime: small?.mime ?? image.mime_type,
+        location,
+      });
+      return { peoplePresent: described.people_present, placeholderLettering: described.placeholder_lettering };
+    } catch {
+      return { peoplePresent: null, placeholderLettering: null };
+    }
+  }
 
   /**
-   * Two more angles of the locked plate, derived from it, so a cut that faces
-   * another wall has geography to hold instead of inventing a new room.
+   * The rest of the empty-set pack, derived from the current plate. Keyed by
+   * plate_id so a rebuild cannot keep the old room's walls. At Build the pack
+   * is required; during a take a missing view is a weaker lock, not a failed cut.
    */
   async function ensureRoomAngles(
     seriesId: string,
     location: string | null | undefined,
     plateId: string,
+    opts: { required?: boolean } = {},
   ): Promise<Array<{ url: string; id: string; angle: string }>> {
     const series = store.series.get(seriesId);
-    if (!series || !location) return [];
+    if (!series || !location) {
+      if (opts.required) throw new Error("A location name is required");
+      return [];
+    }
+    const wanted = roomAnglesFor(location);
     const out: Array<{ url: string; id: string; angle: string }> = [];
-    for (const row of ROOM_ANGLES) {
+    const missing: string[] = [];
+    for (const row of wanted) {
       try {
-        let id = await findAssetByMeta(seriesId, ROOM_ANGLE_KIND, (meta) => meta.location === location && meta.angle === row.angle);
+        let id = await findAssetByMeta(
+          seriesId,
+          ROOM_ANGLE_KIND,
+          (meta) => meta.location === location && meta.angle === row.angle && meta.plate_id === plateId,
+        );
         if (!id) {
           const plate = await assets.get(plateId).catch(() => null);
-          if (!plate) break;
+          if (!plate) {
+            if (opts.required) throw new Error(`Could not read the plate for ${location}`);
+            missing.push(row.angle);
+            continue;
+          }
+          let lastError: Error | null = null;
+          for (let attempt = 0; attempt < ROOM_ANGLE_ATTEMPTS; attempt += 1) {
+            const image = await ai.image.generateReferenceFromSeed({
+              characterName: location,
+              description: `${row.prompt} ${placeLettering(location)}`,
+              kind: "location",
+              seed_bytes: plate.body,
+              seed_mime_type: plate.asset.mime_type,
+            });
+            const judged = await judgeEmptyPlace(image, location);
+            if (judged.peoplePresent) {
+              lastError = new Error(`The ${row.angle} view of ${location} still shows a human figure`);
+              continue;
+            }
+            if (judged.placeholderLettering) {
+              lastError = new Error(`The ${row.angle} view of ${location} still shows dummy lettering or a leaked prop`);
+              continue;
+            }
+            const asset = await putAsset({
+              owner_id: series.owner_id,
+              series_id: series.id,
+              kind: "character_reference",
+              bucket: "private-character",
+              mime_type: image.mime_type,
+              body: image.bytes,
+              metadata: { kind: ROOM_ANGLE_KIND, location, angle: row.angle, plate_id: plateId },
+            });
+            id = asset.id;
+            lastError = null;
+            break;
+          }
+          if (!id && lastError) throw lastError;
+        }
+        const url = id ? await signedOrSkip(id) : null;
+        if (url && id) out.push({ url, id, angle: row.angle });
+        else missing.push(row.angle);
+      } catch (error) {
+        if (opts.required) throw error;
+        missing.push(row.angle);
+      }
+    }
+    if (opts.required && missing.length) {
+      throw new Error(`Could not build the ${missing[0]} view of ${location}`);
+    }
+    return out;
+  }
+
+  async function listedObjectViews(seriesId: string, stillId: string): Promise<Array<{ id: string; angle: string }>> {
+    const listed = await liveAssetsForSeries(seriesId);
+    return listed.flatMap((asset) => {
+      const meta = asset.metadata ?? {};
+      if (meta.kind !== OBJECT_ANGLE_KIND || meta.still_id !== stillId) return [];
+      const angle = typeof meta.angle === "string" ? meta.angle : "";
+      return angle ? [{ id: asset.id, angle }] : [];
+    });
+  }
+
+  /**
+   * Extra faces of the same object — the back of a letter, the open lid —
+   * derived from the hero still so a later insert does not invent a new prop.
+   */
+  async function ensureObjectViews(
+    seriesId: string,
+    name: string,
+    stillId: string,
+    opts: { required?: boolean } = {},
+  ): Promise<Array<{ url: string; id: string; angle: string }>> {
+    const series = store.series.get(seriesId);
+    const wanted = objectViews(name);
+    if (!series || !wanted.length) return [];
+    const out: Array<{ url: string; id: string; angle: string }> = [];
+    const missing: string[] = [];
+    for (const row of wanted) {
+      try {
+        let id = await findAssetByMeta(
+          seriesId,
+          OBJECT_ANGLE_KIND,
+          (meta) => meta.still_id === stillId && meta.angle === row.angle,
+        );
+        if (!id) {
+          const hero = await assets.get(stillId).catch(() => null);
+          if (!hero) {
+            if (opts.required) throw new Error(`Could not read the still for ${name}`);
+            missing.push(row.angle);
+            continue;
+          }
           const image = await ai.image.generateReferenceFromSeed({
-            characterName: location,
-            description:
-              `${row.prompt}. Same walls, same ground, same fixtures at the same size, same key light and colour. ` +
-              `Same kind of place as the plate — do not turn an exterior into a room or a room into a street. ` +
-              `EMPTY: no people, no faces, no silhouettes, no reflections of people. Cinematic 9:16 still. ${NO_TEXT_CLAUSE}.`,
-            kind: "location",
-            seed_bytes: plate.body,
-            seed_mime_type: plate.asset.mime_type,
+            characterName: name,
+            description: `${row.prompt}. Same object as the attached still. ${objectLettering(name)} Object only, no people, no hands. Cinematic still.`,
+            kind: "object_insert",
+            seed_bytes: hero.body,
+            seed_mime_type: hero.asset.mime_type,
           });
           const asset = await putAsset({
             owner_id: series.owner_id,
@@ -2872,15 +3029,20 @@ export function createEngine(deps: EngineDeps = {}) {
             bucket: "private-character",
             mime_type: image.mime_type,
             body: image.bytes,
-            metadata: { kind: ROOM_ANGLE_KIND, location, angle: row.angle, plate_id: plateId },
+            metadata: { kind: OBJECT_ANGLE_KIND, prop: name, name, angle: row.angle, still_id: stillId },
           });
           id = asset.id;
         }
         const url = await signedOrSkip(id);
         if (url) out.push({ url, id, angle: row.angle });
-      } catch {
-        // A missing angle is a weaker lock, not a failed take.
+        else missing.push(row.angle);
+      } catch (error) {
+        if (opts.required) throw error;
+        missing.push(row.angle);
       }
+    }
+    if (opts.required && missing.length) {
+      throw new Error(`Could not build the ${missing[0]} view of ${name}`);
     }
     return out;
   }
@@ -3156,12 +3318,15 @@ export function createEngine(deps: EngineDeps = {}) {
         : (await ensurePropStillFromText(seriesId, shot.shot_data.blocking?.prop)) ??
           (propKind ? await ensurePropStill(seriesId, propKind) : null);
       const angles = locId && !locationOnly ? await ensureRoomAngles(seriesId, scene.location, locId) : [];
+      const propAngles =
+        prop && !locationOnly ? await ensureObjectViews(seriesId, prop.name, prop.id) : [];
       const pack = buildSceneTakeRefs({
         characters: people,
         locationPlate: locUrl && locId ? { url: locUrl, id: locId } : null,
         locationAngles: angles,
         weldPlate: null,
         propPlate: prop,
+        propAngles,
       });
       // A classifier-rejected reference is dropped for this shot. The shot's own
       // strip is a floor, not a lock: the submit loop's escalation still wins, or

@@ -100,6 +100,27 @@ describe("scene-take ref pack", () => {
     expect(applySceneTakeStrip(pack, "location").images.map((row) => row.role)).toEqual(["front", "prop"]);
   });
 
+  it("forwards every extra room and object view after the master still", () => {
+    const pack = buildSceneTakeRefs({
+      characters: [{ name: "MARA", front: { url: "https://mem/mara-front" } }],
+      locationPlate: { url: "https://mem/office", id: "k" },
+      locationAngles: [
+        { url: "https://mem/office-opposite", id: "ko", angle: "opposite" },
+        { url: "https://mem/office-left", id: "kl", angle: "left" },
+      ],
+      propPlate: { url: "https://mem/nda", id: "p", name: "leaked NDA" },
+      propAngles: [{ url: "https://mem/nda-back", id: "pb", angle: "reverse" }],
+    });
+    expect(pack.images.map((row) => `${row.role}:${row.name}`)).toEqual([
+      "front:MARA",
+      "room:room",
+      "room:room-opposite",
+      "room:room-left",
+      "prop:leaked NDA",
+      "prop:leaked NDA-reverse",
+    ]);
+  });
+
   it("locks the people who speak, not the first two names on the scene card", () => {
     expect(speakersFromSceneScript("MARA: Put it down.\nCOLE: No.\nPETRA walks out.")).toEqual(["MARA", "COLE"]);
     expect(
@@ -187,7 +208,7 @@ describe("scene-take ref pack", () => {
       people: ["MARA", "COLE"],
       sceneScript: "MARA: Open your eyes.\nCOLE: No hospital.",
     });
-    expect(alley).toMatch(/OUTSIDE|PLACE LOCK/);
+    expect(alley).toMatch(/OUTSIDE|THIS PLACE/);
     expect(alley).toMatch(/curtains|blinds/);
     expect(alley).not.toMatch(/interior location plate/i);
     const swapped = sceneTakePrompt({

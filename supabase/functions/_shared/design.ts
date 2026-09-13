@@ -1,5 +1,5 @@
 import type { Service } from "./productions.ts";
-import { buildDesignSlate, propKindFor, propsFromArchetype, sameDesignThing } from "./design-slate.ts";
+import { buildDesignSlate, expandPlaceName, propKindFor, propsFromArchetype, sameDesignThing } from "./design-slate.ts";
 import { signedGetUrl } from "./sign.ts";
 
 export type DesignStatus = "planned" | "building" | "ready" | "failed";
@@ -38,8 +38,8 @@ function asStatus(value: unknown): DesignStatus {
   return value === "building" || value === "ready" || value === "failed" ? value : "planned";
 }
 
-/** Extra angles of the same empty set, derived from the plate by the shoot. */
-export type LocationAngle = { angle: string; url: string };
+/** Extra angles of the same empty set, derived from the current plate. */
+export type LocationAngle = { angle: string; url: string; plate_id?: string };
 
 export function presentLocation(
   row: LocationRow,
@@ -54,7 +54,7 @@ export function presentLocation(
     position: row.position ?? 0,
     plate_url: extras.plate_url ?? null,
     lighting_lock: row.lighting_lock ?? null,
-    /** Reverse and side views of the same room, built the first time a cut needs them. */
+    /** Every wall plus overhead of the same empty set, built with the plate. */
     angles: extras.angles ?? [],
     status: asStatus(row.status),
     locked: Boolean(row.locked),
@@ -62,7 +62,7 @@ export function presentLocation(
   };
 }
 
-export function presentProp(row: PropRow, extras: { still_url?: string | null } = {}) {
+export function presentProp(row: PropRow, extras: { still_url?: string | null; angles?: LocationAngle[] } = {}) {
   return {
     id: row.id,
     series_id: row.series_id,
@@ -74,6 +74,8 @@ export function presentProp(row: PropRow, extras: { still_url?: string | null } 
     still_url: extras.still_url ?? null,
     kind: row.kind ?? propKindFor(row.name),
     state: row.state ?? null,
+    /** Extra faces of the same object when it has a back or an open state. */
+    angles: extras.angles ?? [],
     status: asStatus(row.status),
     locked: Boolean(row.locked),
     error: row.error ?? null,
@@ -107,12 +109,17 @@ export async function signDesignAssets(
   supabase: Service,
   seriesId: string,
   assetIds: string[],
-): Promise<{ byId: Map<string, string>; anglesByLocation: Map<string, LocationAngle[]> }> {
+): Promise<{
+  byId: Map<string, string>;
+  anglesByLocation: Map<string, LocationAngle[]>;
+  anglesByStill: Map<string, LocationAngle[]>;
+}> {
   const byId = new Map<string, string>();
   const anglesByLocation = new Map<string, LocationAngle[]>();
+  const anglesByStill = new Map<string, LocationAngle[]>();
   const wanted = assetIds.filter(Boolean);
 
-  const [{ data: plates }, { data: angles }] = await Promise.all([
+  const [{ data: plates }, { data: roomAngles }, { data: objectAngles }] = await Promise.all([
     wanted.length
       ? supabase.from("assets").select("id, storage_path").in("id", wanted)
       : Promise.resolve({ data: [] as Array<{ id: string; storage_path: string }> }),
@@ -122,24 +129,42 @@ export async function signDesignAssets(
       .eq("series_id", seriesId)
       .eq("kind", "character_reference")
       .contains("metadata", { kind: "room_angle" }),
+    supabase
+      .from("assets")
+      .select("id, storage_path, metadata")
+      .eq("series_id", seriesId)
+      .eq("kind", "character_reference")
+      .contains("metadata", { kind: "object_angle" }),
   ]);
 
   for (const row of plates ?? []) {
     const url = await signOne(row.storage_path);
     if (url) byId.set(String(row.id), url);
   }
-  for (const row of angles ?? []) {
+  for (const row of roomAngles ?? []) {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const location = String(meta.location ?? "").trim();
     const angle = String(meta.angle ?? "").trim();
+    const plateId = String(meta.plate_id ?? "").trim();
     if (!location || !angle) continue;
     const url = await signOne(row.storage_path);
     if (!url) continue;
     const list = anglesByLocation.get(location) ?? [];
-    list.push({ angle, url });
+    list.push({ angle, url, plate_id: plateId || undefined });
     anglesByLocation.set(location, list);
   }
-  return { byId, anglesByLocation };
+  for (const row of objectAngles ?? []) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const stillId = String(meta.still_id ?? "").trim();
+    const angle = String(meta.angle ?? "").trim();
+    if (!stillId || !angle) continue;
+    const url = await signOne(row.storage_path);
+    if (!url) continue;
+    const list = anglesByStill.get(stillId) ?? [];
+    list.push({ angle, url });
+    anglesByStill.set(stillId, list);
+  }
+  return { byId, anglesByLocation, anglesByStill };
 }
 
 /**
@@ -169,6 +194,19 @@ export async function ensureDesignSlate(
   const locations = (locationRows ?? []) as LocationRow[];
   const props = (propRows ?? []) as PropRow[];
   const now = new Date().toISOString();
+
+  // A leftover "board" row is a film slate. Rename it before anything generates.
+  for (const row of locations) {
+    if (row.locked) continue;
+    const expanded = expandPlaceName(row.name);
+    if (expanded === row.name) continue;
+    const taken = locations.some(
+      (other) => other.id !== row.id && other.name.trim().toLowerCase() === expanded.toLowerCase(),
+    );
+    if (taken) continue;
+    await supabase.from("series_locations").update({ name: expanded, updated_at: now }).eq("id", row.id);
+    row.name = expanded;
+  }
 
   const deviceSlots = (castRows ?? []).filter((row) => row.castable === false && row.archetype);
   const slate = buildDesignSlate({

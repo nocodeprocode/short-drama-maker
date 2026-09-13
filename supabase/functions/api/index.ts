@@ -685,15 +685,20 @@ Deno.serve(async (req) => {
         return json({
           series_id: id,
           series_title: series.title,
-          locations: locations.map((row) =>
-            presentLocation(row, {
-              plate_url: row.plate_asset_id ? (signed.byId.get(String(row.plate_asset_id)) ?? null) : null,
-              angles: signed.anglesByLocation.get(row.name.trim()) ?? [],
-            }),
-          ),
+          locations: locations.map((row) => {
+            const plateId = String(row.plate_asset_id ?? "");
+            const angles = (signed.anglesByLocation.get(row.name.trim()) ?? []).filter(
+              (angle) => !angle.plate_id || !plateId || angle.plate_id === plateId,
+            );
+            return presentLocation(row, {
+              plate_url: plateId ? (signed.byId.get(plateId) ?? null) : null,
+              angles,
+            });
+          }),
           props: props.map((row) =>
             presentProp(row, {
               still_url: row.still_asset_id ? (signed.byId.get(String(row.still_asset_id)) ?? null) : null,
+              angles: row.still_asset_id ? (signed.anglesByStill.get(String(row.still_asset_id)) ?? []) : [],
             }),
           ),
           /** Before the story exists these come from the brief and can be changed. */
@@ -1228,7 +1233,22 @@ Deno.serve(async (req) => {
         ? await usePropEntry(supabase, { ownerId: user.id, seriesId, row: target, entry: entry as PropEntry })
         : await useLocationEntry(supabase, { ownerId: user.id, seriesId, row: target, entry: entry as LocationEntry });
       if (result.error) return json({ error: result.error }, 409);
-      return json({ ok: true, used: entryId });
+      // The copied plate is a new seed. Fill the rest of the pack on this show
+      // so Design never presents a one-shot as ready.
+      await supabase
+        .from(isObject ? "series_props" : "series_locations")
+        .update({ status: "building", error: null, updated_at: new Date().toISOString() })
+        .eq("id", rowId);
+      const queued = await enqueue(
+        supabase,
+        user.id,
+        seriesId,
+        isObject ? "generate_prop_still" : "generate_location_plate",
+        isObject ? { prop_id: rowId } : { location_id: rowId },
+        access.isAdmin,
+      );
+      if (!queued.ok) return queued;
+      return json({ ok: true, used: entryId, queued: true }, 202);
     }
 
     if (req.method === "POST" && /^\/series\/[^/]+\/cast\/generate$/.test(path)) {

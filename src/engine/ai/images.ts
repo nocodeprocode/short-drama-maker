@@ -1,7 +1,8 @@
 import { IMAGE_MODEL, IMAGE_PRICE } from "../config/models.ts";
 import { honestImageMime, imageDataUrl } from "../media/image-mime.ts";
 import type { ImageEngine } from "./types.ts";
-import { placePlateDressing, placePlateLead } from "../../drama-engine/craft/place.ts";
+import { placeLettering, placePlateDressing, placePlateLead } from "../../drama-engine/craft/place.ts";
+import { objectLettering } from "../pipeline/prop-bible.ts";
 import { MODEST_DRESS_RULE } from "./modesty.ts";
 import { HUMAN_EYE_CLAUSE } from "../../drama-engine/types/where.ts";
 import { providerFetch } from "./http.ts";
@@ -90,14 +91,26 @@ async function requestImage(
 export function createOpenRouterImages(): ImageEngine {
   return {
     async generateReference(input) {
-      if (input.kind === "object_insert" || input.kind === "phone_ui") {
+      if (input.kind === "phone_ui") {
         return requestImage(
           [
             "Photorealistic vertical 9:16 evidence insert still.",
             "NO people, NO faces, NO couple, NO second person, NO body, no portrait, no hands unless already on the object.",
             input.description,
-            "Single object, documentary lighting, tight crop. Keep any printed date or name on the object readable.",
+            "Single object, documentary lighting, tight crop. Phone UI only — real short words, no dummy brands.",
             "Do not render any on-image title, caption, watermark, or the words evidence, insert, still, or 9:16.",
+          ].join(" "),
+        );
+      }
+      if (input.kind === "object_insert") {
+        return requestImage(
+          [
+            "Photorealistic vertical 9:16 object still.",
+            "NO people, NO faces, NO couple, NO second person, NO body, no portrait, no hands unless already on the object.",
+            input.description,
+            "Single object, documentary lighting, tight crop.",
+            objectLettering(input.characterName),
+            "No on-image title, caption, or watermark.",
           ].join(" "),
         );
       }
@@ -109,9 +122,10 @@ export function createOpenRouterImages(): ImageEngine {
           [
             placePlateLead(input.characterName),
             input.description,
-            "One motivated key light, cinematic colour grade, finished location — not a soundstage missing a wall.",
+            "One motivated light, cinematic colour grade, finished location — not a soundstage missing a wall.",
             placePlateDressing(input.characterName),
-            "No text, no signage, no logos, no captions, no watermark.",
+            placeLettering(input.characterName),
+            "No captions, no watermark, no clapperboard, no film slate.",
           ].join(" "),
         );
       }
@@ -141,7 +155,19 @@ export function createOpenRouterImages(): ImageEngine {
             "Same place as the reference still. Same walls, same ground, same light. A new angle of that place, not a new place.",
             input.description,
             placePlateDressing(input.characterName),
-            "No text, no signage, no logos, no captions, no watermark.",
+            placeLettering(input.characterName),
+            "No captions, no watermark, no clapperboard, no film slate.",
+          ].join(" "),
+          { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
+        );
+      }
+      if (input.kind === "object_insert") {
+        return requestImage(
+          [
+            "Same object as the reference still. Same shape, same material, only the described state changes.",
+            input.description,
+            objectLettering(input.characterName),
+            "No on-image title, caption, or watermark.",
           ].join(" "),
           { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
         );
