@@ -7,7 +7,7 @@
     "build": "vike build",
     "preview": "vike build && vike preview --host 0.0.0.0 --port 43123",
     "deploy:staging": "DRAMA_CF=1 vike build && wrangler deploy --config dist/server/wrangler.json",
-    "deploy:prod": "DRAMA_CF=1 vike build && wrangler deploy --config dist/server/wrangler.json --env production",
+    "deploy:prod": "DRAMA_CF=1 vike build && node --input-type=module -e \"import fs from 'node:fs'; const p='dist/server/wrangler.json'; const j=JSON.parse(fs.readFileSync(p,'utf8')); j.name='drama-space'; j.vars={...j.vars,ENVIRONMENT:'production'}; fs.writeFileSync(p, JSON.stringify(j,null,2));\" && wrangler deploy --config dist/server/wrangler.json",
     "deploy:jobs": "wrangler deploy --config workers/jobs/wrangler.jsonc",
     "deploy:media-store": "wrangler deploy --config workers/media-store/wrangler.jsonc",
     "deploy:media": "wrangler deploy --config worker/wrangler.jsonc",
