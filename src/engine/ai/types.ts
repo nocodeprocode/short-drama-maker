@@ -21,7 +21,18 @@ export type StoryAnalysisInput = {
    * Roles the buyer cast before the story was written. The bible must use these
    * names verbatim so their chosen faces land on the parts they paid for.
    */
-  required_cast?: ReadonlyArray<{ name: string; note?: string }>;
+  required_cast?: ReadonlyArray<{
+    name: string;
+    note?: string;
+    job?: "engine" | "wall" | "witness" | "nuke";
+    importance?: "lead" | "supporting" | "background";
+  }>;
+  /**
+   * Rooms the buyer approved on the design screen. Their plates are already
+   * keyed by these names, so the bible has to reuse the names for the shoot to
+   * find the plate instead of generating a second version of the same room.
+   */
+  required_locations?: ReadonlyArray<string>;
 };
 
 export type DialogueLine = {
@@ -101,6 +112,7 @@ export interface ImageEngine {
     seed_bytes: Uint8Array;
     seed_mime_type: string;
     replaceWardrobe?: string;
+    mode?: "likeness" | "generated";
   }): Promise<{ bytes: Uint8Array; mime_type: string }>;
   /**
    * Composites a character into a locked room so consecutive takes in a scene

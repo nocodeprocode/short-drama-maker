@@ -159,6 +159,7 @@ export type VisualReferenceKind =
   | "default_wardrobe";
 
 export type ActorSource = "generated" | "likeness";
+export type IdentityFidelity = "faithful" | "idealized";
 
 export type Actor = {
   id: string;
@@ -168,6 +169,8 @@ export type Actor = {
   seed_asset_id: string | null;
   appearance_profile: AppearanceProfile;
   visual_reference_asset_ids: Partial<Record<VisualReferenceKind, string>>;
+  identity_fidelity?: IdentityFidelity;
+  judge_notes?: string | null;
   created_at: string;
   updated_at: string;
 };

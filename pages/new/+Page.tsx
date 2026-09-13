@@ -175,18 +175,18 @@ export default function Page() {
         setPolicy(check.reason ?? "This brief cannot be produced.");
         return;
       }
-      const created = await studio.createProduction({
+      // The brief makes a draft, not a purchase. Faces, places and objects are
+      // approved on the show page first, and the run is bought from there.
+      const draft = await studio.createDraft({
         title,
         description: brief,
         sku,
-        priority,
         episode_length: length,
         video_tier: videoTier,
-        mode: "autopilot",
         ...(openDraftId ? { series_id: openDraftId } : {}),
         ...(source === "upload" && script ? { script_text: script.text } : {}),
       });
-      window.location.href = `/productions/${created.id}`;
+      window.location.href = `/series/${draft.id}`;
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 402) {
         const production = caught.body.production as { series_id?: string } | undefined;

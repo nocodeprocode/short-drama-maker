@@ -19,10 +19,38 @@ import {
 } from "../_shared/productions.ts";
 import { generateStoryIdea, STORY_DIRECTIONS } from "../_shared/story-idea.ts";
 import { adaptUploadedScript } from "../_shared/story-script.ts";
-import { actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
+import { actorGenerateTasks, actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
+import { ensureCastSlate } from "../_shared/cast-repair.ts";
+import {
+  decodeLibraryImage,
+  libraryShowTitles,
+  normalizeLibraryName,
+  presentLocationEntry,
+  presentPropEntry,
+  putLibraryImage,
+  signLibraryImages,
+  useLocationEntry,
+  usePropEntry,
+  type LocationEntry,
+  type PropEntry,
+} from "../_shared/library.ts";
+import { seriesReadiness } from "../_shared/readiness.ts";
+import {
+  ensureDesignSlate,
+  normalizeDesignName,
+  presentLocation,
+  presentProp,
+  signDesignAssets,
+  type LocationRow,
+  type PropRow,
+} from "../_shared/design.ts";
+import { propKindFor } from "../_shared/design-slate.ts";
+import { decodeSeedPhoto, putSeedAsset, recoverSeedFromTasks } from "../_shared/seed-asset.ts";
+import { buildCastSlate } from "../_shared/slate.ts";
 import {
   bindCastPlan,
   castActorOnCharacter,
+  generateMissingFaces,
   normalizeRoleName,
   normalizeTags,
   presentCastSlot,
@@ -37,6 +65,7 @@ import { signAssetRows } from "../_shared/sign.ts";
 import {
   CREDIT_PRESETS,
   estimateBlock,
+  isBlockSku,
   isCatalogSku,
   isEpisodeLength,
   isPriority,
@@ -175,12 +204,16 @@ Deno.serve(async (req) => {
       const { data, error } = await supabase.from("actors").select("*").eq("owner_id", user.id).order("created_at");
       if (error) return json({ error: error.message }, 400);
       const signed = await signActorPacks(supabase, data ?? []);
-      const shows = await actorShowTitles(supabase, (data ?? []).map((row) => String(row.id)));
+      const ids = (data ?? []).map((row) => String(row.id));
+      const shows = await actorShowTitles(supabase, ids);
+      const tasks = await actorGenerateTasks(supabase, user.id, ids);
       const tags = [
         ...new Set((data ?? []).flatMap((row) => (Array.isArray(row.tags) ? (row.tags as string[]) : []))),
       ].sort((left, right) => left.localeCompare(right));
       return json({
-        items: (data ?? []).map((row) => presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [] })),
+        items: (data ?? []).map((row) =>
+          presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [], task: tasks.get(String(row.id)) ?? null }),
+        ),
         tags,
       });
     }
@@ -205,6 +238,23 @@ Deno.serve(async (req) => {
       }
       if (body.tags !== undefined) patch.tags = normalizeTags(body.tags);
       if (typeof body.notes === "string") patch.notes = body.notes.trim().slice(0, 600);
+      if (body.identity_fidelity === "faithful" || body.identity_fidelity === "idealized") {
+        patch.identity_fidelity = body.identity_fidelity;
+      }
+      if (typeof body.description === "string" || typeof body.default_wardrobe === "string") {
+        const profile = (actor.appearance_profile ?? {}) as Record<string, unknown>;
+        patch.appearance_profile = {
+          ...profile,
+          description: typeof body.description === "string" ? body.description.trim().slice(0, 600) : profile.description,
+          default_wardrobe:
+            typeof body.default_wardrobe === "string"
+              ? body.default_wardrobe.trim().slice(0, 240)
+              : profile.default_wardrobe,
+        };
+        if (typeof body.description === "string" && body.notes === undefined) {
+          patch.notes = body.description.trim().slice(0, 600);
+        }
+      }
       const { data: saved, error } = await supabase
         .from("actors")
         .update(patch)
@@ -215,7 +265,8 @@ Deno.serve(async (req) => {
       if (error || !saved) return json({ error: error?.message ?? "Could not save" }, 400);
       const signed = await signActorPacks(supabase, [saved]);
       const shows = await actorShowTitles(supabase, [String(saved.id)]);
-      return json(presentActor(saved, signed, { shows: shows.get(String(saved.id)) ?? [] }));
+      const tasks = await actorGenerateTasks(supabase, user.id, [String(saved.id)]);
+      return json(presentActor(saved, signed, { shows: shows.get(String(saved.id)) ?? [], task: tasks.get(String(saved.id)) ?? null }));
     }
 
     if (req.method === "DELETE" && /^\/actors\/[^/]+$/.test(path)) {
@@ -243,6 +294,111 @@ Deno.serve(async (req) => {
       return json({ ok: true, deleted: id });
     }
 
+    if (req.method === "POST" && /^\/actors\/[^/]+\/regenerate$/.test(path)) {
+      const id = path.split("/")[2];
+      const { data: actor } = await supabase.from("actors").select("*").eq("id", id).eq("owner_id", user.id).maybeSingle();
+      if (!actor) return json({ error: "Not found" }, 404);
+      const { data: locked } = await supabase.from("characters").select("id").eq("actor_id", id).eq("locked", true).limit(1);
+      if ((locked ?? []).length > 0) {
+        return json({ error: "This actor is locked into a show that already shot." }, 409);
+      }
+      const body = await req.json().catch(() => ({}));
+      const kinds = Array.isArray(body.kinds) ? (body.kinds as unknown[]).map((item) => String(item)) : [];
+      const refs = { ...((actor.visual_reference_asset_ids ?? {}) as Record<string, unknown>) };
+      if (kinds.length) for (const kind of kinds) delete refs[kind];
+      else for (const key of Object.keys(refs)) delete refs[key];
+      const { data: saved, error } = await supabase
+        .from("actors")
+        .update({ visual_reference_asset_ids: refs, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("owner_id", user.id)
+        .select("*")
+        .single();
+      if (error || !saved) return json({ error: error?.message ?? "Could not regenerate" }, 400);
+      const asked =
+        typeof body.series_id === "string" && body.series_id
+          ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
+          : null;
+      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
+      let seedAssetId = saved.seed_asset_id ? String(saved.seed_asset_id) : null;
+      if (!seedAssetId) {
+        seedAssetId = await recoverSeedFromTasks(supabase, { ownerId: user.id, actorId: id, seriesId: host });
+        if (seedAssetId) {
+          const { error: seedError } = await supabase
+            .from("actors")
+            .update({ seed_asset_id: seedAssetId, source: "likeness", updated_at: new Date().toISOString() })
+            .eq("id", id);
+          if (seedError) return json({ error: seedError.message }, 400);
+          saved.seed_asset_id = seedAssetId;
+        }
+      }
+      if (host) {
+        await enqueue(supabase, user.id, host, "generate_actor", {
+          actor_id: id,
+          seed_asset_id: seedAssetId ?? undefined,
+        }, access.isAdmin);
+      }
+      const signed = await signActorPacks(supabase, [saved]);
+      const shows = await actorShowTitles(supabase, [id]);
+      const tasks = await actorGenerateTasks(supabase, user.id, [id]);
+      return json(presentActor(saved, signed, { shows: shows.get(id) ?? [], task: tasks.get(id) ?? null }), 202);
+    }
+
+    if (req.method === "POST" && /^\/actors\/[^/]+\/photo$/.test(path)) {
+      const id = path.split("/")[2];
+      const { data: actor } = await supabase.from("actors").select("*").eq("id", id).eq("owner_id", user.id).maybeSingle();
+      if (!actor) return json({ error: "Not found" }, 404);
+      const { data: locked } = await supabase.from("characters").select("id").eq("actor_id", id).eq("locked", true).limit(1);
+      if ((locked ?? []).length > 0) {
+        return json({ error: "This actor is locked into a show that already shot." }, 409);
+      }
+      const body = await req.json().catch(() => ({}));
+      const seed = typeof body.seed_base64 === "string" && body.seed_base64 ? String(body.seed_base64) : "";
+      if (!seed) return json({ error: "A photo is required" }, 400);
+      const gate = likenessGate(body.likeness_confirmed === true);
+      if (!gate.ok) return json({ error: gate.error }, gate.status);
+      const photo = decodeSeedPhoto(seed, body.seed_mime_type);
+      const asked =
+        typeof body.series_id === "string" && body.series_id
+          ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
+          : null;
+      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
+      const stored = await putSeedAsset(supabase, {
+        ownerId: user.id,
+        actorId: id,
+        seriesId: host,
+        bytes: photo.bytes,
+        mime: photo.mime,
+      });
+      const { error: acceptError } = await supabase.from("legal_acceptances").insert({
+        user_id: user.id,
+        document_type: "likeness_rights",
+        version: LIKENESS_RIGHTS_VERSION,
+        context: "actor_upload",
+      });
+      if (acceptError) return json({ error: acceptError.message }, 400);
+      const { data: saved, error } = await supabase
+        .from("actors")
+        .update({
+          seed_asset_id: stored.id,
+          source: "likeness",
+          visual_reference_asset_ids: {},
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .eq("owner_id", user.id)
+        .select("*")
+        .single();
+      if (error || !saved) return json({ error: error?.message ?? "Could not save the photo" }, 400);
+      if (host) {
+        await enqueue(supabase, user.id, host, "generate_actor", { actor_id: id, seed_asset_id: stored.id }, access.isAdmin);
+      }
+      const signed = await signActorPacks(supabase, [saved]);
+      const shows = await actorShowTitles(supabase, [id]);
+      const tasks = await actorGenerateTasks(supabase, user.id, [id]);
+      return json(presentActor(saved, signed, { shows: shows.get(id) ?? [], task: tasks.get(id) ?? null }), 202);
+    }
+
     if (req.method === "GET" && path.startsWith("/actors/")) {
       const id = path.split("/")[2];
       const { data } = await supabase.from("actors").select("*").eq("id", id).eq("owner_id", user.id).maybeSingle();
@@ -254,8 +410,9 @@ Deno.serve(async (req) => {
         ? await supabase.from("series").select("id, title").in("id", seriesIds)
         : { data: [] };
       const titles = new Map((seriesRows ?? []).map((row) => [String(row.id), String(row.title)]));
+      const tasks = await actorGenerateTasks(supabase, user.id, [id]);
       return json({
-        ...presentActor(data, signed, { shows: [...new Set([...titles.values()])] }),
+        ...presentActor(data, signed, { shows: [...new Set([...titles.values()])], task: tasks.get(id) ?? null }),
         appearances: (roles ?? []).map((row) => ({
           character_id: row.id,
           series_id: row.series_id,
@@ -278,6 +435,11 @@ Deno.serve(async (req) => {
       }
       const verdict = moderateText(`${name}\n${description}`, "character_create");
       if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+      const asked =
+        typeof body.series_id === "string" && body.series_id
+          ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
+          : null;
+      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
       const { data: actor, error } = await supabase
         .from("actors")
         .insert({
@@ -286,11 +448,13 @@ Deno.serve(async (req) => {
           source: seed ? "likeness" : "generated",
           tags: normalizeTags(body.tags),
           notes: description.slice(0, 600),
+          identity_fidelity: body.identity_fidelity === "idealized" ? "idealized" : "faithful",
           appearance_profile: { default_wardrobe: "", description },
         })
         .select("*")
         .single();
       if (error || !actor) return json({ error: error?.message ?? "Could not create actor" }, 400);
+      let seedAssetId: string | null = null;
       if (seed) {
         const { error: acceptError } = await supabase.from("legal_acceptances").insert({
           user_id: user.id,
@@ -299,22 +463,30 @@ Deno.serve(async (req) => {
           context: "actor_upload",
         });
         if (acceptError) return json({ error: acceptError.message }, 400);
+        const photo = decodeSeedPhoto(seed, body.seed_mime_type);
+        const stored = await putSeedAsset(supabase, {
+          ownerId: user.id,
+          actorId: String(actor.id),
+          seriesId: host,
+          bytes: photo.bytes,
+          mime: photo.mime,
+        });
+        seedAssetId = stored.id;
+        const { error: seedError } = await supabase
+          .from("actors")
+          .update({ seed_asset_id: stored.id, source: "likeness", updated_at: new Date().toISOString() })
+          .eq("id", actor.id);
+        if (seedError) return json({ error: seedError.message }, 400);
+        actor.seed_asset_id = stored.id;
       }
-      // A face made while casting a show belongs on that show's task trail; only
-      // fall back to an arbitrary series when the request has no show in hand.
-      const asked =
-        typeof body.series_id === "string" && body.series_id
-          ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
-          : null;
-      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
       if (host) {
         await enqueue(supabase, user.id, host, "generate_actor", {
           actor_id: actor.id,
-          seed_base64: seed || undefined,
-          seed_mime_type: body.seed_mime_type,
+          seed_asset_id: seedAssetId ?? undefined,
         }, access.isAdmin);
       }
-      return json(presentActor(actor, new Map()), seed || host ? 202 : 201);
+      const signed = await signActorPacks(supabase, [actor]);
+      return json(presentActor(actor, signed), seed || host ? 202 : 201);
     }
 
     if (req.method === "GET" && path === "/estimate") {
@@ -374,6 +546,27 @@ Deno.serve(async (req) => {
         .select()
         .single();
       if (error) return json({ error: error.message }, 400);
+      const slate = buildCastSlate({ title: String(body.title ?? ""), idea: String(body.description ?? "") });
+      if (slate.length) {
+        await supabase.from("series_cast").insert(
+          slate.map((slot) => ({
+            series_id: data.id,
+            actor_id: null,
+            character_id: null,
+            role_name: null,
+            role_note: "",
+            job: slot.job,
+            archetype: slot.archetype,
+            importance: slot.importance,
+            castable: slot.castable,
+            suggested_name: null,
+            suggested_gender: null,
+            position: slot.position,
+            origin: "slate",
+          })),
+        );
+        await enqueue(supabase, user.id, String(data.id), "plan_cast", {}, access.isAdmin);
+      }
       return json({ ...data, estimate: estimateBlock({ sku: 2 }) }, 201);
     }
 
@@ -412,18 +605,26 @@ Deno.serve(async (req) => {
         });
       }
       if (parts[3] === "cast") {
+        await ensureCastSlate(supabase, {
+          id,
+          title: series.title,
+          description: series.description,
+          story_bible: (series.story_bible ?? null) as Record<string, unknown> | null,
+        });
         // A slot the writer has since named binds here, so opening the screen
         // never shows a role as uncast when its character already exists.
         await bindCastPlan(supabase, id);
         const [{ data: slots }, { data: characters }, { data: actorRows }] = await Promise.all([
-          supabase.from("series_cast").select("*").eq("series_id", id).order("created_at"),
+          supabase.from("series_cast").select("*").eq("series_id", id).order("position"),
           supabase.from("characters").select("*").eq("series_id", id).order("created_at"),
           supabase.from("actors").select("*").eq("owner_id", series.owner_id).order("created_at"),
         ]);
         const signed = await signActorPacks(supabase, actorRows ?? []);
-        const shows = await actorShowTitles(supabase, (actorRows ?? []).map((row) => String(row.id)));
+        const actorIds = (actorRows ?? []).map((row) => String(row.id));
+        const shows = await actorShowTitles(supabase, actorIds);
+        const tasks = await actorGenerateTasks(supabase, series.owner_id, actorIds);
         const roster = (actorRows ?? []).map((row) =>
-          presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [] }),
+          presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [], task: tasks.get(String(row.id)) ?? null }),
         );
         const actorById = new Map(roster.map((row) => [String(row.id), row]));
         const pack = await signCharacterPacks(supabase, characters ?? []);
@@ -431,14 +632,24 @@ Deno.serve(async (req) => {
           presentPackedCharacter(row, pack.signed, { fallback: pack.orphanByCharacter.get(String(row.id)) }),
         );
         const characterById = new Map(packed.map((row) => [String(row.id), row]));
-        const items = ((slots ?? []) as CastSlotRow[]).map((row) =>
-          presentCastSlot(row, {
-            actor: row.actor_id ? (actorById.get(row.actor_id) ?? null) : null,
-            character: row.character_id ? (characterById.get(row.character_id) ?? null) : null,
-          }),
-        );
+        const rank = (importance: string | null | undefined) =>
+          importance === "lead" ? 0 : importance === "supporting" ? 1 : 2;
+        const items = ((slots ?? []) as CastSlotRow[])
+          .slice()
+          .sort((left, right) => rank(left.importance) - rank(right.importance) || (left.position ?? 0) - (right.position ?? 0))
+          .map((row) =>
+            presentCastSlot(row, {
+              actor: row.actor_id ? (actorById.get(row.actor_id) ?? null) : null,
+              character: row.character_id ? (characterById.get(row.character_id) ?? null) : null,
+            }),
+          );
+        if (items.some((row) => row.castable && (!row.named || !row.suggested_gender))) {
+          await enqueue(supabase, user.id, id, "plan_cast", {}, access.isAdmin);
+        }
         // Roles the story wrote that nobody has claimed a slot for yet.
-        const claimed = new Set(items.map((row) => row.role_name.trim().toLowerCase()));
+        const claimed = new Set(
+          items.map((row) => String(row.role_name ?? row.display_name ?? "").trim().toLowerCase()).filter(Boolean),
+        );
         const unclaimed = packed.filter((row) => !claimed.has(String(row.name).trim().toLowerCase()));
         return json({
           series_id: id,
@@ -447,9 +658,64 @@ Deno.serve(async (req) => {
           roles: packed,
           unclaimed,
           roster,
+          slate_ready: items.some((row) => Boolean(row.job)),
+          naming: items.some((row) => row.castable && !row.named),
           /** Before the story exists the buyer names the parts themselves. */
           story_written: Boolean(series.story_bible),
         });
+      }
+      if (parts[3] === "design") {
+        await ensureDesignSlate(supabase, {
+          id,
+          title: series.title,
+          description: series.description,
+          story_bible: (series.story_bible ?? null) as Record<string, unknown> | null,
+          location_refs: (series.location_refs ?? null) as Record<string, unknown> | null,
+        });
+        const [{ data: locationRows }, { data: propRows }] = await Promise.all([
+          supabase.from("series_locations").select("*").eq("series_id", id).order("position"),
+          supabase.from("series_props").select("*").eq("series_id", id).order("position"),
+        ]);
+        const locations = (locationRows ?? []) as LocationRow[];
+        const props = (propRows ?? []) as PropRow[];
+        const signed = await signDesignAssets(supabase, id, [
+          ...locations.map((row) => String(row.plate_asset_id ?? "")),
+          ...props.map((row) => String(row.still_asset_id ?? "")),
+        ]);
+        return json({
+          series_id: id,
+          series_title: series.title,
+          locations: locations.map((row) =>
+            presentLocation(row, {
+              plate_url: row.plate_asset_id ? (signed.byId.get(String(row.plate_asset_id)) ?? null) : null,
+              angles: signed.anglesByLocation.get(row.name.trim()) ?? [],
+            }),
+          ),
+          props: props.map((row) =>
+            presentProp(row, {
+              still_url: row.still_asset_id ? (signed.byId.get(String(row.still_asset_id)) ?? null) : null,
+            }),
+          ),
+          /** Before the story exists these come from the brief and can be changed. */
+          story_written: Boolean(series.story_bible),
+        });
+      }
+      /**
+       * What is still missing before this show can be shot. Repairs both slates
+       * first, so a draft nobody has opened yet reports its real work rather
+       * than an empty and misleadingly finished list.
+       */
+      if (parts[3] === "readiness") {
+        await ensureCastSlate(supabase, series);
+        await ensureDesignSlate(supabase, {
+          id,
+          title: series.title,
+          description: series.description,
+          story_bible: (series.story_bible ?? null) as Record<string, unknown> | null,
+          location_refs: (series.location_refs ?? null) as Record<string, unknown> | null,
+        });
+        const readiness = await seriesReadiness(supabase, id);
+        return json({ series_id: id, story_written: Boolean(series.story_bible), ...readiness });
       }
       if (parts[3] === "continuity") {
         const bible = series.story_bible ?? {};
@@ -505,6 +771,80 @@ Deno.serve(async (req) => {
       }
     }
 
+    /**
+     * A show before it is paid for.
+     *
+     * The brief used to buy a run in one click, which meant the buyer never saw
+     * the faces, rooms and objects their money was about to be spent on. Now the
+     * brief makes a draft, both slates are built from it, and the run is bought
+     * from the show page once all three are approved.
+     */
+    if (req.method === "POST" && path === "/series") {
+      const body = await req.json().catch(() => ({}));
+      const title = String(body.title ?? "").trim().slice(0, 200);
+      const description = String(body.description ?? "").trim().slice(0, 4000);
+      if (!title) return json({ error: "Give the show a title" }, 400);
+      const verdict = moderateText(`${title}\n${description}`, "story_input");
+      if (verdict.verdict === "block") {
+        return json({ error: "content_policy", reason: verdict.reason, allowed: false }, 422);
+      }
+      const sku = isBlockSku(body.sku) ? body.sku : 15;
+      const length = isEpisodeLength(body.episode_length) ? body.episode_length : "60_90";
+      const tier = isVideoTier(body.video_tier) ? body.video_tier : "pro";
+      const target = sku === 2 ? 60 : sku;
+
+      // Reuse the draft the buyer is editing instead of stacking up new ones.
+      const existing = typeof body.series_id === "string" && body.series_id
+        ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
+        : null;
+      const patch = {
+        title,
+        description,
+        target_episode_count: target,
+        sku: String(target),
+        style_profile: {
+          ...((existing?.style_profile as Record<string, unknown> | null) ?? {}),
+          aspect: "9:16",
+          episode_length: length,
+          video_tier: tier,
+        },
+      };
+      const saved = existing
+        ? await supabase.from("series").update(patch).eq("id", existing.id).select().single()
+        : await supabase
+            .from("series")
+            .insert({ owner_id: user.id, ...patch, poster_tone: posterTone(title) })
+            .select()
+            .single();
+      if (saved.error || !saved.data) {
+        return json({ error: saved.error?.message ?? "Could not save the draft" }, 400);
+      }
+      const series = saved.data;
+
+      if (typeof body.script_text === "string" && body.script_text.trim()) {
+        await supabase.from("engine_tasks").insert({
+          owner_id: user.id,
+          series_id: series.id,
+          action: "attach_script",
+          payload: { script_text: body.script_text },
+          status: "queued",
+        });
+      }
+
+      // Build both slates now so the show page opens on real work to approve.
+      await ensureCastSlate(supabase, series);
+      await ensureDesignSlate(supabase, {
+        id: series.id,
+        title: series.title,
+        description: series.description,
+        story_bible: null,
+        location_refs: (series.location_refs ?? null) as Record<string, unknown> | null,
+      });
+      await enqueue(supabase, user.id, series.id, "plan_cast", {}, access.isAdmin);
+
+      return json({ id: series.id, title: series.title, series_id: series.id }, existing ? 200 : 201);
+    }
+
     if (req.method === "DELETE" && /^\/series\/[^/]+$/.test(path)) {
       const id = path.split("/")[2];
       const series = await ownedSeries(supabase, user.id, id, access.isAdmin);
@@ -514,15 +854,418 @@ Deno.serve(async (req) => {
       return json({ ok: true, discarded: id });
     }
 
+    // Production design: rooms and objects, each generated on its own.
+    if (req.method === "POST" && /^\/series\/[^/]+\/(locations|props)$/.test(path)) {
+      const [, , seriesId, bucket] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const name = normalizeDesignName(body.name);
+      if (!name) return json({ error: bucket === "props" ? "Name the object" : "Name the place" }, 400);
+      const verdict = moderateText(name, "story_input");
+      if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+      const table = bucket === "props" ? "series_props" : "series_locations";
+      const { count } = await supabase
+        .from(table)
+        .select("id", { count: "exact", head: true })
+        .eq("series_id", seriesId);
+      const row: Record<string, unknown> = {
+        series_id: seriesId,
+        name,
+        note: typeof body.note === "string" ? body.note.slice(0, 300) : "",
+        origin: "buyer",
+        position: count ?? 0,
+        status: "planned",
+      };
+      if (bucket === "props") row.kind = propKindFor(name);
+      const { data, error } = await supabase.from(table).insert(row).select("*").single();
+      if (error) {
+        const duplicate = error.code === "23505";
+        return json({ error: duplicate ? "That is already on this show." : error.message }, duplicate ? 409 : 400);
+      }
+      return json(
+        bucket === "props" ? presentProp(data as PropRow) : presentLocation(data as LocationRow),
+        201,
+      );
+    }
+
+    if (req.method === "POST" && /^\/series\/[^/]+\/(locations|props)\/[^/]+\/generate$/.test(path)) {
+      const [, , seriesId, bucket, rowId] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const table = bucket === "props" ? "series_props" : "series_locations";
+      const { data: row } = await supabase
+        .from(table)
+        .select("id, locked")
+        .eq("id", rowId)
+        .eq("series_id", seriesId)
+        .maybeSingle();
+      if (!row) return json({ error: "Not found" }, 404);
+      // A set that has already been shot keeps its plate; changing it now would
+      // break continuity with every take already in the can.
+      if (row.locked) {
+        return json({ error: "This has already been shot. Its look stays the same." }, 409);
+      }
+      const action = bucket === "props" ? "generate_prop_still" : "generate_location_plate";
+      const payload = bucket === "props"
+        ? { prop_id: String(row.id), force: Boolean(body.force) }
+        : { location_id: String(row.id), force: Boolean(body.force) };
+      const queued = await enqueue(supabase, user.id, seriesId, action, payload, access.isAdmin);
+      // Mark it building now, not when a worker claims it. The cron runs once a
+      // minute, and until then the card would still read "Not built yet".
+      if (queued.ok) {
+        await supabase
+          .from(table)
+          .update({ status: "building", error: null, updated_at: new Date().toISOString() })
+          .eq("id", row.id);
+      }
+      return queued;
+    }
+
+    if (req.method === "POST" && /^\/series\/[^/]+\/(locations|props)\/generate$/.test(path)) {
+      const [, , seriesId, bucket] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const table = bucket === "props" ? "series_props" : "series_locations";
+      const column = bucket === "props" ? "still_asset_id" : "plate_asset_id";
+      const { data: rows } = await supabase
+        .from(table)
+        .select(`id, locked, status, ${column}`)
+        .eq("series_id", seriesId)
+        .order("position");
+      const missing = ((rows ?? []) as Array<Record<string, unknown>>).filter(
+        (item) => !item.locked && !item[column] && item.status !== "building",
+      );
+      const started: string[] = [];
+      for (const item of missing) {
+        const payload = bucket === "props" ? { prop_id: String(item.id) } : { location_id: String(item.id) };
+        const action = bucket === "props" ? "generate_prop_still" : "generate_location_plate";
+        const queued = await enqueue(supabase, user.id, seriesId, action, payload, access.isAdmin);
+        if (queued.ok) started.push(String(item.id));
+      }
+      // Same reason as the single build: the cards have to show the work at once.
+      if (started.length) {
+        await supabase
+          .from(table)
+          .update({ status: "building", error: null, updated_at: new Date().toISOString() })
+          .in("id", started);
+      }
+      return json({ queued: started.length }, 202);
+    }
+
+    if (req.method === "PATCH" && /^\/series\/[^/]+\/(locations|props)\/[^/]+$/.test(path)) {
+      const [, , seriesId, bucket, rowId] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const table = bucket === "props" ? "series_props" : "series_locations";
+      const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (typeof body.name === "string") {
+        const name = normalizeDesignName(body.name);
+        if (!name) return json({ error: "Name it" }, 400);
+        const verdict = moderateText(name, "story_input");
+        if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+        patch.name = name;
+        if (bucket === "props") patch.kind = propKindFor(name);
+      }
+      if (typeof body.note === "string") patch.note = body.note.slice(0, 300);
+      const { data: row } = await supabase
+        .from(table)
+        .select("id, locked")
+        .eq("id", rowId)
+        .eq("series_id", seriesId)
+        .maybeSingle();
+      if (!row) return json({ error: "Not found" }, 404);
+      if (row.locked && patch.name) {
+        return json({ error: "This has already been shot. Its name stays the same." }, 409);
+      }
+      const { data, error } = await supabase.from(table).update(patch).eq("id", rowId).select("*").single();
+      if (error) {
+        const duplicate = error.code === "23505";
+        return json({ error: duplicate ? "That is already on this show." : error.message }, duplicate ? 409 : 400);
+      }
+      return json(bucket === "props" ? presentProp(data as PropRow) : presentLocation(data as LocationRow));
+    }
+
+    if (req.method === "DELETE" && /^\/series\/[^/]+\/(locations|props)\/[^/]+$/.test(path)) {
+      const [, , seriesId, bucket, rowId] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const table = bucket === "props" ? "series_props" : "series_locations";
+      const { data: row } = await supabase
+        .from(table)
+        .select("id, locked")
+        .eq("id", rowId)
+        .eq("series_id", seriesId)
+        .maybeSingle();
+      if (!row) return json({ error: "Not found" }, 404);
+      if (row.locked) return json({ error: "This has already been shot. It cannot be removed." }, 409);
+      const { error } = await supabase.from(table).delete().eq("id", rowId);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true, removed: rowId });
+    }
+
+    /**
+     * The owner's catalog of places and objects.
+     *
+     * Routes read `/places` and `/objects` because those are the words the design
+     * screen uses; the tables behind them are `locations` and `props`, matching
+     * the per-show `series_locations` and `series_props` they get attached to.
+     */
+    if (/^\/(places|objects)(\/|$)/.test(path)) {
+      const isObject = path.startsWith("/objects");
+      const table = isObject ? "props" : "locations";
+      const imageColumn = isObject ? "still_asset_id" : "plate_asset_id";
+      const action = isObject ? "generate_object" : "generate_place";
+      const payloadKey = isObject ? "object_id" : "place_id";
+      const noun = isObject ? "object" : "place";
+      const present = (row: Record<string, unknown>, extras: Parameters<typeof presentPropEntry>[1]) =>
+        isObject ? presentPropEntry(row as PropEntry, extras) : presentLocationEntry(row as LocationEntry, extras);
+      const segments = path.split("/").filter(Boolean);
+      const entryId = segments[1] ?? "";
+      const verb = segments[2] ?? "";
+
+      const loadEntry = async () => {
+        const { data } = await supabase
+          .from(table)
+          .select("*")
+          .eq("id", entryId)
+          .eq("owner_id", user.id)
+          .maybeSingle();
+        return data as (LocationEntry & PropEntry) | null;
+      };
+
+      /** Builds it now if the buyer sent a picture, or queues the engine if not. */
+      const seedOrQueue = async (entry: Record<string, unknown>, body: Record<string, unknown>) => {
+        const raw = typeof body.image_base64 === "string" ? body.image_base64 : "";
+        if (raw) {
+          const image = decodeLibraryImage(raw, typeof body.image_mime_type === "string" ? body.image_mime_type : undefined);
+          const stored = await putLibraryImage(supabase, {
+            ownerId: user.id,
+            kind: isObject ? "prop" : "location",
+            entryId: String(entry.id),
+            bytes: image.bytes,
+            mime: image.mime,
+            role: "plate",
+          });
+          const { data } = await supabase
+            .from(table)
+            .update({
+              [imageColumn]: stored.id,
+              seed_asset_id: stored.id,
+              source: "upload",
+              status: "ready",
+              error: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", entry.id)
+            .select("*")
+            .single();
+          return { row: data as Record<string, unknown>, queued: false };
+        }
+        // Owner-level work still needs a show to bill and trail it against, the
+        // same way an actor's face pack does.
+        const host = await firstOwnedSeriesId(supabase, user.id, access.isAdmin);
+        if (!host) return { row: entry, queued: false };
+        const queued = await enqueue(supabase, user.id, host, action, { [payloadKey]: String(entry.id) }, access.isAdmin);
+        if (!queued.ok) return { row: entry, queued: false };
+        const { data } = await supabase
+          .from(table)
+          .update({ status: "building", error: null, updated_at: new Date().toISOString() })
+          .eq("id", entry.id)
+          .select("*")
+          .single();
+        return { row: (data ?? entry) as Record<string, unknown>, queued: true };
+      };
+
+      if (req.method === "GET" && segments.length === 1) {
+        const { data } = await supabase
+          .from(table)
+          .select("*")
+          .eq("owner_id", user.id)
+          .order("created_at", { ascending: false });
+        const rows = (data ?? []) as Array<Record<string, unknown>>;
+        const [signed, shows] = await Promise.all([
+          signLibraryImages(supabase, rows.flatMap((row) => [String(row[imageColumn] ?? ""), String(row.seed_asset_id ?? "")])),
+          libraryShowTitles(supabase, isObject ? "prop" : "location", rows.map((row) => String(row.id))),
+        ]);
+        const tags = new Set<string>();
+        for (const row of rows) for (const tag of (row.tags as string[] | null) ?? []) tags.add(tag);
+        return json({
+          items: rows.map((row) =>
+            present(row, {
+              image_url: signed.get(String(row[imageColumn] ?? "")) ?? null,
+              seed_url: signed.get(String(row.seed_asset_id ?? "")) ?? null,
+              shows: shows.get(String(row.id)) ?? [],
+            }),
+          ),
+          tags: [...tags].sort(),
+        });
+      }
+
+      if (req.method === "POST" && segments.length === 1) {
+        const body = await req.json().catch(() => ({}));
+        const name = normalizeLibraryName(body.name);
+        if (!name) return json({ error: isObject ? "Name the object" : "Name the place" }, 400);
+        const verdict = moderateText(name, "story_input");
+        if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+        const { data, error } = await supabase
+          .from(table)
+          .insert({
+            owner_id: user.id,
+            name,
+            source: "generated",
+            notes: typeof body.notes === "string" ? body.notes.slice(0, 600) : "",
+            tags: normalizeTags(body.tags),
+            status: "planned",
+          })
+          .select("*")
+          .single();
+        if (error) {
+          const duplicate = error.code === "23505";
+          return json(
+            { error: duplicate ? `You already have a ${noun} with that name.` : error.message },
+            duplicate ? 409 : 400,
+          );
+        }
+        const seeded = await seedOrQueue(data as Record<string, unknown>, body);
+        return json(present(seeded.row, {}), seeded.queued ? 202 : 201);
+      }
+
+      if (req.method === "GET" && segments.length === 2) {
+        const entry = await loadEntry();
+        if (!entry) return json({ error: "Not found" }, 404);
+        const row = entry as unknown as Record<string, unknown>;
+        const [signed, shows] = await Promise.all([
+          signLibraryImages(supabase, [String(row[imageColumn] ?? ""), String(row.seed_asset_id ?? "")]),
+          libraryShowTitles(supabase, isObject ? "prop" : "location", [entry.id]),
+        ]);
+        return json(
+          present(row, {
+            image_url: signed.get(String(row[imageColumn] ?? "")) ?? null,
+            seed_url: signed.get(String(row.seed_asset_id ?? "")) ?? null,
+            shows: shows.get(entry.id) ?? [],
+          }),
+        );
+      }
+
+      if (req.method === "PATCH" && segments.length === 2) {
+        const entry = await loadEntry();
+        if (!entry) return json({ error: "Not found" }, 404);
+        const body = await req.json().catch(() => ({}));
+        const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+        if (typeof body.name === "string") {
+          const name = normalizeLibraryName(body.name);
+          if (!name) return json({ error: "Name it" }, 400);
+          const verdict = moderateText(name, "story_input");
+          if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+          patch.name = name;
+        }
+        if (typeof body.notes === "string") patch.notes = body.notes.slice(0, 600);
+        if (body.tags !== undefined) patch.tags = normalizeTags(body.tags);
+        if (isObject && typeof body.state === "string") patch.state = body.state.slice(0, 40);
+        const { data, error } = await supabase.from(table).update(patch).eq("id", entry.id).select("*").single();
+        if (error) {
+          const duplicate = error.code === "23505";
+          return json(
+            { error: duplicate ? `You already have a ${noun} with that name.` : error.message },
+            duplicate ? 409 : 400,
+          );
+        }
+        return json(present(data as Record<string, unknown>, {}));
+      }
+
+      if (req.method === "DELETE" && segments.length === 2) {
+        const entry = await loadEntry();
+        if (!entry) return json({ error: "Not found" }, 404);
+        // A show that already used this keeps its own copy of the picture, so
+        // removing the catalog entry never changes footage.
+        const { error } = await supabase.from(table).delete().eq("id", entry.id);
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, removed: entry.id });
+      }
+
+      if (req.method === "POST" && segments.length === 3 && (verb === "generate" || verb === "image")) {
+        const entry = await loadEntry();
+        if (!entry) return json({ error: "Not found" }, 404);
+        const body = await req.json().catch(() => ({}));
+        if (verb === "image" && typeof body.image_base64 !== "string") {
+          return json({ error: "An image is required" }, 400);
+        }
+        const seeded = await seedOrQueue(entry as unknown as Record<string, unknown>, verb === "generate" ? {} : body);
+        return json(present(seeded.row, {}), seeded.queued ? 202 : 200);
+      }
+
+      return json({ error: "Not found" }, 404);
+    }
+
+    /** Points one of a show's rooms or objects at a catalog entry. */
+    if (req.method === "POST" && /^\/series\/[^/]+\/(locations|props)\/[^/]+\/use$/.test(path)) {
+      const [, , seriesId, bucket, rowId] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const entryId = String(body.entry_id ?? "");
+      if (!entryId) return json({ error: "Pick one from your library" }, 400);
+      const isObject = bucket === "props";
+      const { data: row } = await supabase
+        .from(isObject ? "series_props" : "series_locations")
+        .select("id, name, locked")
+        .eq("id", rowId)
+        .eq("series_id", seriesId)
+        .maybeSingle();
+      if (!row) return json({ error: "Not found" }, 404);
+      const { data: entry } = await supabase
+        .from(isObject ? "props" : "locations")
+        .select("*")
+        .eq("id", entryId)
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (!entry) return json({ error: "That is not in your library" }, 404);
+      const target = { id: String(row.id), name: String(row.name), locked: Boolean(row.locked) };
+      const result = isObject
+        ? await usePropEntry(supabase, { ownerId: user.id, seriesId, row: target, entry: entry as PropEntry })
+        : await useLocationEntry(supabase, { ownerId: user.id, seriesId, row: target, entry: entry as LocationEntry });
+      if (result.error) return json({ error: result.error }, 409);
+      return json({ ok: true, used: entryId });
+    }
+
+    if (req.method === "POST" && /^\/series\/[^/]+\/cast\/generate$/.test(path)) {
+      const seriesId = path.split("/")[2];
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const slotIds = Array.isArray(body.slot_ids) ? (body.slot_ids as unknown[]).map((item) => String(item)) : [];
+      const { created, unnamed } = await generateMissingFaces(supabase, {
+        ownerId: user.id,
+        seriesId,
+        slotIds: slotIds.length ? slotIds : undefined,
+      });
+      if (unnamed > 0) {
+        await enqueue(supabase, user.id, seriesId, "plan_cast", {}, access.isAdmin);
+      }
+      if (!created.length && unnamed > 0) {
+        return json({ error: "The parts are still being named. Wait a moment, then generate faces.", naming: true, generated: 0 }, 409);
+      }
+      for (const row of created) {
+        await enqueue(supabase, user.id, seriesId, "generate_actor", { actor_id: row.actorId }, access.isAdmin);
+      }
+      return json({ generated: created.length, naming: unnamed > 0, items: created.map((row) => presentCastSlot(row.slot)) }, 202);
+    }
+
     if (req.method === "POST" && /^\/series\/[^/]+\/cast$/.test(path)) {
       const seriesId = path.split("/")[2];
       const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
       if (!series) return json({ error: "Not found" }, 404);
       const body = await req.json().catch(() => ({}));
       const roleName = normalizeRoleName(body.role_name);
-      if (!roleName) return json({ error: "A role name is required" }, 400);
-      const verdict = moderateText(roleName, "character_create");
-      if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+      const slotId = typeof body.slot_id === "string" && body.slot_id ? String(body.slot_id) : "";
+      if (!roleName && !slotId) return json({ error: "A role name is required" }, 400);
+      if (roleName) {
+        const verdict = moderateText(roleName, "character_create");
+        if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+      }
 
       let actorId: string | null = null;
       if (typeof body.actor_id === "string" && body.actor_id) {
@@ -542,41 +1285,47 @@ Deno.serve(async (req) => {
         .from("characters")
         .select("id, name, locked")
         .eq("series_id", seriesId);
+      const { data: existing } = await supabase.from("series_cast").select("*").eq("series_id", seriesId);
+      const byId = slotId ? (existing ?? []).find((row) => String(row.id) === slotId) : null;
+      const wanted = roleName || String(byId?.role_name || byId?.suggested_name || "").trim();
       const character =
         (typeof body.character_id === "string" && body.character_id
           ? (characters ?? []).find((row) => String(row.id) === body.character_id)
-          : (characters ?? []).find(
-              (row) => String(row.name).trim().toLowerCase() === roleName.toLowerCase(),
-            )) ?? null;
+          : wanted
+            ? (characters ?? []).find((row) => String(row.name).trim().toLowerCase() === wanted.toLowerCase())
+            : null) ?? null;
       if (character?.locked) {
         return json({ error: "This role already shot. Its face stays locked." }, 409);
       }
 
-      // Reuse the existing slot for this part whatever case it was typed in.
-      const wanted = (character ? String(character.name) : roleName).trim();
-      const { data: existing } = await supabase
-        .from("series_cast")
-        .select("id, role_name")
-        .eq("series_id", seriesId);
-      const match = (existing ?? []).find(
-        (row) => String(row.role_name).trim().toLowerCase() === wanted.toLowerCase(),
-      );
-      const { data: slot, error } = await supabase
-        .from("series_cast")
-        .upsert(
-          {
-            ...(match ? { id: match.id } : {}),
-            series_id: seriesId,
-            role_name: match ? String(match.role_name) : wanted,
-            role_note: String(body.role_note ?? "").trim().slice(0, 300),
-            actor_id: actorId,
-            character_id: character ? String(character.id) : null,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "series_id,role_name" },
-        )
-        .select("*")
-        .single();
+      const match =
+        byId ??
+        (wanted
+          ? (existing ?? []).find((row) => String(row.role_name ?? "").trim().toLowerCase() === wanted.toLowerCase())
+          : null);
+      const payload = {
+        series_id: seriesId,
+        role_name: character ? String(character.name) : wanted || null,
+        role_note: String(body.role_note ?? match?.role_note ?? "").trim().slice(0, 300),
+        actor_id: actorId,
+        character_id: character ? String(character.id) : match?.character_id ?? null,
+        updated_at: new Date().toISOString(),
+      };
+      const written = match
+        ? await supabase.from("series_cast").update(payload).eq("id", match.id).select("*").single()
+        : await supabase
+            .from("series_cast")
+            .insert({
+              ...payload,
+              job: null,
+              importance: "background",
+              castable: true,
+              origin: "buyer",
+              position: (existing ?? []).length,
+            })
+            .select("*")
+            .single();
+      const { data: slot, error } = written;
       if (error || !slot) return json({ error: error?.message ?? "Could not save the cast" }, 400);
 
       if (character && actorId) {
@@ -1611,6 +2360,38 @@ async function createProduction(
       payload: { script_text: parsed.script_text },
       status: "queued",
     });
+  }
+
+  /**
+   * Nothing is shot until every face, place and object exists.
+   *
+   * Anything still missing gets invented mid-run, and an invented thing is a
+   * different thing each time it appears: another penthouse in episode 4, a
+   * contract that does not match episode 1's. The buyer approves all three
+   * first. A series created in this same request has no slate to check yet, so
+   * this only bites once one exists — which is every show opened from the app.
+   */
+  const [{ count: slotCount }, { count: placeCount }, { count: paidCount }] = await Promise.all([
+    supabase.from("series_cast").select("id", { count: "exact", head: true }).eq("series_id", series.id),
+    supabase.from("series_locations").select("id", { count: "exact", head: true }).eq("series_id", series.id),
+    // Later blocks are not gated: an established show's rooms are built by the
+    // shoot as it goes, and a leftover slate row nobody used must not be able to
+    // stop a buyer ordering more episodes.
+    supabase.from("productions").select("id", { count: "exact", head: true }).eq("series_id", series.id).gt("paid_amount", 0),
+  ]);
+  if ((paidCount ?? 0) === 0 && ((slotCount ?? 0) > 0 || (placeCount ?? 0) > 0)) {
+    const readiness = await seriesReadiness(supabase, series.id);
+    if (!readiness.can_start) {
+      return json(
+        {
+          error: "not_ready",
+          message: `This show is not ready to shoot. ${readiness.blocking.join(". ")}.`,
+          series_id: series.id,
+          readiness,
+        },
+        409,
+      );
+    }
   }
 
   const { data: unpaid } = await supabase

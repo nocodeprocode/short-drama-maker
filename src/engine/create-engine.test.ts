@@ -11,6 +11,8 @@ import { concatBytes, decodeJson, encodeJson, sha256Hex } from "./crypto.ts";
 import type { AlignmentTrack, EpisodePlan, StoryBible, VoiceCandidate } from "./domain.ts";
 import { SCREENPLAY_RULES } from "./domain.ts";
 import { buildPortraitMp4 } from "./media/mp4.ts";
+import { locationRefForScene } from "./pipeline/location-ref.ts";
+import { propFromLockText } from "./pipeline/prop-bible.ts";
 import { MemoryAssetStore } from "./storage/memory.ts";
 
 function alignmentFor(text: string, duration: number): AlignmentTrack {
@@ -393,6 +395,139 @@ describe("planEpisode persistence", () => {
   });
 });
 
+describe("production design", () => {
+  async function designApp(eventId: string) {
+    const app = createEngine({ dailyCap: 1000, ai: testGateway(), assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: eventId,
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    return { app, series };
+  }
+
+  it("puts a room built on the design screen where the shoot looks for it", async () => {
+    const { app, series } = await designApp("evt_design_location");
+    const built = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
+    expect(built.reused).toBe(false);
+
+    // The shoot pins a scene to a plate through location_refs, so approving a
+    // room here is the same act as locking it for the run.
+    const refs = app.store.series.get(series.id)!.location_refs;
+    expect(refs["glass office"]).toBe(built.asset_id);
+    expect(locationRefForScene(refs, "GLASS OFFICE — night")).toBe(built.asset_id);
+
+    // Tagged with the room it is, which is how the design screen pairs a plate
+    // with the extra angles derived from it.
+    const asset = (await app.assets.listBySeries(series.id)).find((row) => row.id === built.asset_id);
+    expect(asset?.metadata.location).toBe("glass office");
+  });
+
+  it("keeps the lighting note and refuses a set with a person in it", async () => {
+    const ai = testGateway();
+    let seen = 0;
+    ai.vision!.describeLocation = async () => {
+      seen += 1;
+      // A figure in the plate is a figure in every wide shot of that room, so
+      // the plate is regenerated rather than kept.
+      return {
+        lighting_lock: "cool north window, one hard key",
+        palette: "grey and glass",
+        key_light: "window left",
+        dressing: ["bare desk", "glass wall"],
+        people_present: seen < 3,
+        model: "test",
+      };
+    };
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A fictional couple argues in a penthouse kitchen after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_design_vision",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const built = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
+    expect(seen).toBe(3);
+    const asset = (await app.assets.listBySeries(series.id)).find((row) => row.id === built.asset_id);
+    expect(asset?.metadata.people_present).toBe(false);
+    // Every close-up in this room carries this note.
+    expect(built.notes.lighting_lock).toBe("cool north window, one hard key");
+
+    ai.vision!.describeLocation = async () => ({
+      lighting_lock: "x",
+      palette: "x",
+      key_light: "x",
+      dressing: ["x"],
+      people_present: true,
+      model: "test",
+    });
+    await expect(
+      app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "board room", force: true }),
+    ).rejects.toThrow(/still shows a human figure/);
+  });
+
+  it("reuses a built room instead of paying for it twice", async () => {
+    const { app, series } = await designApp("evt_design_reuse");
+    const first = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
+    const again = await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "glass office" });
+    expect(again.reused).toBe(true);
+    expect(again.asset_id).toBe(first.asset_id);
+
+    const forced = await app.lockLocation({
+      owner_id: "user-1",
+      series_id: series.id,
+      location: "glass office",
+      force: true,
+    });
+    expect(forced.reused).toBe(false);
+    expect(forced.asset_id).not.toBe(first.asset_id);
+    expect(app.store.series.get(series.id)!.location_refs["glass office"]).toBe(forced.asset_id);
+  });
+
+  it("keys an object the way the planner keys the same words", async () => {
+    const { app, series } = await designApp("evt_design_prop");
+    const prop = await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "leaked NDA" });
+    // The planner writes its own prop locks in prose. Both must land on one key
+    // so the shoot reuses this still instead of inventing the object again.
+    expect(prop.key).toBe(propFromLockText("the same leaked NDA on the wet ground")?.key);
+
+    const asset = (await app.assets.listBySeries(series.id)).find((row) => row.id === prop.asset_id);
+    expect(asset?.metadata.kind).toBe("prop");
+    expect(asset?.metadata.key).toBe(prop.key);
+    // Carries the cached kind, so the generic prop bible reuses this show's own
+    // contract rather than generating a stock folder beside it.
+    expect(asset?.metadata.prop).toBe("contract");
+
+    const again = await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "leaked NDA" });
+    expect(again.reused).toBe(true);
+    expect(again.asset_id).toBe(prop.asset_id);
+  });
+
+  it("refuses a prop with no object in its name", async () => {
+    const { app, series } = await designApp("evt_design_prop_empty");
+    await expect(app.lockProp({ owner_id: "user-1", series_id: series.id, name: "the object" })).rejects.toThrow(
+      /Name the object/,
+    );
+  });
+});
+
 describe("engine phase 0", () => {
   it("refuses to start without a fetchable asset store", () => {
     const url = process.env.MEDIA_STORE_URL;
@@ -515,6 +650,75 @@ describe("engine phase 0", () => {
     });
 
     expect(analyzed.characters.every((row) => row.actor_id === null)).toBe(true);
+  });
+
+  it("builds a likeness pack from an existing seed without the beauty veto", async () => {
+    const modes: string[] = [];
+    const ai = testGateway();
+    const image = ai.image;
+    ai.image = {
+      ...image,
+      async generateReferenceFromSeed(input) {
+        modes.push(input.mode ?? "generated");
+        return image.generateReferenceFromSeed(input);
+      },
+    };
+    if (!ai.vision) throw new Error("vision engine missing");
+    ai.vision.judgeCastLook = async () => ({
+      beauty: false,
+      close: true,
+      modest: true,
+      notes: "plain everyday face",
+      model: "test",
+    });
+    const app = engine({ ai });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_likeness_pack",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const actor = app.createActor({
+      owner_id: "user-1",
+      name: "Yacine",
+      source: "likeness",
+      appearance_profile: TEST_BIBLE.characters[0]!.appearance,
+    });
+    const persisted: string[] = [];
+    const ready = await app.generateActor({
+      owner_id: "user-1",
+      actor_id: actor.id,
+      series_id: series.id,
+      seed_bytes: new Uint8Array([137, 80, 78, 71]),
+      seed_mime_type: "image/png",
+      onProgress: async (row) => {
+        persisted.push(...Object.keys(row.visual_reference_asset_ids));
+      },
+    });
+    expect(ready.seed_asset_id).toBeTruthy();
+    expect(ready.source).toBe("likeness");
+    expect(Object.keys(ready.visual_reference_asset_ids).sort()).toEqual(["front", "full_body", "profile", "three_quarter"]);
+    expect(modes.every((mode) => mode === "likeness")).toBe(true);
+    expect(persisted.length).toBeGreaterThan(0);
+
+    const seedId = ready.seed_asset_id!;
+    app.store.actors.set(actor.id, { ...ready, visual_reference_asset_ids: {} });
+    const reused = await app.generateActor({
+      owner_id: "user-1",
+      actor_id: actor.id,
+      series_id: series.id,
+      seed_asset_id: seedId,
+    });
+    expect(reused.seed_asset_id).toBe(seedId);
+    expect(Object.keys(reused.visual_reference_asset_ids)).toHaveLength(4);
   });
 
   it("finalizes dialogue duration from the wav, then generates independently regenerable shots", async () => {

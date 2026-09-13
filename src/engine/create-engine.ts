@@ -55,7 +55,7 @@ import { sceneTakesShareSpokenBeat } from "../drama-engine/types/dialogue.ts";
 import { acceptPolishedTalk, keepPlanAfterPolishFailure } from "../drama-engine/types/talk.ts";
 import { expectedSpokenText, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
 import { nameLeakReasons } from "./pipeline/seedance-qc.ts";
-import { screenCastLook } from "./pipeline/face-screen.ts";
+import { isPrivacyRefusal, screenCastLook } from "./pipeline/face-screen.ts";
 import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
 import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
 import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
@@ -93,6 +93,7 @@ import {
   type SceneTakeLock,
   type SceneTakeStrip,
 } from "./pipeline/scene-take-refs.ts";
+import { publicLog } from "./logging.ts";
 import { inferPropKind, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockText, propKey, type PropKind } from "./pipeline/prop-bible.ts";
 import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pipeline/last-frame.ts";
 import { wordErrorRate } from "./media/qc.ts";
@@ -338,6 +339,8 @@ export function createEngine(deps: EngineDeps = {}) {
       seed_asset_id: null,
       appearance_profile: character.appearance_profile,
       visual_reference_asset_ids: { ...character.visual_reference_asset_ids },
+      identity_fidelity: "faithful",
+      judge_notes: null,
       created_at: iso(clock),
       updated_at: iso(clock),
     };
@@ -537,7 +540,14 @@ export function createEngine(deps: EngineDeps = {}) {
     owner_id: string;
     series_id: string;
     /** Parts the buyer cast before the story existed. */
-    required_cast?: ReadonlyArray<{ name: string; note?: string; actor_id?: string | null }>;
+    required_cast?: ReadonlyArray<{
+      name: string;
+      note?: string;
+      actor_id?: string | null;
+      job?: "engine" | "wall" | "witness" | "nuke";
+    }>;
+    /** Rooms the buyer approved, whose plates already exist. */
+    required_locations?: ReadonlyArray<string>;
   }) {
     const series = requireSeries(input.series_id, input.owner_id);
     await moderate(`${series.title}\n${series.description}`, "story_input", series.id, null);
@@ -562,7 +572,8 @@ export function createEngine(deps: EngineDeps = {}) {
     const bible = await ai.llm.analyzeStory({
       title: series.title,
       idea: series.description,
-      required_cast: cast.map((row) => ({ name: row.name, note: row.note })),
+      required_cast: cast.map((row) => ({ name: row.name, note: row.note, job: row.job })),
+      required_locations: (input.required_locations ?? []).map((row) => row.trim()).filter(Boolean),
     });
     if (!bible.season) bible.season = buildSeasonBible(bible);
     bible.season = assertSeasonBible(bible.season);
@@ -584,13 +595,27 @@ export function createEngine(deps: EngineDeps = {}) {
     );
     // A part the buyer cast keeps its face: the character is born pointing at
     // that actor, so the prep pipeline never generates a stranger for it.
+    const ownedActor = (id: string | null | undefined) =>
+      id && store.actors.get(id)?.owner_id === input.owner_id ? String(id) : null;
     const castByName = new Map(
-      cast
-        .filter((row) => row.actor_id && store.actors.get(row.actor_id)?.owner_id === input.owner_id)
-        .map((row) => [row.name.trim().toLowerCase(), String(row.actor_id)]),
+      cast.flatMap((row) => {
+        const actorId = ownedActor(row.actor_id);
+        return actorId ? [[row.name.trim().toLowerCase(), actorId] as const] : [];
+      }),
+    );
+    const usedActors = new Set<string>();
+    const castByJob = new Map(
+      cast.flatMap((row) => {
+        const actorId = ownedActor(row.actor_id);
+        return actorId && row.job ? [[row.job, actorId] as const] : [];
+      }),
     );
     for (const draft of bible.characters) {
-      const chosen = castByName.get(draft.name.trim().toLowerCase()) ?? null;
+      const byName = castByName.get(draft.name.trim().toLowerCase()) ?? null;
+      const job = typeof draft.personality?.job === "string" ? String(draft.personality.job) : "";
+      const byJob = !byName && job ? (castByJob.get(job as "engine" | "wall" | "witness" | "nuke") ?? null) : null;
+      const chosen = (byName && !usedActors.has(byName) ? byName : null) ?? (byJob && !usedActors.has(byJob) ? byJob : null);
+      if (chosen) usedActors.add(chosen);
       const chosenActor = chosen ? store.actors.get(chosen) : undefined;
       const character: Character = {
         id: ids.id(),
@@ -664,22 +689,29 @@ export function createEngine(deps: EngineDeps = {}) {
   }
 
   const STILL_LOOK_ATTEMPTS = 5;
+  const LIKENESS_LOOK_ATTEMPTS = 2;
+  const LIKENESS_WARDROBE =
+    "contemporary modest clothes: a closed jacket over a buttoned shirt, opaque cloth to the throat";
 
   /**
    * Beauty gate for NEW stills only. Old locked Mara/Cole PNGs are not re-gated.
+   * A faithful likeness keeps the uploaded face: beauty is recorded, not vetoed.
    */
   async function gateNewCharacterStill(input: {
     bytes: Uint8Array;
     mime: string;
     kind: string;
     faceText?: string | null;
-  }): Promise<void> {
+    mode?: "likeness" | "generated";
+    identityFidelity?: "faithful" | "idealized";
+  }): Promise<{ notes: string | null }> {
     const tight = input.kind === "cu" || input.kind === "front" || input.kind === "three_quarter" || input.kind === "profile";
+    const faithful = input.mode === "likeness" && input.identityFidelity !== "idealized";
     const text = screenCastLook({ notes: input.faceText, checkDistance: false });
     if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
     const locate = ai.vision?.locateFace;
     const judge = ai.vision?.judgeCastLook;
-    if (!locate && !judge) return;
+    if (!locate && !judge) return { notes: null };
     let box: { width: number; height: number } | null = null;
     if (locate) {
       const found = await locate({ image: input.bytes, imageMime: input.mime });
@@ -698,13 +730,14 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     const verdict = screenCastLook({
       faceBox: box,
-      notes,
-      beauty,
+      notes: faithful ? null : notes,
+      beauty: faithful ? null : beauty,
       modest,
       close,
       checkDistance: tight,
     });
     if (!verdict.pass) throw new Error(`CAST_LOOK: ${verdict.reasons.join(", ")}`);
+    return { notes };
   }
 
   async function generateGatedStill(input: {
@@ -713,32 +746,50 @@ export function createEngine(deps: EngineDeps = {}) {
     kind: string;
     faceText?: string | null;
     seed?: { bytes: Uint8Array; mime_type: string } | null;
-  }): Promise<{ bytes: Uint8Array; mime_type: string }> {
+    mode?: "likeness" | "generated";
+    identityFidelity?: "faithful" | "idealized";
+    replaceWardrobe?: string;
+  }): Promise<{ bytes: Uint8Array; mime_type: string; notes: string | null }> {
     const text = screenCastLook({ notes: input.faceText, checkDistance: false });
     if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
+    const attempts = input.mode === "likeness" ? LIKENESS_LOOK_ATTEMPTS : STILL_LOOK_ATTEMPTS;
     let lastError: unknown = null;
-    for (let attempt = 0; attempt < STILL_LOOK_ATTEMPTS; attempt += 1) {
-      const candidate = input.seed
-        ? await ai.image.generateReferenceFromSeed({
-            characterName: input.characterName,
-            description: input.description,
-            kind: input.kind,
-            seed_bytes: input.seed.bytes,
-            seed_mime_type: input.seed.mime_type,
-          })
-        : await ai.image.generateReference({
-            characterName: input.characterName,
-            description: input.description,
-            kind: input.kind,
-          });
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      let candidate: { bytes: Uint8Array; mime_type: string };
       try {
-        await gateNewCharacterStill({
+        candidate = input.seed
+          ? await ai.image.generateReferenceFromSeed({
+              characterName: input.characterName,
+              description: input.description,
+              kind: input.kind,
+              seed_bytes: input.seed.bytes,
+              seed_mime_type: input.seed.mime_type,
+              replaceWardrobe: input.replaceWardrobe,
+              mode: input.mode,
+            })
+          : await ai.image.generateReference({
+              characterName: input.characterName,
+              description: input.description,
+              kind: input.kind,
+            });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (input.seed && isPrivacyRefusal(message)) {
+          throw new Error("the image provider refused this photo as a real person");
+        }
+        lastError = error;
+        continue;
+      }
+      try {
+        const gated = await gateNewCharacterStill({
           bytes: candidate.bytes,
           mime: candidate.mime_type,
           kind: input.kind,
           faceText: input.faceText,
+          mode: input.mode,
+          identityFidelity: input.identityFidelity,
         });
-        return candidate;
+        return { ...candidate, notes: gated.notes };
       } catch (error) {
         lastError = error;
       }
@@ -834,6 +885,8 @@ export function createEngine(deps: EngineDeps = {}) {
       seed_asset_id: input.seed_asset_id ?? null,
       appearance_profile: input.appearance_profile ?? emptyAppearance(),
       visual_reference_asset_ids: {},
+      identity_fidelity: "faithful",
+      judge_notes: null,
       created_at: iso(clock),
       updated_at: iso(clock),
     };
@@ -847,10 +900,17 @@ export function createEngine(deps: EngineDeps = {}) {
     series_id: string;
     seed_bytes?: Uint8Array;
     seed_mime_type?: string;
+    seed_asset_id?: string;
+    onProgress?: (actor: Actor) => Promise<void>;
   }) {
     let actor = store.actors.get(input.actor_id);
     if (!actor || actor.owner_id !== input.owner_id) throw new Error("Actor not found");
     requireSeries(input.series_id, input.owner_id);
+    if (input.seed_asset_id && !actor.seed_asset_id) {
+      actor = { ...actor, seed_asset_id: input.seed_asset_id, source: "likeness", updated_at: iso(clock) };
+      store.actors.set(actor.id, actor);
+      await input.onProgress?.(actor);
+    }
     if (input.seed_bytes && !actor.seed_asset_id) {
       const seed = await putAsset({
         owner_id: input.owner_id,
@@ -864,11 +924,14 @@ export function createEngine(deps: EngineDeps = {}) {
       });
       actor = { ...actor, seed_asset_id: seed.id, source: "likeness", updated_at: iso(clock) };
       store.actors.set(actor.id, actor);
+      await input.onProgress?.(actor);
     }
-    if (Object.keys(actor.visual_reference_asset_ids).length > 0) return actor;
+    const refs: Partial<Record<VisualReferenceKind, string>> = { ...actor.visual_reference_asset_ids };
+    const missing = FACE_KIND_ORDER.filter((kind) => !refs[kind]);
+    if (missing.length === 0) return actor;
     const existing = findJobByKey(`appearance:actor:${actor.id}`);
     const saved = (existing?.result_metadata.refs ?? null) as Partial<Record<VisualReferenceKind, string>> | null;
-    if (saved && Object.keys(saved).length > 0) {
+    if (Object.keys(refs).length === 0 && saved && FACE_KIND_ORDER.every((kind) => saved[kind])) {
       const next = { ...actor, visual_reference_asset_ids: saved, updated_at: iso(clock) };
       store.actors.set(actor.id, next);
       return next;
@@ -889,30 +952,37 @@ export function createEngine(deps: EngineDeps = {}) {
       model: "image/actor-pack",
       provider: "openrouter",
       upstream_job_id: null,
-      idempotency_key: `appearance:actor:${actor.id}`,
+      idempotency_key: freshJobKey(`appearance:actor:${actor.id}`),
       status: "queued",
       request_metadata: { actor_id: actor.id },
-      estimated_cost: ai.pricing.estimateImage() * FACE_KIND_ORDER.length,
+      estimated_cost: ai.pricing.estimateImage() * missing.length,
       expected_ready_at: addSeconds(clock, 30),
     });
     if (job.status === "completed") {
-      const refs = (job.result_metadata.refs ?? saved ?? {}) as Partial<Record<VisualReferenceKind, string>>;
-      const next = { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) };
+      const done = (job.result_metadata.refs ?? saved ?? refs) as Partial<Record<VisualReferenceKind, string>>;
+      const next = { ...actor, visual_reference_asset_ids: { ...refs, ...done }, updated_at: iso(clock) };
       store.actors.set(actor.id, next);
       return next;
     }
     if (job.status !== "queued" && job.status !== "failed") return actor;
     if (!reservedForJob(store.ledger, job.id)) reserve(job);
     const description = appearanceDescription({ description: actor.name, ...actor.appearance_profile });
-    const refs: Partial<Record<VisualReferenceKind, string>> = {};
     const seed = actor.seed_asset_id ? await assets.get(actor.seed_asset_id) : null;
-    for (const kind of FACE_KIND_ORDER) {
+    const likeness = Boolean(seed) || actor.source === "likeness";
+    const fidelity = actor.identity_fidelity === "idealized" ? "idealized" : "faithful";
+    const replaceWardrobe = likeness
+      ? actor.appearance_profile.default_wardrobe?.trim() || LIKENESS_WARDROBE
+      : undefined;
+    for (const kind of missing) {
       const image = await generateGatedStill({
         characterName: actor.name,
         description,
         kind,
         faceText: actor.appearance_profile.face,
         seed: seed ? { bytes: seed.body, mime_type: seed.asset.mime_type } : null,
+        mode: likeness ? "likeness" : "generated",
+        identityFidelity: fidelity,
+        replaceWardrobe,
       });
       const asset = await putAsset({
         owner_id: input.owner_id,
@@ -925,20 +995,26 @@ export function createEngine(deps: EngineDeps = {}) {
         metadata: { actor_id: actor.id, kind },
       });
       refs[kind] = asset.id;
-    }
-    const next = { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) };
-    store.actors.set(actor.id, next);
-    for (const character of store.characters.values()) {
-      if (character.actor_id === actor.id && !character.locked) {
-        store.characters.set(character.id, {
-          ...character,
-          visual_reference_asset_ids: refs,
-          updated_at: iso(clock),
-        });
+      actor = {
+        ...actor,
+        visual_reference_asset_ids: { ...refs },
+        judge_notes: image.notes ?? actor.judge_notes ?? null,
+        updated_at: iso(clock),
+      };
+      store.actors.set(actor.id, actor);
+      for (const character of store.characters.values()) {
+        if (character.actor_id === actor.id && !character.locked) {
+          store.characters.set(character.id, {
+            ...character,
+            visual_reference_asset_ids: { ...character.visual_reference_asset_ids, ...refs },
+            updated_at: iso(clock),
+          });
+        }
       }
+      await input.onProgress?.(actor);
     }
     completeSyncJob(job, job.estimated_cost, { actor_id: actor.id, refs });
-    return next;
+    return actor;
   }
 
   async function attachActor(input: { owner_id: string; character_id: string; actor_id: string }) {
@@ -1394,6 +1470,157 @@ export function createEngine(deps: EngineDeps = {}) {
     return applyLockedVoice(store.characters.get(character.id)!, identity.elevenlabs_voice_id, saved.id);
   }
 
+  /**
+   * One judged plate for one room. The plate seeds every wide in this location,
+   * so a person in it is a person in every wide: judge it and regenerate until
+   * the room is empty, then fail rather than ship a populated set.
+   */
+  async function renderLocationPlate(
+    series: { id: string; owner_id: string },
+    location: string,
+  ): Promise<{ assetId: string; notes: Record<string, unknown> }> {
+    let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
+    let peoplePresent: boolean | null = null;
+    let notes: Record<string, unknown> = {};
+    // The physical description only; a name like "wall of household files"
+    // reads as a household and the model staffs it.
+    const physical = location.split(/\s[—–-]\s/).slice(1).join(", ").trim() || location;
+    for (let attempt = 0; attempt < LOCATION_PLATE_ATTEMPTS; attempt += 1) {
+      const candidate = await ai.image.generateReference({
+        characterName: location,
+        description:
+          attempt === 0
+            ? `Cinematic establishing still of ${location}, exactly as its description implies — its time of day, weather, and materials. One locked key light and grade. ` +
+              `${placeLockClause(location)} EMPTY. NO people, NO faces, NO extras, NO bodies, no silhouettes, no figures with their back to camera.`
+            : `${placePlateRetry(location, physical)} Wide 9:16 frame, one key light and grade, cinematic colour. Empty and still.`,
+        kind: "location",
+      });
+      image = candidate;
+      if (!ai.vision?.describeLocation) break;
+      // One vision call does both jobs: the lighting note every close-up will
+      // carry, and a strict "is anyone in this room" check (silhouettes and
+      // back-to-camera figures have no face and would pass a face count).
+      try {
+        const small = await shrinkReference(candidate.bytes);
+        const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
+        peoplePresent = described.people_present;
+        notes = {
+          lighting_lock: described.lighting_lock,
+          palette: described.palette,
+          key_light: described.key_light,
+          dressing: described.dressing,
+          people_present: described.people_present,
+          ...(described.geometry ? { geometry: described.geometry } : {}),
+        };
+        if (!described.people_present) break;
+      } catch (caught) {
+        // Without vision nothing checks the room is empty, so say so loudly
+        // rather than shipping an unjudged plate in silence.
+        console.warn(
+          JSON.stringify(
+            publicLog({
+              event: "location_plate_unjudged",
+              series_id: series.id,
+              location,
+              reason: caught instanceof Error ? caught.message : "vision failed",
+            }),
+          ),
+        );
+        break;
+      }
+    }
+    if (!image) throw new Error(`Could not generate a location plate for ${location}`);
+    if (peoplePresent) {
+      throw new Error(`Location plate for ${location} still shows a human figure after ${LOCATION_PLATE_ATTEMPTS} attempts`);
+    }
+    const asset = await putAsset({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      kind: "character_reference",
+      bucket: "private-character",
+      mime_type: image.mime_type,
+      body: image.bytes,
+      metadata: { location, ...notes },
+    });
+    return { assetId: asset.id, notes };
+  }
+
+  /**
+   * One room, generated on demand from the design screen. The plate lands in
+   * `location_refs` under its own name, which is the key the shoot already
+   * matches scenes against, so approving a room here is what the run uses.
+   */
+  async function lockLocation(input: {
+    owner_id: string;
+    series_id: string;
+    location: string;
+    force?: boolean;
+  }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const location = input.location.trim();
+    if (!location) throw new Error("A location name is required");
+    const existing = series.location_refs?.[location];
+    if (existing && !input.force) {
+      return { series, asset_id: existing, notes: {} as Record<string, unknown>, reused: true };
+    }
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/location-plate",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: freshJobKey(`location:${series.id}:${location}`),
+      status: "queued",
+      request_metadata: { location },
+      estimated_cost: ai.pricing.estimateImage(),
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    reserve(job);
+    const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, location);
+    const refs = { ...series.location_refs, [location]: plate.assetId };
+    const next = { ...series, location_refs: refs };
+    store.series.set(series.id, next);
+    completeSyncJob(job, job.estimated_cost, { location, asset_id: plate.assetId });
+    return { series: next, asset_id: plate.assetId, notes: plate.notes, reused: false };
+  }
+
+  /**
+   * One plate for the catalog, with no show attached.
+   *
+   * The places page builds a room before any story asks for it, so nothing is
+   * written into a show's own location map here. The job is still hosted on a
+   * series for billing and the task trail, the way an actor's face pack is.
+   */
+  async function renderLibraryPlate(input: { owner_id: string; series_id: string; name: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const name = input.name.trim();
+    if (!name) throw new Error("A place needs a name");
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/location-plate",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: freshJobKey(`library-place:${series.owner_id}:${name}`),
+      status: "queued",
+      request_metadata: { location: name, library: true },
+      estimated_cost: ai.pricing.estimateImage(),
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    reserve(job);
+    const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, name);
+    completeSyncJob(job, job.estimated_cost, { location: name, asset_id: plate.assetId });
+    return { asset_id: plate.assetId, notes: plate.notes };
+  }
+
   async function lockLocations(input: { owner_id: string; series_id: string }) {
     const series = requireSeries(input.series_id, input.owner_id);
     const locations = series.story_bible?.locations ?? [];
@@ -1420,60 +1647,8 @@ export function createEngine(deps: EngineDeps = {}) {
     });
     reserve(job);
     for (const location of missing) {
-      // The plate seeds every wide in this location; a person in it is a
-      // person in every wide. Judge it and regenerate until the room is empty.
-      let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
-      let peoplePresent: boolean | null = null;
-      let notes: Record<string, unknown> = {};
-      // The physical description only; a name like "wall of household files"
-      // reads as a household and the model staffs it.
-      const physical = location.split(/\s[—–-]\s/).slice(1).join(", ").trim() || location;
-      for (let attempt = 0; attempt < LOCATION_PLATE_ATTEMPTS; attempt += 1) {
-        const candidate = await ai.image.generateReference({
-          characterName: location,
-          description:
-            attempt === 0
-              ? `Cinematic establishing still of ${location}, exactly as its description implies — its time of day, weather, and materials. One locked key light and grade. ` +
-                `${placeLockClause(location)} EMPTY. NO people, NO faces, NO extras, NO bodies, no silhouettes, no figures with their back to camera.`
-              : `${placePlateRetry(location, physical)} Wide 9:16 frame, one key light and grade, cinematic colour. Empty and still.`,
-          kind: "location",
-        });
-        image = candidate;
-        if (!ai.vision?.describeLocation) break;
-        // One vision call does both jobs: the lighting note every close-up will
-        // carry, and a strict "is anyone in this room" check (silhouettes and
-        // back-to-camera figures have no face and would pass a face count).
-        try {
-          const small = await shrinkReference(candidate.bytes);
-          const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
-          peoplePresent = described.people_present;
-          notes = {
-            lighting_lock: described.lighting_lock,
-            palette: described.palette,
-            key_light: described.key_light,
-            dressing: described.dressing,
-            people_present: described.people_present,
-            ...(described.geometry ? { geometry: described.geometry } : {}),
-          };
-          if (!described.people_present) break;
-        } catch {
-          break;
-        }
-      }
-      if (!image) throw new Error(`Could not generate a location plate for ${location}`);
-      if (peoplePresent) {
-        throw new Error(`Location plate for ${location} still shows a human figure after ${LOCATION_PLATE_ATTEMPTS} attempts`);
-      }
-      const asset = await putAsset({
-        owner_id: series.owner_id,
-        series_id: series.id,
-        kind: "character_reference",
-        bucket: "private-character",
-        mime_type: image.mime_type,
-        body: image.bytes,
-        metadata: { location, ...notes },
-      });
-      refs[location] = asset.id;
+      const plate = await renderLocationPlate({ id: series.id, owner_id: series.owner_id }, location);
+      refs[location] = plate.assetId;
     }
     const next = { ...series, location_refs: refs };
     store.series.set(series.id, next);
@@ -2584,6 +2759,70 @@ export function createEngine(deps: EngineDeps = {}) {
         metadata: { kind: PROP_KIND, prop: kind, key: propKey(kind) },
       });
     }
+  }
+
+  /**
+   * One object, generated on demand from the design screen. It is keyed exactly
+   * the way the planner keys the same words, so when a shot locks that object
+   * the shoot reuses this still instead of inventing the prop a second time.
+   */
+  async function lockProp(input: { owner_id: string; series_id: string; name: string; force?: boolean }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const parsed = propFromLockText(input.name);
+    if (!parsed) throw new Error("Name the object so it can be shot on its own");
+    const existing = await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.key);
+    if (existing && !input.force) {
+      return { asset_id: existing, key: parsed.key, name: parsed.name, state: parsed.state, reused: true };
+    }
+    const job = createJob({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      episode_id: null,
+      scene_id: null,
+      shot_id: null,
+      job_type: "image",
+      model: "image/prop-still",
+      provider: "openrouter",
+      upstream_job_id: null,
+      idempotency_key: freshJobKey(`prop:${series.id}:${parsed.key}`),
+      status: "queued",
+      request_metadata: { prop: parsed.name, key: parsed.key },
+      estimated_cost: ai.pricing.estimateImage(),
+      expected_ready_at: addSeconds(clock, 30),
+    });
+    reserve(job);
+    // A state change ("open") is the sealed object again, not a new object.
+    const seedId = parsed.seedKey
+      ? await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.seedKey)
+      : null;
+    const seed = seedId ? await assets.get(seedId).catch(() => null) : null;
+    const image = seed
+      ? await ai.image.generateReferenceFromSeed({
+          characterName: parsed.name,
+          description: `${parsed.prompt}. Same object as the attached still, only the state changes.`,
+          kind: "object_insert",
+          seed_bytes: seed.body,
+          seed_mime_type: seed.asset.mime_type,
+        })
+      : await ai.image.generateReference({
+          characterName: parsed.name,
+          description: parsed.prompt,
+          kind: "object_insert",
+        });
+    const kind = inferPropKind(parsed.name);
+    const asset = await putAsset({
+      owner_id: series.owner_id,
+      series_id: series.id,
+      kind: "character_reference",
+      bucket: "private-character",
+      mime_type: image.mime_type,
+      body: image.bytes,
+      // `prop` carries the cached kind so the generic prop bible reuses this
+      // show's own object instead of generating a stock one beside it.
+      metadata: { kind: PROP_KIND, prop: kind ?? parsed.name, key: parsed.key, state: parsed.state, name: parsed.name },
+    });
+    completeSyncJob(job, job.estimated_cost, { key: parsed.key, asset_id: asset.id });
+    return { asset_id: asset.id, key: parsed.key, name: parsed.name, state: parsed.state, reused: false };
   }
 
   const ROOM_ANGLE_KIND = "room_angle";
@@ -5147,6 +5386,9 @@ export function createEngine(deps: EngineDeps = {}) {
     designVoice,
     lockCharacter,
     lockLocations,
+    lockLocation,
+    renderLibraryPlate,
+    lockProp,
     attachSeriesCover,
     attachSourceScript,
     segmentSourceScript,

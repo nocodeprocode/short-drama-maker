@@ -52,7 +52,13 @@ export default function Page() {
       />
       <PageBody>
         <div className="space-y-6">
-          <CharacterPack stillUrl={character.still_url} refs={pack} emptyLabel="Casting" />
+          {/* An actor is attached but no face has arrived: the pack is still being built. */}
+          <CharacterPack
+            stillUrl={character.still_url}
+            refs={pack}
+            emptyLabel="Casting"
+            working={Boolean(character.actor_id) && !character.still_url && !character.locked}
+          />
           {character.actor_name ? (
             <p className="text-sm text-secondary">
               Played by{" "}

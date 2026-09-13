@@ -7,9 +7,11 @@ import { Tab, TabList, Tabs } from "@/components/base/tabs/tabs";
 import { cx } from "@/utils/cx";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
 import { CastSheet } from "@/components/drama/cast-sheet.tsx";
+import { DesignSheet } from "@/components/drama/design-sheet.tsx";
 import { EpisodeStrip } from "@/components/drama/episode-strip.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { LoadError, ShowDetailSkeleton } from "@/components/drama/skeleton.tsx";
+import { NextStep, StepRail, type Step } from "@/components/drama/step-rail.tsx";
 import { CTA, episodeStripStates, statusLabel } from "@/engine/present.ts";
 import {
   BLOCK_SKUS,
@@ -32,6 +34,7 @@ function money(amount: number) {
 const TABS = [
   { id: "episodes", label: "Episodes" },
   { id: "cast", label: "Cast" },
+  { id: "design", label: "Design" },
   { id: "story", label: "Story" },
 ] as const;
 
@@ -53,6 +56,8 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [gap, setGap] = useState<{ needed: number; available: number; shortfall: number } | null>(null);
   const { data: billing } = useStudio("billing", () => studio.billing());
+  // Live: a face or a plate landing anywhere flips a step without a reload.
+  const { data: readiness } = useStudio(`readiness:${id}`, () => studio.seriesReadiness(id), [id]);
   const series = data?.series;
   const episodes = data?.episodes ?? [];
 
@@ -79,6 +84,84 @@ export default function Page() {
   const shortfall = gap?.shortfall ?? Math.max(0, Math.round((retail - wallet) * 100) / 100);
   const needsLoad = shortfall > 0.009;
 
+  // The server owns this verdict; the rail and the start button only show it.
+  const ready = readiness;
+  const castStep = ready?.cast;
+  const designDone = (ready?.places.done ?? 0) + (ready?.objects.done ?? 0);
+  const designTotal = (ready?.places.total ?? 0) + (ready?.objects.total ?? 0);
+  const castOk = Boolean(ready) && castStep!.total > 0 && castStep!.done >= castStep!.total;
+  const designOk = Boolean(ready) && designTotal > 0 && designDone >= designTotal;
+  const canStart = Boolean(ready?.can_start);
+
+  const steps: Step[] = [
+    { id: "brief", label: "The brief", hint: "Written", state: "done", done: 1, total: 1 },
+    {
+      id: "cast",
+      label: "Cast",
+      hint: !ready ? "Checking…" : castStep!.total ? `${castStep!.done} of ${castStep!.total} have a face` : "Building the list…",
+      state: castOk ? "done" : "current",
+      done: castStep?.done ?? 0,
+      total: castStep?.total ?? 0,
+    },
+    {
+      id: "design",
+      label: "Places and objects",
+      hint: !ready ? "Checking…" : designTotal ? `${designDone} of ${designTotal} built` : "Building the list…",
+      state: designOk ? "done" : castOk ? "current" : "todo",
+      done: designDone,
+      total: designTotal,
+    },
+    {
+      id: "shoot",
+      label: "Shoot it",
+      hint: canStart ? (needsLoad ? `Load ${money(gapCharge(shortfall))}` : `${money(retail)} to start`) : "Locked until the rest is done",
+      state: canStart ? "current" : "todo",
+      done: 0,
+      total: 1,
+    },
+  ];
+
+  /** The rail is four steps; the page has four tabs but not the same four. */
+  const stepTab = (id: string): (typeof TABS)[number]["id"] =>
+    id === "cast" ? "cast" : id === "design" ? "design" : id === "brief" ? "story" : "episodes";
+
+  const next: {
+    title: string;
+    body: string;
+    reasons?: string[];
+    action?: { label: string; onClick?: () => void; href?: string };
+  } = !ready
+    ? { title: "Checking what is ready", body: "One moment." }
+    : !castOk
+      ? {
+          title: "Give every part a face",
+          body: ready.unnamed
+            ? "Some parts are still being named. A face needs a name and a gender first, so this finishes on its own in a moment."
+            : "Generate them all at once, or bring your own photo for anyone you like. The story is then written around these faces.",
+          reasons: ready.cast.missing.length ? [`Waiting on: ${ready.cast.missing.join(", ")}`] : undefined,
+          action: { label: "Open the cast", onClick: () => setTab("cast") },
+        }
+      : !designOk
+        ? {
+            title: "Build the places and objects",
+            body: "Each room is built once as an empty plate and reused, so every scene there is the same room. Pick from your library, upload your own, or build them here.",
+            reasons: [...ready.places.missing, ...ready.objects.missing].length
+              ? [`Still to build: ${[...ready.places.missing, ...ready.objects.missing].join(", ")}`]
+              : undefined,
+            action: { label: "Open places and objects", onClick: () => setTab("design") },
+          }
+        : needsLoad
+          ? {
+              title: "Everything is ready",
+              body: `Load ${money(gapCharge(shortfall))} to start. Leftover stays in your wallet.`,
+              action: { label: `Load ${money(gapCharge(shortfall))} to start`, onClick: () => void loadToStart() },
+            }
+          : {
+              title: "Everything is ready",
+              body: "Every part has a face and every place and object is built. Start the run when you are.",
+              action: { label: `Start this show · ${money(retail)}`, onClick: () => void startCheckout(draftSku) },
+            };
+
   const startCheckout = async (sku: number) => {
     setBusy(true);
     setError(null);
@@ -102,6 +185,12 @@ export default function Page() {
           available: Number(caught.body.available ?? wallet),
           shortfall: Number(caught.body.shortfall ?? Math.max(0, retail - wallet)),
         });
+        return;
+      }
+      // The server refused because something is still missing. It knows better
+      // than this page does, so show its reason rather than a generic failure.
+      if (caught instanceof ApiError && caught.status === 409 && caught.body.error === "not_ready") {
+        setError(String(caught.body.message ?? "This show is not ready to shoot yet."));
         return;
       }
       setError(caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : "Could not start the run");
@@ -188,7 +277,12 @@ export default function Page() {
             ) : null}
             {!blocked && (action === "pay_pilot" || action === "continue_draft") ? (
               <>
-                {needsLoad ? (
+                {/* Locked until every face, place and object exists. The rail below says what is left. */}
+                {!canStart ? (
+                  <Button color="primary" isDisabled onClick={() => undefined}>
+                    Start · finish the steps first
+                  </Button>
+                ) : needsLoad ? (
                   <Button color="primary" isDisabled={busy} onClick={() => void loadToStart()}>
                     {busy ? "Opening checkout…" : `Load ${money(gapCharge(shortfall))} to start`}
                   </Button>
@@ -317,46 +411,41 @@ export default function Page() {
         {error ? <p className="mb-5 text-sm text-error-primary">{error}</p> : null}
         {isDraft ? (
           <div className="mb-6 rounded-xl bg-primary p-5 ring-1 ring-secondary ring-inset">
-            <p className="text-sm font-semibold text-primary">Ready to start</p>
-            <p className="mt-1 text-sm text-secondary">
-              {skuLabel(draftSku)} · {runtimeLabel(episodeSeconds(draftLength))} each · {finishedRuntimeLabel(draftSku, draftLength)} finished
-              {draftTier === "catalog" ? " · Catalog picture" : " · Pro picture"}
-            </p>
-            <div className="mt-4 flex items-baseline justify-between gap-3">
-              <span className="text-sm text-tertiary">This run</span>
-              <b className="figure text-lg font-semibold text-primary">{money(retail)}</b>
-            </div>
-            <div className="mt-1 flex items-baseline justify-between gap-3 text-sm">
-              <span className="text-tertiary">Wallet</span>
-              <span className="figure text-secondary">{money(gap?.available ?? wallet)}</span>
-            </div>
-            {needsLoad ? (
-              <p className="mt-3 text-sm text-secondary">
-                Load {money(gapCharge(shortfall))} to start. Leftover stays in your wallet.
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <p className="text-sm font-semibold text-primary">Four steps to your first episode</p>
+              <p className="text-sm text-tertiary">
+                {skuLabel(draftSku)} · {runtimeLabel(episodeSeconds(draftLength))} each ·{" "}
+                {finishedRuntimeLabel(draftSku, draftLength)} finished
+                {draftTier === "catalog" ? " · Catalog picture" : " · Pro picture"}
               </p>
-            ) : (
-              <p className="mt-3 text-sm text-secondary">Wallet covers this run. Start when you are ready.</p>
-            )}
-            {series.description ? <p className="mt-3 text-sm text-secondary">{series.description}</p> : null}
-            <div className="mt-4 flex flex-wrap gap-2">
-              {needsLoad ? (
-                <Button color="primary" isDisabled={busy} onClick={() => void loadToStart()}>
-                  {busy ? "Opening checkout…" : `Load ${money(gapCharge(shortfall))} to start`}
-                </Button>
-              ) : (
-                <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(draftSku)}>
-                  {busy ? "Starting…" : `Start this show · ${money(retail)}`}
-                </Button>
-              )}
-              <Button color="secondary" onClick={() => setTab("cast")}>
-                Cast the show
-              </Button>
-              <Button href={`/new?draft=${series.id}`} color="tertiary">
+            </div>
+            <div className="mt-4">
+              <StepRail steps={steps} activeId={tab} onGo={(id) => setTab(stepTab(id))} />
+            </div>
+            <NextStep
+              title={next.title}
+              body={next.body}
+              reasons={next.reasons}
+              action={next.action}
+              busy={busy}
+            />
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-secondary pt-4">
+              <div className="flex gap-6">
+                <span className="text-sm">
+                  <span className="text-tertiary">This run </span>
+                  <b className="figure font-semibold">{money(retail)}</b>
+                </span>
+                <span className="text-sm">
+                  <span className="text-tertiary">Wallet </span>
+                  <span className="figure text-secondary">{money(gap?.available ?? wallet)}</span>
+                </span>
+              </div>
+              <Button href={`/new?draft=${series.id}`} color="tertiary" size="sm">
                 Change length or count
               </Button>
             </div>
             <p className="mt-3 text-xs text-tertiary">
-              Cast anyone you like first and the story is written around them. Unpaid drafts are removed after 14 days.
+              Nothing is charged until every face, place and object is ready. Unpaid drafts are removed after 14 days.
             </p>
           </div>
         ) : null}
@@ -409,6 +498,8 @@ export default function Page() {
         ) : null}
 
         {tab === "cast" ? <CastSheet seriesId={series.id} /> : null}
+
+        {tab === "design" ? <DesignSheet seriesId={series.id} /> : null}
 
         {tab === "story" ? (
           bible?.logline || bibleCast.length || bible?.episode_structure?.length || locations.length || series.description ? (

@@ -57,17 +57,19 @@ export function CharacterPack({
   stillUrl,
   refs,
   emptyLabel = "Casting",
+  working,
 }: {
   stillUrl?: string | null;
   refs?: CharacterRef[];
   emptyLabel?: string;
+  working?: boolean;
 }) {
   const pack = refs ?? [];
   const hero = stillUrl ?? pack[0]?.url ?? null;
   const rest = pack.filter((item) => item.url !== hero);
   return (
     <div className="grid gap-3 lg:grid-cols-[minmax(0,22rem)_1fr]">
-      <Poster src={hero} chip={hero ? undefined : emptyLabel} ratio="34" className="max-w-sm" />
+      <Poster src={hero} chip={hero ? undefined : emptyLabel} ratio="34" className="max-w-sm" working={!hero && working} />
       <div className={cx("grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-2")}>
         {rest.map((item) => (
           <figure key={item.kind} className="min-w-0">

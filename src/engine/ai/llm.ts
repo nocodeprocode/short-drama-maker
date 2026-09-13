@@ -124,14 +124,24 @@ export function createOpenRouterLlm(): LLMEngine {
     async analyzeStory(input) {
       const cast = (input.required_cast ?? []).filter((row) => row.name.trim());
       const castLine = cast.length
-        ? `\nAlready cast — use these names verbatim as named speaking roles, and write the rest around them:\n${cast
-            .map((row) => `- ${row.name}${row.note?.trim() ? ` — ${row.note.trim()}` : ""}`)
+        ? `\nRequired cast — use these names verbatim as named speaking roles and fill the declared job. Do not invent a parallel cast.\n${cast
+            .map((row) => {
+              const job = row.job ? ` [${row.job}]` : "";
+              const note = row.note?.trim() ? ` — ${row.note.trim()}` : "";
+              return `- ${row.name}${job}${note}`;
+            })
+            .join("\n")}\n`
+        : "";
+      const places = (input.required_locations ?? []).map((row) => row.trim()).filter(Boolean);
+      const placeLine = places.length
+        ? `\nApproved locations — reuse these strings verbatim in "locations" and set every scene in one of them. Their sets are already built. Add at most one new location.\n${places
+            .map((row) => `- ${row}`)
             .join("\n")}\n`
         : "";
       const base = `Build a story bible for a short vertical drama.
 Title: ${input.title}
 Idea: ${input.idea}
-${castLine}
+${castLine}${placeLine}
 JSON shape:
 {
   "title": string,
@@ -322,4 +332,37 @@ ${dramaHooks.writeEpisodeUserPrompt({ bible: input.bible, episodeNumber: input.e
       );
     },
   };
+}
+
+/** Suggested names and gender for slate placeholders. Cheap: one short JSON object. */
+export async function nameCastSlate(input: {
+  title: string;
+  idea: string;
+  slots: Array<{ job: string; label: string; archetype: string; name?: string }>;
+}): Promise<Array<{ job: string; name: string; gender: "woman" | "man" | null; note: string }>> {
+  const body = await completeJson<{
+    names?: Array<{ job?: string; name?: string; gender?: string; note?: string }>;
+  }>(
+    `Name only the speaking people on this short vertical drama. One adult fictional name and one gender per slot. No celebrities.
+Never name an NDA, contract, DNA test, clause, deed, locket, ledger, or other object as if it were a person.
+Gender must be woman or man and must match the brief and the role. Do not flip a contract wife into a man.
+If a slot already has a name, keep that name and only fill gender and the one-line note.
+Title: ${input.title}
+Idea: ${input.idea}
+Slots: ${JSON.stringify(input.slots)}
+JSON: { "names": [{ "job": "engine"|"wall"|"witness"|"nuke", "name": "First Last", "gender": "woman"|"man", "note": "one line: adult woman or man and who they are" }] }`,
+  );
+  const rows = Array.isArray(body.names) ? body.names : [];
+  return input.slots.map((slot) => {
+    const hit = rows.find((row) => String(row.job ?? "") === slot.job);
+    const rawGender = String(hit?.gender ?? "").trim().toLowerCase();
+    const gender = rawGender === "woman" || rawGender === "female" ? "woman" : rawGender === "man" || rawGender === "male" ? "man" : null;
+    const name = String(hit?.name ?? slot.name ?? "").trim().slice(0, 60);
+    return {
+      job: slot.job,
+      name,
+      gender,
+      note: String(hit?.note ?? slot.archetype).trim().slice(0, 300),
+    };
+  });
 }

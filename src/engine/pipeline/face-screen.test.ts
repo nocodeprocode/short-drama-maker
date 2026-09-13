@@ -47,4 +47,10 @@ describe("face screen", () => {
       screenCastLook({ faceBox: { width: 0.42, height: 0.38 }, beauty: true, modest: true }).pass,
     ).toBe(true);
   });
+
+  it("lets a faithful likeness stay when beauty is unknown, and still rejects immodest or far", () => {
+    expect(screenCastLook({ beauty: null, notes: null, checkDistance: false }).pass).toBe(true);
+    expect(screenCastLook({ beauty: null, modest: false, checkDistance: false }).reasons).toContain("modest_dress");
+    expect(screenCastLook({ beauty: null, faceBox: { width: 0.08, height: 0.09 } }).reasons).toContain("face_too_far");
+  });
 });

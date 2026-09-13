@@ -1,8 +1,12 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createAiGateway } from "../ai/index.ts";
+import { nameCastSlate } from "../ai/llm.ts";
 import { transcribeAudio } from "../ai/stt.ts";
 import { accessFromAppMetadata } from "../access.ts";
 import { bindCastPlan, castPlan } from "../casting.ts";
+import { JOB_LABELS } from "../casting/slate.ts";
+import { catalogueLocation, catalogueProp } from "../design/library.ts";
+import { approvedLocations, syncDesignLocations } from "../design/sync.ts";
 import { createEngine, RenderIncompleteError } from "../create-engine.ts";
 import { classifyTaskFailure, failureDecision, redactTaskError, retryDelaySeconds, sanitizeTaskError } from "./errors.ts";
 import { createConfiguredAssetStore } from "../storage/create.ts";
@@ -25,10 +29,15 @@ export type EngineAction =
   | "analyze"
   | "generate_appearance"
   | "generate_actor"
+  | "plan_cast"
   | "generate_wardrobe"
   | "design_voice"
   | "lock_character"
   | "lock_locations"
+  | "generate_location_plate"
+  | "generate_prop_still"
+  | "generate_place"
+  | "generate_object"
   | "attach_cover"
   | "attach_script"
   | "segment_script"
@@ -102,10 +111,15 @@ const ORCHESTRATION_ACTIONS: EngineAction[] = [
   "analyze",
   "generate_appearance",
   "generate_actor",
+  "plan_cast",
   "generate_wardrobe",
   "design_voice",
   "lock_character",
   "lock_locations",
+  "generate_location_plate",
+  "generate_prop_still",
+  "generate_place",
+  "generate_object",
   "attach_cover",
   "attach_script",
   "segment_script",
@@ -269,7 +283,13 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
   switch (task.action) {
     case "analyze": {
       const plan = await castPlan(client, task.series_id);
-      result = await engine.analyze({ owner_id, series_id: task.series_id, required_cast: plan });
+      const places = await approvedLocations(client, task.series_id);
+      result = await engine.analyze({
+        owner_id,
+        series_id: task.series_id,
+        required_cast: plan,
+        required_locations: places,
+      });
       // The story has named its roles now, so each slot can point at the
       // character it filled. Runs after the commit below writes those rows.
       afterCommit.push(() => bindCastPlan(client, task.series_id));
@@ -286,13 +306,65 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
         owner_id,
         actor_id: String(payload.actor_id),
         series_id: task.series_id,
+        seed_asset_id: payload.seed_asset_id ? String(payload.seed_asset_id) : undefined,
         seed_bytes:
           typeof payload.seed_base64 === "string" && payload.seed_base64
             ? Uint8Array.from(Buffer.from(payload.seed_base64, "base64"))
             : undefined,
         seed_mime_type: payload.seed_mime_type ? String(payload.seed_mime_type) : undefined,
+        onProgress: async () => {
+          const snapshot =
+            "snapshot" in assets && typeof assets.snapshot === "function" ? assets.snapshot() : assetRows;
+          await commitSeriesStore(client, engine.store, task.series_id, snapshot);
+        },
       });
       break;
+    case "plan_cast": {
+      const { data: series } = await client.from("series").select("title, description").eq("id", task.series_id).maybeSingle();
+      const { data: slots } = await client
+        .from("series_cast")
+        .select("id, job, archetype, suggested_name, suggested_gender, role_name, castable")
+        .eq("series_id", task.series_id)
+        .order("position");
+      const unnamed = (slots ?? []).filter((row) => {
+        if (row.castable === false) return false;
+        if (!row.job) return false;
+        return (!row.role_name && !row.suggested_name) || !row.suggested_gender;
+      });
+      if (unnamed.length) {
+        const named = await nameCastSlate({
+          title: String(series?.title ?? ""),
+          idea: String(series?.description ?? ""),
+          slots: unnamed.map((row) => {
+            const job = String(row.job);
+            const label = job in JOB_LABELS ? JOB_LABELS[job as keyof typeof JOB_LABELS] : job;
+            const existing = String(row.role_name || row.suggested_name || "").trim();
+            return {
+              job,
+              label,
+              archetype: String(row.archetype ?? ""),
+              ...(existing ? { name: existing } : {}),
+            };
+          }),
+        });
+        const now = new Date().toISOString();
+        for (const row of unnamed) {
+          const hit = named.find((item) => item.job === row.job);
+          if (!hit?.name && !hit?.gender) continue;
+          await client
+            .from("series_cast")
+            .update({
+              suggested_name: String(row.suggested_name || hit.name || "").trim() || null,
+              suggested_gender: hit.gender,
+              role_note: hit.note,
+              updated_at: now,
+            })
+            .eq("id", row.id);
+        }
+      }
+      result = { named: unnamed.length };
+      break;
+    }
     case "generate_wardrobe":
       result = await engine.generateWardrobe({
         owner_id,
@@ -316,7 +388,205 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       break;
     case "lock_locations":
       result = await engine.lockLocations({ owner_id, series_id: task.series_id });
+      // Rooms the shoot just locked become rows on the design screen.
+      afterCommit.push(() => syncDesignLocations(client, task.series_id));
       break;
+    case "generate_location_plate": {
+      const rowId = String(payload.location_id ?? "");
+      const { data: row } = await client
+        .from("series_locations")
+        .select("id, name, locked")
+        .eq("id", rowId)
+        .eq("series_id", task.series_id)
+        .maybeSingle();
+      if (!row) {
+        result = { skipped: "location gone" };
+        break;
+      }
+      if (row.locked) {
+        result = { skipped: "location locked" };
+        break;
+      }
+      await client.from("series_locations").update({ status: "building", error: null, updated_at: new Date().toISOString() }).eq("id", row.id);
+      try {
+        const plate = await engine.lockLocation({
+          owner_id,
+          series_id: task.series_id,
+          location: String(row.name),
+          force: Boolean(payload.force),
+        });
+        const lighting = typeof plate.notes.lighting_lock === "string" ? plate.notes.lighting_lock : null;
+        // The plate asset is written by the commit below, so the row points at
+        // it only once that asset actually exists.
+        afterCommit.push(async () => {
+          await client
+            .from("series_locations")
+            .update({
+              plate_asset_id: plate.asset_id,
+              lighting_lock: lighting,
+              status: "ready",
+              error: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
+          await catalogueLocation(client, {
+            ownerId: owner_id,
+            rowId: String(row.id),
+            name: String(row.name),
+            plateAssetId: plate.asset_id,
+            lightingLock: lighting,
+          });
+        });
+        result = { location: row.name, asset_id: plate.asset_id, reused: plate.reused };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not build this location";
+        await client
+          .from("series_locations")
+          .update({ status: "failed", error: message.slice(0, 300), updated_at: new Date().toISOString() })
+          .eq("id", row.id);
+        throw error;
+      }
+      break;
+    }
+    case "generate_prop_still": {
+      const rowId = String(payload.prop_id ?? "");
+      const { data: row } = await client
+        .from("series_props")
+        .select("id, name, locked")
+        .eq("id", rowId)
+        .eq("series_id", task.series_id)
+        .maybeSingle();
+      if (!row) {
+        result = { skipped: "prop gone" };
+        break;
+      }
+      if (row.locked) {
+        result = { skipped: "prop locked" };
+        break;
+      }
+      await client.from("series_props").update({ status: "building", error: null, updated_at: new Date().toISOString() }).eq("id", row.id);
+      try {
+        const prop = await engine.lockProp({
+          owner_id,
+          series_id: task.series_id,
+          name: String(row.name),
+          force: Boolean(payload.force),
+        });
+        afterCommit.push(async () => {
+          await client
+            .from("series_props")
+            .update({
+              still_asset_id: prop.asset_id,
+              state: prop.state,
+              status: "ready",
+              error: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
+          await catalogueProp(client, {
+            ownerId: owner_id,
+            rowId: String(row.id),
+            name: String(row.name),
+            stillAssetId: prop.asset_id,
+            state: prop.state,
+          });
+        });
+        result = { prop: row.name, asset_id: prop.asset_id, reused: prop.reused };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not build this object";
+        await client
+          .from("series_props")
+          .update({ status: "failed", error: message.slice(0, 300), updated_at: new Date().toISOString() })
+          .eq("id", row.id);
+        throw error;
+      }
+      break;
+    }
+    // The two catalog builds. A place or an object made from the library pages
+    // belongs to the owner, not to this show: the task is only hosted here for
+    // billing and the trail, so nothing is written into this show's own rows.
+    case "generate_place": {
+      const entryId = String(payload.place_id ?? "");
+      const { data: row } = await client
+        .from("locations")
+        .select("id, name")
+        .eq("id", entryId)
+        .eq("owner_id", owner_id)
+        .maybeSingle();
+      if (!row) {
+        result = { skipped: "place gone" };
+        break;
+      }
+      await client.from("locations").update({ status: "building", error: null, updated_at: new Date().toISOString() }).eq("id", row.id);
+      try {
+        const plate = await engine.renderLibraryPlate({ owner_id, series_id: task.series_id, name: String(row.name) });
+        const lighting = typeof plate.notes.lighting_lock === "string" ? plate.notes.lighting_lock : null;
+        afterCommit.push(async () => {
+          await client
+            .from("locations")
+            .update({
+              plate_asset_id: plate.asset_id,
+              lighting_lock: lighting,
+              status: "ready",
+              error: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
+        });
+        result = { place: row.name, asset_id: plate.asset_id };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not build this place";
+        await client
+          .from("locations")
+          .update({ status: "failed", error: message.slice(0, 300), updated_at: new Date().toISOString() })
+          .eq("id", row.id);
+        throw error;
+      }
+      break;
+    }
+    case "generate_object": {
+      const entryId = String(payload.object_id ?? "");
+      const { data: row } = await client
+        .from("props")
+        .select("id, name")
+        .eq("id", entryId)
+        .eq("owner_id", owner_id)
+        .maybeSingle();
+      if (!row) {
+        result = { skipped: "object gone" };
+        break;
+      }
+      await client.from("props").update({ status: "building", error: null, updated_at: new Date().toISOString() }).eq("id", row.id);
+      try {
+        const still = await engine.lockProp({
+          owner_id,
+          series_id: task.series_id,
+          name: String(row.name),
+          force: Boolean(payload.force),
+        });
+        afterCommit.push(async () => {
+          await client
+            .from("props")
+            .update({
+              still_asset_id: still.asset_id,
+              state: still.state,
+              status: "ready",
+              error: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", row.id);
+        });
+        result = { object: row.name, asset_id: still.asset_id };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not build this object";
+        await client
+          .from("props")
+          .update({ status: "failed", error: message.slice(0, 300), updated_at: new Date().toISOString() })
+          .eq("id", row.id);
+        throw error;
+      }
+      break;
+    }
     case "attach_cover":
       result = await engine.attachSeriesCover({
         owner_id,

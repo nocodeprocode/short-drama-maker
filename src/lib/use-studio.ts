@@ -2,7 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { readCache, writeCache } from "./cache.ts";
 import { currentSession, getAccessToken, refreshSession, supabaseBrowser } from "./session.ts";
 
-const LIVE_TABLES = ["productions", "engine_tasks", "assets", "characters", "episodes", "shots", "series"] as const;
+const LIVE_TABLES = [
+  "productions",
+  "engine_tasks",
+  "assets",
+  "characters",
+  "episodes",
+  "shots",
+  "series",
+  "actors",
+  "series_cast",
+  "series_locations",
+  "series_props",
+  "locations",
+  "props",
+] as const;
 
 export function useSessionReady() {
   const [ready, setReady] = useState(() => Boolean(getAccessToken()));

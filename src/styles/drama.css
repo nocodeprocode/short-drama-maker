@@ -121,6 +121,97 @@
   height: 100%;
   background: var(--color-brand-500);
 }
+
+/*
+ * A plate with work in flight. Generation takes minutes, so a still placeholder
+ * with a "Building" label reads as a stalled screen: everything below is the
+ * difference between "this app is thinking" and "this app is broken".
+ */
+/*
+ * A light sweep over the whole plate. Sits above the bottom scrim (z 3) and under
+ * the chip and title (z 4, later in box order), so nothing is obscured. Rooms and
+ * objects have no silhouette to breathe, and this is their only body motion.
+ */
+.poster.is-working::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 34%,
+    rgba(255, 255, 255, 0.11) 50%,
+    rgba(255, 255, 255, 0) 66%
+  );
+  background-size: 260% 100%;
+  animation: ds-sweep 1.8s linear infinite;
+}
+@keyframes ds-sweep {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -150% 0;
+  }
+}
+
+.poster.is-working .head-s,
+.poster.is-working .body-s {
+  animation: ds-breathe 2.4s ease-in-out infinite;
+}
+@keyframes ds-breathe {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* No step finished yet: a travelling bar, because 0% of a known total still looks frozen. */
+.poster .pbar.is-indeterminate {
+  overflow: hidden;
+}
+.poster .pbar.is-indeterminate i {
+  width: 38%;
+  animation: ds-travel 1.5s ease-in-out infinite;
+}
+@keyframes ds-travel {
+  0% {
+    transform: translateX(-105%);
+  }
+  100% {
+    transform: translateX(268%);
+  }
+}
+
+/* A step landed. The fill holds its width and keeps moving inside it. */
+.poster .pbar.is-working i {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 20%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0) 80%
+  );
+  background-size: 220% 100%;
+  animation: ds-shimmer 1.3s linear infinite;
+  transition: width 400ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* A live dot on the label, so the state is legible without reading the bar. */
+.poster .pchip.is-working::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 5px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ds-pulse 1.1s ease-in-out infinite;
+}
 .g1 { background: linear-gradient(155deg, #4e7ba6, #22344d 45%, #0e1622); }
 .g2 { background: linear-gradient(155deg, #b0526f, #5a1e38 45%, #200a16); }
 .g3 { background: linear-gradient(155deg, #c9924e, #6b4520 45%, #241505); }
@@ -207,8 +298,19 @@
 @media (prefers-reduced-motion: reduce) {
   .shotgrid i.gen,
   .epstrip .gen,
-  .ds-skeleton {
+  .ds-skeleton,
+  .poster.is-working::before,
+  .poster.is-working .head-s,
+  .poster.is-working .body-s,
+  .poster .pbar.is-working i,
+  .poster .pchip.is-working::before {
     animation: none;
+  }
+  /* Still say something is happening: park the travelling bar at a visible width. */
+  .poster .pbar.is-indeterminate i {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
   }
 }
 

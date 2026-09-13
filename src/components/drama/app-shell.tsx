@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePageContext } from "vike-react/usePageContext";
-import { FilmStrip, House, Plus, Queue, Users, WarningCircle } from "@phosphor-icons/react";
+import { FilmStrip, House, MapPin, Package, Plus, Queue, Users, WarningCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { AttentionBell, AttentionPanel } from "@/components/drama/attention-panel.tsx";
 import { BrandMark } from "@/components/drama/brand-mark.tsx";
@@ -18,6 +18,8 @@ const NAV = [
   { href: "/productions", label: "Jobs", icon: Queue },
   { href: "/needs", label: "Needs you", icon: WarningCircle },
   { href: "/actors", label: "Actors", icon: Users },
+  { href: "/places", label: "Places", icon: MapPin },
+  { href: "/objects", label: "Objects", icon: Package },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

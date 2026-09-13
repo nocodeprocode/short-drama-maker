@@ -103,6 +103,11 @@ function ActorCard({ actor, onChanged }: { actor: Actor; onChanged: () => void }
   const [tags, setTags] = useState(actor.tags.join(", "));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const building = actor.status === "running" || actor.status === "queued";
+  // Undefined until a still lands: a bar parked at zero reads as stuck.
+  const done = actor.progress?.done ?? 0;
+  const total = actor.progress?.total ?? 0;
+  const packProgress = total && done > 0 ? Math.round((Math.min(done, total) / total) * 100) : undefined;
 
   async function save() {
     setBusy(true);
@@ -141,8 +146,18 @@ function ActorCard({ actor, onChanged }: { actor: Actor; onChanged: () => void }
         <Poster
           src={actor.still_url}
           title={actor.still_url ? undefined : actor.name}
-          chip={actor.still_url ? undefined : "Casting"}
+          chip={
+            building
+              ? `Building · ${actor.progress?.done ?? 0}/${actor.progress?.total ?? 4}`
+              : actor.status === "failed"
+                ? "Needs attention"
+                : actor.still_url
+                  ? undefined
+                  : "Casting"
+          }
           ratio="34"
+          working={building && !actor.still_url}
+          progress={building && !actor.still_url ? packProgress : undefined}
         />
       </a>
       <div className="p-4">

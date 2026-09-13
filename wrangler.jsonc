@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "drama-space-staging",
+  "account_id": "8f525ba2728395965393892e024556ab",
   "main": "vike:server-entry",
   "compatibility_date": "2026-08-30",
   "compatibility_flags": ["nodejs_compat"],

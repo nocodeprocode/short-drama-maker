@@ -169,16 +169,94 @@ export const studio = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateActor: (id: string, body: { name?: string; tags?: string[]; notes?: string }) =>
-    api<Actor>(`/actors/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  updateActor: (
+    id: string,
+    body: {
+      name?: string;
+      tags?: string[];
+      notes?: string;
+      description?: string;
+      default_wardrobe?: string;
+      identity_fidelity?: "faithful" | "idealized";
+    },
+  ) => api<Actor>(`/actors/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteActor: (id: string) => api<{ ok: boolean }>(`/actors/${id}`, { method: "DELETE" }),
+  regenerateActor: (id: string, body: { kinds?: string[]; series_id?: string } = {}) =>
+    api<Actor>(`/actors/${id}/regenerate`, { method: "POST", body: JSON.stringify(body) }),
+  replaceActorPhoto: (
+    id: string,
+    body: { seed_base64: string; seed_mime_type?: string; likeness_confirmed: boolean; series_id?: string },
+  ) => api<Actor>(`/actors/${id}/photo`, { method: "POST", body: JSON.stringify(body) }),
   seriesCast: (id: string) => api<CastSheet>(`/series/${id}/cast`),
+  seriesDesign: (id: string) => api<DesignSheet>(`/series/${id}/design`),
+  addLocation: (seriesId: string, body: { name: string; note?: string }) =>
+    api<DesignLocation>(`/series/${seriesId}/locations`, { method: "POST", body: JSON.stringify(body) }),
+  addProp: (seriesId: string, body: { name: string; note?: string }) =>
+    api<DesignProp>(`/series/${seriesId}/props`, { method: "POST", body: JSON.stringify(body) }),
+  renameDesign: (seriesId: string, bucket: "locations" | "props", id: string, body: { name?: string; note?: string }) =>
+    api<DesignLocation | DesignProp>(`/series/${seriesId}/${bucket}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removeDesign: (seriesId: string, bucket: "locations" | "props", id: string) =>
+    api<{ ok: boolean }>(`/series/${seriesId}/${bucket}/${id}`, { method: "DELETE" }),
+  buildDesign: (seriesId: string, bucket: "locations" | "props", id: string, body: { force?: boolean } = {}) =>
+    api<{ task_id: string; status: string }>(`/series/${seriesId}/${bucket}/${id}/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  buildMissingDesign: (seriesId: string, bucket: "locations" | "props") =>
+    api<{ queued: number }>(`/series/${seriesId}/${bucket}/generate`, { method: "POST", body: "{}" }),
+  /** Point one of a show's rooms or objects at something already in the library. */
+  useLibraryEntry: (seriesId: string, bucket: "locations" | "props", rowId: string, entryId: string) =>
+    api<{ ok: boolean }>(`/series/${seriesId}/${bucket}/${rowId}/use`, {
+      method: "POST",
+      body: JSON.stringify({ entry_id: entryId }),
+    }),
+  seriesReadiness: (id: string) => api<Readiness>(`/series/${id}/readiness`),
+  /** A show before it is paid for. The run is bought later, from the show page. */
+  createDraft: (body: {
+    title: string;
+    description: string;
+    sku?: number;
+    episode_length?: string;
+    video_tier?: string;
+    series_id?: string;
+    script_text?: string;
+  }) => api<{ id: string; title: string }>("/series", { method: "POST", body: JSON.stringify(body) }),
+
+  places: () => api<{ items: PlaceEntry[]; tags: string[] }>("/places"),
+  place: (id: string) => api<PlaceEntry>(`/places/${id}`),
+  createPlace: (body: { name: string; notes?: string; tags?: string[]; image_base64?: string; image_mime_type?: string }) =>
+    api<PlaceEntry>("/places", { method: "POST", body: JSON.stringify(body) }),
+  updatePlace: (id: string, body: { name?: string; notes?: string; tags?: string[] }) =>
+    api<PlaceEntry>(`/places/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deletePlace: (id: string) => api<{ ok: boolean }>(`/places/${id}`, { method: "DELETE" }),
+  buildPlace: (id: string) => api<PlaceEntry>(`/places/${id}/generate`, { method: "POST", body: "{}" }),
+  uploadPlaceImage: (id: string, body: { image_base64: string; image_mime_type?: string }) =>
+    api<PlaceEntry>(`/places/${id}/image`, { method: "POST", body: JSON.stringify(body) }),
+
+  objects: () => api<{ items: ObjectEntry[]; tags: string[] }>("/objects"),
+  object: (id: string) => api<ObjectEntry>(`/objects/${id}`),
+  createObject: (body: { name: string; notes?: string; tags?: string[]; image_base64?: string; image_mime_type?: string }) =>
+    api<ObjectEntry>("/objects", { method: "POST", body: JSON.stringify(body) }),
+  updateObject: (id: string, body: { name?: string; notes?: string; tags?: string[]; state?: string }) =>
+    api<ObjectEntry>(`/objects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteObject: (id: string) => api<{ ok: boolean }>(`/objects/${id}`, { method: "DELETE" }),
+  buildObject: (id: string) => api<ObjectEntry>(`/objects/${id}/generate`, { method: "POST", body: "{}" }),
+  uploadObjectImage: (id: string, body: { image_base64: string; image_mime_type?: string }) =>
+    api<ObjectEntry>(`/objects/${id}/image`, { method: "POST", body: JSON.stringify(body) }),
   castRole: (
     seriesId: string,
-    body: { role_name: string; actor_id?: string | null; role_note?: string; character_id?: string },
+    body: { slot_id?: string; role_name?: string; actor_id?: string | null; role_note?: string; character_id?: string },
   ) => api<CastSlot>(`/series/${seriesId}/cast`, { method: "POST", body: JSON.stringify(body) }),
   uncastRole: (seriesId: string, slotId: string) =>
     api<{ ok: boolean }>(`/series/${seriesId}/cast/${slotId}`, { method: "DELETE" }),
+  generateCast: (seriesId: string, body: { slot_ids?: string[] } = {}) =>
+    api<{ generated: number; naming?: boolean; items: CastSlot[] }>(`/series/${seriesId}/cast/generate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   attention: () => api<{ items: AttentionItem[]; activity: AttentionActivity[] }>("/attention"),
 };
 
@@ -306,18 +384,28 @@ export type Character = {
   series_title?: string;
 };
 
+export type ActorStatus = "idle" | "queued" | "running" | "failed" | "ready";
+
 export type Actor = {
   id: string;
   name: string;
   source: "generated" | "likeness";
   tags: string[];
   notes: string;
+  description?: string;
+  default_wardrobe?: string;
+  identity_fidelity?: "faithful" | "idealized";
+  judge_notes?: string | null;
+  seed_url?: string | null;
   still_url: string | null;
   refs: CharacterRef[];
   /** Titles this face has already played in. */
   shows: string[];
   /** False while the face pack is still being generated. */
   ready: boolean;
+  status?: ActorStatus;
+  error?: string | null;
+  progress?: { done: number; total: number };
   created_at: string;
 };
 
@@ -325,12 +413,25 @@ export type Actor = {
 export type CastSlot = {
   id: string;
   series_id: string;
-  role_name: string;
+  role_name: string | null;
+  display_name: string;
   role_note: string;
+  job: "engine" | "wall" | "witness" | "nuke" | null;
+  job_label: string | null;
+  archetype: string;
+  importance: "lead" | "supporting" | "background";
+  castable: boolean;
+  named: boolean;
+  suggested_name: string | null;
+  suggested_gender: "woman" | "man" | null;
+  origin: "slate" | "buyer";
   actor_id: string | null;
   actor_name: string | null;
   actor_source: "generated" | "likeness" | null;
   actor_still_url: string | null;
+  actor_status?: ActorStatus | null;
+  actor_error?: string | null;
+  actor_progress?: { done: number; total: number } | null;
   character_id: string | null;
   character_still_url: string | null;
   locked: boolean;
@@ -346,6 +447,111 @@ export type CastSheet = {
   /** Written roles with no cast slot yet. */
   unclaimed: Character[];
   roster: Actor[];
+  slate_ready?: boolean;
+  naming?: boolean;
+  story_written: boolean;
+};
+
+export type DesignStatus = "planned" | "building" | "ready" | "failed";
+
+/** A room we shoot in. Its plate is the only legal version of that room. */
+export type DesignLocation = {
+  id: string;
+  series_id: string;
+  name: string;
+  note: string;
+  origin: "slate" | "buyer" | "story";
+  position: number;
+  plate_url: string | null;
+  /** Lighting note from the plate; every close-up in this room carries it. */
+  lighting_lock: string | null;
+  /** Reverse and side views of the same set, built when a cut needs them. */
+  angles: Array<{ angle: string; url: string }>;
+  status: DesignStatus;
+  locked: boolean;
+  error: string | null;
+};
+
+/** An object the plot turns on, shot alone so it stays the same object. */
+export type DesignProp = {
+  id: string;
+  series_id: string;
+  name: string;
+  note: string;
+  origin: "slate" | "buyer" | "story" | "cast_device";
+  position: number;
+  still_url: string | null;
+  kind: string | null;
+  state: string | null;
+  status: DesignStatus;
+  locked: boolean;
+  error: string | null;
+  cast_slot_id: string | null;
+};
+
+/**
+ * The owner's catalog of places and objects, reusable across shows the way a
+ * face is. A show's own row points at one of these once it is used.
+ */
+export type PlaceEntry = {
+  id: string;
+  name: string;
+  source: "generated" | "upload";
+  notes: string;
+  tags: string[];
+  image_url: string | null;
+  /** The buyer's original upload, if they brought their own picture. */
+  seed_url: string | null;
+  lighting_lock: string | null;
+  status: DesignStatus;
+  error: string | null;
+  /** Titles already shooting here, so a used entry is not deleted by accident. */
+  shows: string[];
+  ready: boolean;
+  created_at: string;
+};
+
+export type ObjectEntry = {
+  id: string;
+  name: string;
+  source: "generated" | "upload";
+  notes: string;
+  tags: string[];
+  image_url: string | null;
+  seed_url: string | null;
+  kind: string | null;
+  state: string | null;
+  status: DesignStatus;
+  error: string | null;
+  shows: string[];
+  ready: boolean;
+  created_at: string;
+};
+
+/** How much of one group of things exists, and what is still missing. */
+export type ReadyGroup = { done: number; total: number; missing: string[] };
+
+/**
+ * What has to exist before a show can be shot. The server decides this; the
+ * start button only reflects it.
+ */
+export type Readiness = {
+  series_id: string;
+  story_written: boolean;
+  cast: ReadyGroup;
+  places: ReadyGroup;
+  objects: ReadyGroup;
+  /** Parts with no name or gender yet, so no face can be generated for them. */
+  unnamed: number;
+  can_start: boolean;
+  blocking: string[];
+};
+
+export type DesignSheet = {
+  series_id: string;
+  series_title: string;
+  locations: DesignLocation[];
+  props: DesignProp[];
   story_written: boolean;
 };
 

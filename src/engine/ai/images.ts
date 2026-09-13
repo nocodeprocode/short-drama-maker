@@ -146,16 +146,23 @@ export function createOpenRouterImages(): ImageEngine {
           { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
         );
       }
-      const tight = input.kind === "cu" || input.kind === "front" || input.kind === "three_quarter";
+      const tight =
+        input.kind === "cu" ||
+        input.kind === "front" ||
+        input.kind === "three_quarter" ||
+        input.kind === "profile";
+      const likeness = input.mode === "likeness";
       return requestImage(
         [
           tight
             ? "Same person as the reference photo. Tight vertical 9:16 HEAD-AND-SHOULDERS close-up. Face fills the frame. Cropped at the chest. NOT full body. NOT a second person."
             : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
-          "Keep the same strikingly beautiful adult face. Flattering, camera-ready, catchlight in the eyes.",
+          likeness
+            ? "IDENTITY LOCK: keep the exact face, bone structure, hair, age, skin tone, and identifying marks from the reference photo. Do not restyle into a different person. Retouch skin and groom the hair. Studio key light with a catchlight, cinematic grade, neutral seamless background. A professional short-drama still of this same adult."
+            : "Keep the same strikingly beautiful adult face. Flattering, camera-ready, catchlight in the eyes.",
           HUMAN_EYE_CLAUSE,
-          input.replaceWardrobe
-            ? `Same face, hair, age, and identifying marks as the reference. REPLACE the clothing. New wardrobe only: ${input.replaceWardrobe}. Do not copy sheer, thin, or see-through fabric. No undergarment line.`
+          input.replaceWardrobe || likeness
+            ? `Same face, hair, age, and identifying marks as the reference. REPLACE the clothing. New wardrobe only: ${input.replaceWardrobe ?? "contemporary modest clothes: a closed jacket over a buttoned shirt, opaque cloth to the throat"}. Do not copy sheer, thin, or see-through fabric. No undergarment line.`
             : "Keep the same face, hair, age, and wardrobe as the reference photo. No costume change.",
           `Character: ${input.characterName}.`,
           input.description,
