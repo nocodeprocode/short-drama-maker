@@ -150,13 +150,15 @@ type ChatResponse = {
   usage?: { cost?: number; prompt_tokens?: number; completion_tokens?: number };
 };
 
-const RUBRIC = `You are a continuity supervisor checking generated footage against a locked cast reference.
+export const IDENTITY_RUBRIC = `You are a continuity supervisor checking generated footage against a locked cast reference.
 Answer only with JSON: {"face_count": <integer>, "same_person": <0..1 number>, "notes": "<one sentence>"}.
 Rules:
 - face_count is the maximum number of distinct human faces or bodies visible in any of the sampled frames. Count partial bodies, silhouettes, and reflections that read as a person.
-- same_person compares the main pictured face to the reference: 1.0 = same individual (bone structure, eyes, nose, distinguishing marks). 0.5 = could be, uncertain. 0.0 = a different person. Ignore lighting, camera angle, expression, and small wardrobe changes; do not ignore a different face shape, missing scar, different hair color, or different age.
+- same_person compares the main pictured face to the reference: 1.0 = same individual (bone structure, eyes, nose, distinguishing marks). 0.5 = could be, uncertain. 0.0 = a different person. If race, skin tone, or hair family changed versus the reference still, same_person is 0. Ignore lighting, camera angle, expression, and small wardrobe changes; do not ignore a different face shape, missing scar, different hair color, different age, or a race/skin recast.
 - If there is no reference, set same_person to 1.0 and judge only face_count.
 - Never explain outside the JSON.`;
+
+const RUBRIC = IDENTITY_RUBRIC;
 
 function dataUrl(bytes: Uint8Array, mime?: string): string {
   return imageDataUrl(bytes, mime);

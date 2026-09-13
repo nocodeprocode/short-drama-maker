@@ -95,7 +95,7 @@ export function ShotThumb({
       onClick={onClick}
       className={cx(
         "w-[74px] shrink-0 rounded-xl border bg-primary p-1",
-        selected ? "border-brand-600 ring-4 ring-brand-100" : "border-secondary",
+        selected ? "border-brand ring-4 ring-brand" : "border-secondary",
       )}
     >
       <div className="relative aspect-[9/16] overflow-hidden rounded-lg bg-black">

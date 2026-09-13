@@ -25,6 +25,14 @@ export function extForMime(mime: string): string {
       return "mp4";
     case "image/png":
       return "png";
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "text/plain":
+      return "txt";
+    case "text/vtt":
+      return "vtt";
     default:
       return "bin";
   }

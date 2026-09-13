@@ -44,21 +44,55 @@ export async function signActorPacks(supabase: Service, actors: Array<Record<str
   return signed;
 }
 
-export function presentActor(row: Record<string, unknown>, signed: Map<string, { url: string; label: string }>) {
+export function presentActor(
+  row: Record<string, unknown>,
+  signed: Map<string, { url: string; label: string }>,
+  extras: { shows?: string[] } = {},
+) {
   const refs = stillRefEntries({
     visual_reference_asset_ids: row.visual_reference_asset_ids as Record<string, unknown>,
   }).flatMap((item) => {
     const media = signed.get(item.id);
     return media ? [{ kind: item.kind, url: media.url, label: stillKindLabel(item.kind) }] : [];
   });
+  const profile = (row.appearance_profile ?? {}) as Record<string, unknown>;
   return {
     id: row.id,
     name: row.name,
     source: row.source,
+    tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
+    notes: String(row.notes ?? profile.description ?? ""),
     still_url: refs[0]?.url ?? null,
     refs,
+    /** Titles this face has already played in, for sequels and spin-offs. */
+    shows: extras.shows ?? [],
+    ready: refs.length > 0,
     created_at: row.created_at,
   };
+}
+
+/** Show titles each actor has a role in, keyed by actor id. */
+export async function actorShowTitles(supabase: Service, actorIds: string[]) {
+  if (!actorIds.length) return new Map<string, string[]>();
+  const { data: roles } = await supabase
+    .from("characters")
+    .select("actor_id, series_id")
+    .in("actor_id", actorIds);
+  const seriesIds = [...new Set((roles ?? []).map((row) => String(row.series_id)))];
+  const { data: seriesRows } = seriesIds.length
+    ? await supabase.from("series").select("id, title").in("id", seriesIds)
+    : { data: [] };
+  const titles = new Map((seriesRows ?? []).map((row) => [String(row.id), String(row.title)]));
+  const byActor = new Map<string, string[]>();
+  for (const row of roles ?? []) {
+    const actorId = String(row.actor_id);
+    const title = titles.get(String(row.series_id));
+    if (!title) continue;
+    const list = byActor.get(actorId) ?? [];
+    if (!list.includes(title)) list.push(title);
+    byActor.set(actorId, list);
+  }
+  return byActor;
 }
 
 export async function firstOwnedSeriesId(supabase: Service, ownerId: string, isAdmin: boolean) {

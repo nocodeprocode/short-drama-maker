@@ -19,18 +19,32 @@ export function propKey(kind: PropKind): string {
  * the wet ground"). The fixed kinds above are only a cache for the commonest
  * objects; this is what makes the prop bible work for any script.
  */
-export function propFromLockText(prop?: string | null): { key: string; name: string; prompt: string } | null {
-  const text = (prop ?? "")
+export function propFromLockText(prop?: string | null): {
+  key: string;
+  name: string;
+  prompt: string;
+  state: string | null;
+  seedKey: string | null;
+} | null {
+  const raw = (prop ?? "").trim();
+  const state = /STATE\s+(sealed|broken|open|closed|face-down)\b/i.exec(raw)?.[1]?.toLowerCase() ?? null;
+  const text = raw
     .replace(/^the same\s+/i, "")
+    .replace(/\s+STATE\s+\S+:.*$/i, "")
     .replace(/\s+(on|in|at|between|beside|under)\s+.*$/i, "")
     .replace(/[.]+$/, "")
     .trim();
-  if (!text || /\b(object|prop)\b/i.test(text) && text.split(/\s+/).length <= 3) return null;
+  if (!text || (/\b(object|prop)\b/i.test(text) && text.split(/\s+/).length <= 3)) return null;
   const name = text.toLowerCase();
+  const slug = name.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const key = state ? `prop:text:${slug}:${state}` : `prop:text:${slug}`;
+  const seedState = state && state !== "sealed" && state !== "closed" ? "sealed" : null;
   return {
-    key: `prop:text:${name.replace(/[^a-z0-9]+/g, "-")}`,
+    key,
     name,
-    prompt: `${text}, alone on a plain dark surface, object only, no people, no hands, no brand, no readable text, no logo, cinematic still`,
+    state,
+    seedKey: seedState ? `prop:text:${slug}:${seedState}` : null,
+    prompt: `${text}${state ? `, ${state} state` : ""}, alone on a plain dark surface, object only, no people, no hands, no brand, no readable text, no logo, cinematic still`,
   };
 }
 

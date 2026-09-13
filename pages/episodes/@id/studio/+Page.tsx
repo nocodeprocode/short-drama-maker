@@ -225,24 +225,14 @@ export default function Page() {
               {shooting ? "Shooting" : silent ? "Silent beat" : statusLabel(shot?.status)}
             </Badge>
           </div>
-          <label className="mb-1.5 block text-sm font-semibold">{silent ? "Beat" : "Dialogue"}</label>
-          <textarea
-            className="mb-4 min-h-20 w-full rounded-lg border border-primary p-3 text-sm"
-            readOnly
-            value={silent ? "Silent beat. No spoken line in this shot." : shotLine(shot!)}
-          />
-          <label className="mb-1.5 block text-sm font-semibold">Performance</label>
-          <input
-            className="mb-4 w-full rounded-lg border border-primary px-3 py-2.5 text-sm"
-            readOnly
-            value={String(shot?.shot_data.emotion ?? "")}
-          />
-          <label className="mb-1.5 block text-sm font-semibold">Action</label>
-          <textarea
-            className="mb-5 min-h-24 w-full rounded-lg border border-primary p-3 text-sm"
-            readOnly
-            value={String(shot?.shot_data.camera ?? "")}
-          />
+          <dl className="mb-5 flex flex-col gap-4">
+            <ShotFact
+              label={silent ? "Beat" : "Dialogue"}
+              value={silent ? "Silent beat. No spoken line in this shot." : shotLine(shot!)}
+            />
+            <ShotFact label="Performance" value={String(shot?.shot_data.emotion ?? "")} />
+            <ShotFact label="Action" value={String(shot?.shot_data.camera ?? "")} />
+          </dl>
           {shot && (shot.status === "needs_review" || shot.status === "complete") ? (
             <div className="flex flex-wrap gap-2">
               {shot.selected_generation_id ? (
@@ -281,6 +271,16 @@ export default function Page() {
           {notice ? <p className="mt-3 text-xs text-tertiary">{notice}</p> : null}
         </aside>
       </div>
+    </div>
+  );
+}
+
+/** Read-only shot metadata. These were disabled form fields, which invited edits that never saved. */
+function ShotFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-sm font-medium text-tertiary">{label}</dt>
+      <dd className="mt-1 text-sm leading-relaxed text-primary">{value.trim() || "—"}</dd>
     </div>
   );
 }

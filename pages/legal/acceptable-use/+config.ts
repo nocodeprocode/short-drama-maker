@@ -1,3 +1,3 @@
 export default {
-  title: "Acceptable Use — Short Drama Maker",
+  title: "Acceptable Use — Takehaus",
 };

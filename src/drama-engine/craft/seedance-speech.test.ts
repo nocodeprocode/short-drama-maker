@@ -9,6 +9,12 @@ describe("Seedance speech", () => {
     });
     expect(text).toMatch(/\{I can't go there\.\}/);
     expect(text).toMatch(/\{You're burning up\.\}/);
+    const run = seedanceSpeech(["NYLA: I opened your envelope.", "NYLA: It was already cracked, so don't start."], {
+      left: "NYLA",
+      right: "ROMAN",
+    });
+    expect(run).toMatch(/\{I opened your envelope — It was already cracked, so don't start\.\}/);
+    expect(run.replace(/\{braces\}/g, "").match(/\{/g)?.length).toBe(1);
     expect(text).toMatch(/camera-left/);
     expect(text).toMatch(/Never speak a character name/);
     expect(text).not.toMatch(/ELENA:/);
@@ -19,6 +25,7 @@ describe("Seedance speech", () => {
       camera_right: "ALYSSA",
     });
     expect(block).toMatch(/Native speech/);
+    expect(block).toMatch(/SAME BREATH/);
     expect(block).not.toMatch(/^ELENA:/m);
     expect(campWhoosh("almost smiles")).toMatch(/whoosh/);
     expect(campWhoosh("voice breaks")).toBe("");

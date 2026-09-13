@@ -6,6 +6,7 @@ import type {
   RouteDecision,
   Shot,
   VideoRoute,
+  VideoTier,
 } from "../domain.ts";
 import type { AIRouter } from "./types.ts";
 import { assertStandardOnly } from "./privacy.ts";
@@ -42,7 +43,16 @@ function isAction(shot: Shot): boolean {
   return shot.shot_data.function === "slap_peak" || /\b(slap|punch|shove)\b/i.test(shot.shot_data.camera);
 }
 
-export function failoverRoute(_shot: Shot, current: VideoRoute): VideoRoute {
+const CATALOG_FAILOVER: VideoRoute = {
+  ...VIDEO_ROUTES.economy_default,
+  model: "bytedance/seedance-2.0",
+};
+
+export function failoverRoute(_shot: Shot, current: VideoRoute, videoTier: VideoTier = "pro"): VideoRoute {
+  if (videoTier === "catalog") {
+    if (current.model === "bytedance/seedance-2.0-mini") return CATALOG_FAILOVER;
+    return VIDEO_ROUTES.economy_default;
+  }
   if (current.model === "alibaba/wan-3.0") return VIDEO_ROUTES.economy_default;
   if (current.model === "bytedance/seedance-2.5") return VIDEO_ROUTES.economy_default;
   if (current.model === "bytedance/seedance-2.0-mini") return VIDEO_ROUTES.dialogue_default;
@@ -74,11 +84,15 @@ function identityCuDecision(duration: number): RouteDecision | null {
 }
 
 export const router: AIRouter = {
-  selectVideoRoute(shot: Shot, privacy: PrivacyProfile, quality: QualityProfile) {
+  selectVideoRoute(shot: Shot, privacy: PrivacyProfile, quality: QualityProfile, videoTier: VideoTier = "pro") {
     assertStandardOnly(privacy);
     const raw = shot.shot_data.duration_seconds ?? shot.shot_data.duration_hint_seconds;
-    const seedance = VIDEO_ROUTES.dialogue_default;
+    const seedance = videoTier === "catalog" ? VIDEO_ROUTES.economy_default : VIDEO_ROUTES.dialogue_default;
     const duration = Math.min(seedance.max_duration_seconds, Math.max(raw, seedance.min_duration_seconds));
+
+    if (videoTier === "catalog") {
+      return pick("economy_default", duration, "catalog picture — Seedance 2.0 mini");
+    }
 
     if (isSceneTake(shot.shot_data)) {
       return pick("hero", duration, "continuous scene take — Seedance 2.5");

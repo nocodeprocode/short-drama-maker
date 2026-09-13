@@ -17,6 +17,11 @@ import type {
 export type StoryAnalysisInput = {
   title: string;
   idea: string;
+  /**
+   * Roles the buyer cast before the story was written. The bible must use these
+   * names verbatim so their chosen faces land on the parts they paid for.
+   */
+  required_cast?: ReadonlyArray<{ name: string; note?: string }>;
 };
 
 export type DialogueLine = {
@@ -30,6 +35,15 @@ export type DialogueLine = {
 
 export interface LLMEngine {
   analyzeStory(input: StoryAnalysisInput): Promise<StoryBible>;
+  /**
+   * Splits a screenplay the buyer uploaded into exactly `episodeCount` ordered
+   * episodes, keeping their scenes and dialogue instead of inventing new ones.
+   */
+  segmentScript?(input: {
+    bible: StoryBible;
+    script: string;
+    episodeCount: number;
+  }): Promise<StoryBible["episode_structure"]>;
   writeEpisode(input: {
     bible: StoryBible;
     episodeNumber: number;
@@ -152,6 +166,7 @@ export interface AIRouter {
     shot: Shot,
     privacy: PrivacyProfile,
     quality: QualityProfile,
+    videoTier?: import("../domain.ts").VideoTier,
   ): import("../domain.ts").RouteDecision;
 }
 

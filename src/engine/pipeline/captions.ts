@@ -1,5 +1,5 @@
 import type { AlignmentTrack } from "../domain.ts";
-import { CAPTION_STYLE, prefixSpeakerCaption, speakerCaptionColor } from "../../drama-engine/types/audio.ts";
+import { CAPTION_STYLE, captionSpokenText, speakerCaptionColor } from "../../drama-engine/types/audio.ts";
 import { cueRows, cueText } from "../../drama-engine/types/continuity.ts";
 
 export type CaptionCue = {
@@ -84,6 +84,44 @@ function mergeShortCaptionTails(cues: CaptionCue[]): CaptionCue[] {
   return out;
 }
 
+/**
+ * The outgoing caption ends a hair before the next one starts.
+ *
+ * ffmpeg's `enable=between()` is inclusive, so the two ranges must not touch or
+ * both plates draw on the shared frame. Anything wider than this — even a
+ * single nominal frame — leaves a blank frame at the join, because the encoded
+ * timestamps do not land exactly on the frame grid we would be quantising to.
+ * A tenth of a millisecond cannot contain a frame, so the handover is seamless.
+ */
+export const CAPTION_HANDOVER_EPSILON_SECONDS = 1e-4;
+/** Past this, the silence is the point (a stunned beat) and the caption should clear. */
+export const CAPTION_MAX_HOLD_SECONDS = 2;
+
+/**
+ * Hold each caption until the next one starts.
+ *
+ * Cues are timed off spoken words, so every take ends its last caption on the
+ * last word and the next take starts on its first — leaving a blank across the
+ * cut. On screen the subtitle looks like it blinks out with the picture. A
+ * caption should sit over the cut instead: it stays up until the next line
+ * replaces it, and only clears when the silence is long enough to be a beat.
+ */
+export function holdCaptionsAcrossCuts(
+  cues: readonly CaptionCue[],
+  maxHoldSeconds = CAPTION_MAX_HOLD_SECONDS,
+): CaptionCue[] {
+  const ordered = [...cues].sort((a, b) => a.start - b.start);
+  return ordered.map((cue, index) => {
+    const next = ordered[index + 1];
+    if (!next) return { ...cue };
+    const target = next.start - CAPTION_HANDOVER_EPSILON_SECONDS;
+    const gap = next.start - cue.end;
+    if (gap <= 0) return { ...cue, end: Math.max(cue.start + 0.2, target) };
+    if (gap > maxHoldSeconds) return { ...cue };
+    return { ...cue, end: Math.max(cue.end, target) };
+  });
+}
+
 export function offsetCues(cues: readonly CaptionCue[], offsetSeconds: number): CaptionCue[] {
   if (offsetSeconds === 0) return [...cues];
   return cues.map((cue) => ({
@@ -127,7 +165,7 @@ export function captionsFromSceneScript(
       end,
       speaker,
       color: speakerCaptionColor(speaker),
-      text: prefixSpeakerCaption(speaker, wrapCaptionLines(spoken).join("\n")),
+      text: wrapCaptionLines(captionSpokenText(spoken)).join("\n"),
     };
   });
 }
@@ -216,7 +254,7 @@ export function captionsFromAlignedScript(
       end: Math.max(start + 0.2, end) + offsetSeconds,
       speaker,
       color: speakerCaptionColor(speaker),
-      text: prefixSpeakerCaption(speaker, wrapCaptionLines(spoken).join("\n")),
+      text: wrapCaptionLines(captionSpokenText(spoken)).join("\n"),
     };
   });
 }
@@ -246,7 +284,7 @@ export function captionsAlongTimeline(input: {
         ...cue,
         speaker,
         color: speakerCaptionColor(speaker),
-        text: prefixSpeakerCaption(speaker, cue.text),
+        text: captionSpokenText(cue.text),
       }));
       cues.push(...named);
     }

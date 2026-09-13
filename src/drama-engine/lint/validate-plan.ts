@@ -3,10 +3,15 @@ import { isLongFormLength, type EpisodeLength } from "../../engine/config/catalo
 import { lintLongFormEngagement } from "./engagement.ts";
 import { containsEditVerb } from "../editorial/camera-sanitize.ts";
 import { silenceLegal } from "../pacing/reaction-pad.ts";
-import { DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesShareSpokenBeat, wordCount } from "../types/dialogue.ts";
+import { DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesShareSpokenBeat, unseenNamesInScript, wordCount } from "../types/dialogue.ts";
+import { dropInProblems } from "../types/drop-in.ts";
+import { physicsProblems } from "../types/physics.ts";
+import { hasNeonIris, hasPowerCreature, hasPowerTell, whereProblems } from "../types/where.ts";
+import { cutProblems } from "../types/cut.ts";
+import { sceneTakeShotList } from "../craft/shot-list.ts";
 import { isRefusalLoop, talkProblems } from "../types/talk.ts";
 import { channelMix, channelMixOk, channelOf, isLoopOpener, isOneSentence, MICRO_EPISODE } from "../types/micro-drama.ts";
-import { cameraDescribesFace, speakersForSceneTake } from "../craft/prompt-fragments.ts";
+import { cameraDescribesFace, isGenericEthnicity, peopleOnSceneTake, speakersForSceneTake } from "../craft/prompt-fragments.ts";
 import {
   BUTTON_FUNCTIONS,
   HOOK_FUNCTIONS,
@@ -16,8 +21,8 @@ import {
   isWideCoverage,
   type ShotFunction,
 } from "../types/editorial.ts";
-import { LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
-import { cueRows, cueWordCount, splitCueSentences, spokenSeconds } from "../types/continuity.ts";
+import { isSceneTakeLength, LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
+import { cueRows, cueText, cueWordCount, splitCueSentences, spokenSeconds } from "../types/continuity.ts";
 import type { CharacterJob } from "../types/genre.ts";
 import { qc, type DramaLintResult, type QcReport } from "../types/qc-drama.ts";
 import type { EpisodeKind } from "../types/story.ts";
@@ -137,6 +142,7 @@ function lintHandbookGrammar(input: {
   shots: ReturnType<typeof shotsOf>;
   episodeNumber?: number;
   bible?: import("../../engine/domain.ts").StoryBible | null;
+  namedCast?: string[];
 }): QcReport[] {
   const reports: QcReport[] = [];
   const shots = input.shots;
@@ -165,6 +171,25 @@ function lintHandbookGrammar(input: {
       copiedTakes.length === 0,
       copiedTakes.length ? `takes ${copiedTakes.join(", ")} copy the same spoken beat` : "each take is a new beat",
       "each scene take speaks a new beat; never generate the same script twice",
+      "block",
+    ),
+  );
+
+  const echoes: string[] = [];
+  for (let index = 1; index < shots.length; index += 1) {
+    const prev = shots[index - 1]!;
+    const shot = shots[index]!;
+    if (!isSceneTake(prev) || !isSceneTake(shot)) continue;
+    const last = cueText(cueRows(prev.scene_script).at(-1) ?? "");
+    const first = cueText(cueRows(shot.scene_script)[0] ?? "");
+    if (last && first && dialogueTooClose(last, first)) echoes.push(`${index}–${index + 1}`);
+  }
+  reports.push(
+    qc(
+      "BOUNDARY_ECHO",
+      echoes.length === 0,
+      echoes.length ? `takes ${echoes.join(", ")} open on the previous last line` : "no seam echo",
+      "take N must not start on take N-1's last spoken line",
       "block",
     ),
   );
@@ -201,6 +226,40 @@ function lintHandbookGrammar(input: {
     ];
     reports.push(qc("LEADS_MEET", leads.length >= 2, leads.join("/") || "one face", "both leads meet in episode 1", "block"));
   }
+
+  const roster = (input.namedCast?.length ? input.namedCast : input.bible?.characters.map((row) => row.name) ?? []).filter(Boolean);
+  const named = [...new Set(roster)];
+  const met: string[] = [];
+  const unseen: string[] = [];
+  for (const shot of shots) {
+    if (!isSceneTake(shot)) continue;
+    const onCamera = peopleOnSceneTake({
+      sceneScript: shot.scene_script,
+      speaker: shot.speaker,
+      speakerOnCamera: shot.speaker_on_camera,
+      blocking: shot.blocking,
+    });
+    const hits = unseenNamesInScript({
+      script: shot.scene_script,
+      onCamera,
+      metThisEpisode: met,
+      namedCast: named,
+    });
+    for (const hit of hits) unseen.push(`${hit.name} ("${hit.line}")`);
+    for (const name of onCamera) {
+      const token = name.trim().split(/\s+/)[0] ?? "";
+      if (token && !met.some((row) => row.toLowerCase() === token.toLowerCase())) met.push(token);
+    }
+  }
+  reports.push(
+    qc(
+      "UNSEEN_NAME",
+      unseen.length === 0,
+      unseen.length ? unseen.slice(0, 3).join("; ") : "every spoken name is on camera or identified",
+      "do not name someone the viewer has not met on camera this episode unless the same line identifies them by role",
+      "block",
+    ),
+  );
   const core = input.bible?.logline?.trim() || input.plan.conflict?.trim() || input.plan.hook?.trim();
   reports.push(qc("CORE_EXPECTATION", Boolean(core), core ? "stated" : "missing", "one-sentence core expectation", "warn"));
 
@@ -255,7 +314,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   const cast = castSet(input);
 
   const shortSku = budget.target_episode_seconds <= 180;
-  const handbookSku = budget.length === "60_90";
+  const handbookSku = isSceneTakeLength(budget.length);
   const shortDramaSku = handbookSku || budget.length === "30_45";
   const sceneTakeCount = shots.filter((shot) => isSceneTake(shot)).length;
   const longTalk = shots.some((shot) => Boolean(shot.dialogue) && shot.duration_hint_seconds >= 12 && !isSceneTake(shot));
@@ -360,6 +419,87 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
         "block",
       ),
     );
+    const dropHits = dropInProblems({
+      takes: takes.map((shot) => ({
+        script: shot.scene_script,
+        speaker: shot.speaker,
+        speakerOnCamera: shot.speaker_on_camera,
+        blocking: shot.blocking,
+      })),
+    });
+    reports.push(
+      qc(
+        "DROP_IN",
+        dropHits.length === 0,
+        dropHits.length ? dropHits.slice(0, 3).map((hit) => hit.detail).join("; ") : "drop-in viewer can follow this episode",
+        "take 1 is two people in conflict; a new body is identified by role in the same take",
+        "block",
+      ),
+    );
+    const physicsHits = physicsProblems(
+      takes.map((shot) => ({
+        script: shot.scene_script,
+        staging: shot.blocking?.staging,
+        prop: shot.blocking?.prop,
+        present: shot.blocking?.present,
+        enters: shot.blocking?.enters,
+        door_side: shot.blocking?.door_side,
+      })),
+      input.namedCast ?? input.bible?.characters.map((row) => row.name) ?? [],
+    );
+    reports.push(
+      qc(
+        "PHYSICS",
+        physicsHits.length === 0,
+        physicsHits.length ? physicsHits.slice(0, 3).map((hit) => hit.detail).join("; ") : "door, prop state, and presence hold",
+        "door stays on one side; prop state matches the line; nobody is in the room before they enter",
+        "block",
+      ),
+    );
+    const whereHits = whereProblems(
+      takes.map((shot) => ({
+        script: shot.scene_script,
+        camera: shot.camera,
+        emotion: shot.emotion,
+        staging: shot.blocking?.staging,
+      })),
+    );
+    reports.push(
+      qc(
+        "WHERE",
+        whereHits.length === 0,
+        whereHits.length ? whereHits.slice(0, 3).map((hit) => hit.detail).join("; ") : "one power beat, then a real room",
+        "one power beat per episode; the rest is a real room with human eyes",
+        "block",
+      ),
+    );
+    const lists: ReturnType<typeof sceneTakeShotList>[] = [];
+    for (const [index, shot] of takes.entries()) {
+      lists.push(
+        sceneTakeShotList({
+          script: shot.scene_script,
+          duration: shot.duration_hint_seconds ?? 15,
+          blocking: shot.blocking,
+          takeIndex: index,
+          prevLand: lists.at(-1)?.at(-1)?.framing ?? null,
+        }),
+      );
+    }
+    const cutHits = lists.flatMap((list, index) =>
+      cutProblems(
+        list.map((row) => ({ framing: row.framing, on: row.on })),
+        index > 0 ? lists[index - 1]?.at(-1)?.framing : null,
+      ).map((hit) => ({ ...hit, detail: `take ${index + 1}: ${hit.detail}` })),
+    );
+    reports.push(
+      qc(
+        "CUT",
+        cutHits.length === 0,
+        cutHits.length ? cutHits.slice(0, 3).map((hit) => hit.detail).join("; ") : "every cut changes size or subject",
+        "every cut changes size, subject, or goes to an insert — never the same size on the same face",
+        "block",
+      ),
+    );
   }
 
   const faces = input.bible?.characters ?? [];
@@ -371,12 +511,34 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
       if (!face) return false;
       return /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i.test(face);
     });
+    const unlocked = faces.filter((row) => isGenericEthnicity(row.appearance?.ethnicity_notes));
     reports.push(
       qc(
         "CAST_LOOK",
-        plain.length === 0,
-        plain.length ? `${plain.length} face(s) look average or thin` : "faces are specific beauty",
-        "phone-close beauty on every named face",
+        plain.length === 0 && unlocked.length === 0,
+        plain.length || unlocked.length
+          ? `${plain.length} face(s) look average; ${unlocked.length} ethnicity_notes unspecified`
+          : "faces are specific beauty",
+        "phone-close beauty and a locked look (olive / pale-gold / cool brown), never unspecified fictional",
+        "block",
+      ),
+    );
+    // A power written into the locked look is baked into the face still, and the
+    // still is the only legal face — so it glows on every shot of the season.
+    const glowing = faces.filter(
+      (row) =>
+        hasPowerTell(row.appearance?.face) ||
+        hasPowerCreature(row.appearance?.face) ||
+        hasNeonIris(row.appearance?.face),
+    );
+    reports.push(
+      qc(
+        "WHERE",
+        glowing.length === 0,
+        glowing.length
+          ? `${glowing.map((row) => row.name).join(", ")} carry a power look or a jewel iris in appearance.face`
+          : "locked looks are human faces",
+        "appearance.face is a human face with an everyday iris; the power is a scripted beat, never the look",
         "block",
       ),
     );
@@ -593,6 +755,11 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   const ecuOnly =
     spokenFaces.length > 0 &&
     spokenFaces.every((shot) => /\b(extreme close|ecu|neck)\b/i.test(shot.camera));
+  const splitPage = shots.filter((shot) => {
+    const blob = `${shot.camera ?? ""} ${shot.blocking?.staging ?? ""} ${shot.blocking?.start_from ?? ""}`;
+    if (/\b(never|do not|don't|forbidden)\b[^.]*\b(stack|split|half-face|foreground cheek)\b/i.test(blob)) return false;
+    return /\b(stacked faces|split.?screen|split the (?:9:16 |frame|page)|two faces stacked|half-face|foreground cheek|vertical split)\b/i.test(blob);
+  });
   // Two-shots are not required coverage: without a locked group still they
   // invent people. They stay legal only when the plan explicitly asks for one.
   const twoShots = shots.filter((shot) => shot.function === "stacked_two");
@@ -600,10 +767,10 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
     qc(
       "COVERAGE_MIX",
       shots.length === 0 ||
-        (shortDramaSku ? !hasWide && !ecuOnly : hasWide && hasInsert && !ecuOnly),
-      `${hasWide ? "wide" : "no-wide"}/${hasInsert ? "insert" : "no-insert"}${ecuOnly ? "/ecu-only" : ""}`,
+        (shortDramaSku ? !hasWide && !ecuOnly && splitPage.length === 0 : hasWide && hasInsert && !ecuOnly && splitPage.length === 0),
+      `${hasWide ? "wide" : "no-wide"}/${hasInsert ? "insert" : "no-insert"}${ecuOnly ? "/ecu-only" : ""}${splitPage.length ? "/split-page" : ""}`,
       shortDramaSku
-        ? "no establishing/wide; jump-in or object ECU; not 100% ECU faces"
+        ? "chest-up MCU mix; no stacked/split page; not 100% ECU faces"
         : "≥1 empty establishing/wide, ≥1 insert, not 100% ECU faces",
       "block",
     ),
@@ -686,7 +853,7 @@ export function validateEpisodePlan(input: ValidatePlanInput): DramaLintResult {
   }
 
   if (handbookSku) {
-    reports.push(...lintHandbookGrammar({ plan: input.plan, shots, episodeNumber: input.episodeNumber, bible: input.bible }));
+    reports.push(...lintHandbookGrammar({ plan: input.plan, shots, episodeNumber: input.episodeNumber, bible: input.bible, namedCast: input.namedCast }));
   }
 
   // A loop opener must let a cold viewer in: both leads appear and speak in

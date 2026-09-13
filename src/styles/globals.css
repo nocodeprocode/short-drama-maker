@@ -34,17 +34,67 @@
     transition-timing-function: inherit;
 }
 
+@font-face {
+    font-family: "Takehaus Sans";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 400;
+    src: url("@fontsource/inter/files/inter-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Takehaus Sans";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 500;
+    src: url("@fontsource/inter/files/inter-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Takehaus Sans";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 600;
+    src: url("@fontsource/inter/files/inter-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Takehaus Sans";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 700;
+    src: url("@fontsource/inter/files/inter-latin-700-normal.woff2") format("woff2");
+}
+
+/* Display face. Titles and money only, so the UI text stays neutral. */
+@font-face {
+    font-family: "Takehaus Display";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url("@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2-variations");
+}
+
 html {
-    --font-inter: "Inter";
+    --font-inter: "Takehaus Sans";
+    --font-takehaus-display: "Takehaus Display";
+    color-scheme: light;
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+}
+
+html.dark-mode {
+    color-scheme: dark;
 }
 
 html,
 body {
+    min-height: 100%;
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
     font-family: var(--font-body);
+    -webkit-tap-highlight-color: transparent;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    -webkit-font-variant-ligatures: contextual;
-    font-variant-ligatures: contextual;
+    font-variant-ligatures: common-ligatures;
+    font-feature-settings: "kern" 1, "liga" 1;
     -webkit-font-kerning: normal;
     font-kerning: normal;
 }

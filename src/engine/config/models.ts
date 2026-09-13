@@ -143,4 +143,6 @@ export const DEFAULT_DAILY_SPEND_CAP = 2000;
 export const FAILED_ASSET_TTL_DAYS = 7;
 export const INTERMEDIATE_ASSET_TTL_DAYS = 30;
 export const SOFT_DELETE_PURGE_DAYS = 30;
+/** Unpaid draft shows (never paid) are discarded after this many days. */
+export const DRAFT_TTL_DAYS = 14;
 export const CANDIDATE_KEEP = 2;

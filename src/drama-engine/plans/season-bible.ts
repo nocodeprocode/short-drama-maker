@@ -66,17 +66,21 @@ function tropeTitle(playbookTitle: string, given: string): string {
   return padded.join(" ");
 }
 
-function oneLine(episode: number, playbookBeats: string[], hook?: string): string {
+function oneLine(episode: number, playbookBeats: string[], hook?: string, authored = false): string {
   const beat = playbookBeats[(episode - 1) % playbookBeats.length] ?? "The unpaid question returns";
   const act = episode <= 15 ? 1 : episode <= 30 ? 2 : episode <= 45 ? 3 : 4;
-  if (hook?.trim() && episode <= 3) return `E${episode}: ${hook.trim()}`.slice(0, 140);
+  // An uploaded script owns every episode it covers, not just the opening three.
+  if (hook?.trim() && (authored || episode <= 3)) return `E${episode}: ${hook.trim()}`.slice(0, 140);
   if (episode === SEASON_PAYWALL_EPISODE) return `E${episode} paywall: ${beat}.`.slice(0, 140);
   return `E${episode} act${act}: ${beat}.`.slice(0, 140);
 }
 
-export function buildSeasonBible(bible: Pick<StoryBible, "title" | "logline" | "characters" | "locations" | "episode_structure"> & {
-  season?: SeasonBible;
-}): SeasonBible {
+export function buildSeasonBible(
+  bible: Pick<StoryBible, "title" | "logline" | "characters" | "locations" | "episode_structure"> & {
+    season?: SeasonBible;
+    source?: StoryBible["source"];
+  },
+): SeasonBible {
   if (bible.season && bible.season.episode_log.length === SEASON_EPISODE_COUNT && bible.season.loops?.length) {
     return bible.season;
   }
@@ -107,10 +111,11 @@ export function buildSeasonBible(bible: Pick<StoryBible, "title" | "logline" | "
     { name: "the second signature", plant_ep: 6, payoff_ep: 60, note: "A name that should not be on the contract." },
   ];
   const existing = new Map((bible.episode_structure ?? []).map((row) => [row.episode_number, row]));
+  const authored = bible.source === "script";
   const episode_log: EpisodeLogLine[] = Array.from({ length: SEASON_EPISODE_COUNT }, (_, i) => {
     const n = i + 1;
     const row = existing.get(n);
-    return { episode_number: n, logline: oneLine(n, playbook.tenBeats, row?.hook ?? row?.conflict) };
+    return { episode_number: n, logline: oneLine(n, playbook.tenBeats, row?.hook ?? row?.conflict, authored) };
   });
   return {
     title: tropeTitle(playbook.title, bible.title),

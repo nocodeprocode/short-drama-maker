@@ -1,4 +1,7 @@
-import { placeEntrance, placeExit, placeNoun } from "../craft/place.ts";
+import { placeEntrance, placeExit, placeKind, placeNoun } from "../craft/place.ts";
+import { inferPropLock, lockDoorSide, type ScreenSide } from "./physics.ts";
+
+export type { ScreenSide };
 
 /** Blocking that must stay true for every take in the same room. */
 
@@ -29,6 +32,8 @@ export type SceneBlocking = {
   staging?: string | null;
   /** The physical thing the staging is anchored to ("the brick wall and the puddle line", "the steel counter"). */
   anchor?: string | null;
+  /** Locked screen side of the door for this room. Does not jump between takes. */
+  door_side?: ScreenSide | null;
 };
 
 /** Default power holder: the second lead to speak in the episode (the Wall), unless the plan says otherwise. */
@@ -178,14 +183,7 @@ export function packCuesIntoWindows(rows: readonly string[], takeCount: number, 
   return groups.filter((group) => group.length > 0);
 }
 
-export function inferPropLock(text?: string | null): string {
-  const blob = (text ?? "").toLowerCase();
-  if (/\bcarrier|pup|puppy|wolf-?dog\b/.test(blob)) return "the same closed pet carrier on the surface between them";
-  if (/\bparcel|package|delivery box\b/.test(blob)) return "the same sealed brown parcel on the surface between them";
-  if (/\bphone\b/.test(blob)) return "the same face-down phone on the surface between them";
-  if (/\bletter|paper|envelope|note\b/.test(blob)) return "the same closed unlabeled letter on the surface between them";
-  return "the same closed unlabeled object on the surface between them";
-}
+export { inferPropLock } from "./physics.ts";
 
 /** Plan/shot blocking as stored: every field optional and nullable. */
 export type LooseBlocking = { [K in keyof SceneBlocking]?: SceneBlocking[K] | null };
@@ -220,7 +218,9 @@ export function blockingPrompt(block: SceneBlocking, location?: string | null): 
       ? `${third} is the third person in the ${noun}: one step back, between them in depth, never in either lead's position.`
       : null,
     entering.length
-      ? `ENTRANCE: ${entering.join(" and ")} ${entering.length > 1 ? "were" : "was"} not in the ${noun} before. ${entering.join(" and ")} ${placeEntrance(location)} during Shot 1 and stays there. Nobody else moves.`
+      ? placeKind(location) === "outdoor"
+        ? `ENTRANCE PHYSICS. ${entering.join(" and ")} ${entering.length > 1 ? "were" : "was"} not in the ${noun} before. ${entering.join(" and ")} ${placeEntrance(location)} during Shot 1 and stays there. Nobody else moves.`
+        : `ENTRANCE PHYSICS. ${entering.join(" and ")} ${entering.length > 1 ? "are" : "is"} NOT in the ${noun} at frame 0. The locked door stays ${block.door_side ?? "camera-right"}. Shot 1 is a full-page of ${entering.join(" and ")} coming through THAT door. Only after they cross the threshold do they stand one step back. They cannot already be inside.`
       : `Nobody enters. The ${noun} holds the same people it had.`,
     leaving.length
       ? `EXIT: at the end of the last shot ${leaving.join(" and ")} ${placeExit(location)}`
@@ -230,8 +230,8 @@ export function blockingPrompt(block: SceneBlocking, location?: string | null): 
           [left, right].find((name) => !sameFirst(name, block.upper_frame!)) ?? "The other"
         } is lower in frame, camera a touch above their eye line. Power reads top to bottom in one frame, using the postures in STAGING.`
       : null,
-    `PROP LOCK: ${block.prop}. Same object, same shape, same place unless a spoken line says someone picks it up.`,
-    `SET LOCK. Same ${noun} plate. ${anchor} keeps its size and place. Same walls, same ground, same key light. Nobody leaves ${anchor}.`,
+    `PROP LOCK: ${block.prop}. Same object identity. If the line says it is broken or open, show that state still — never the sealed still.`,
+    `SET LOCK. Same ${noun} plate. ${anchor} keeps its size and place. Same walls, same ground, same key light. Nobody leaves ${anchor}. ROOM LOCK. The door stays ${block.door_side ?? "camera-right"}. It does not jump sides.`,
     block.start_from
       ? `Start this take from that exact end state: ${block.start_from}`
       : "Start with everyone already in their staged positions, not arriving.",
@@ -262,11 +262,11 @@ export function coverageCamera(block: SceneBlocking, people: readonly string[], 
   const anchor = block.anchor?.trim() || "the locked anchor";
   if (takeIndex > 0) {
     return takeIndex % 2 === 1
-      ? `JOIN CUT. Close-up on ${pictured}, chin to hairline, a sliver of ${anchor}. Do not reprint the previous take's last frame. ${prop}. Never the lens — Shot 1 only`
-      : `JOIN CUT. Both faces stacked close to the lens at ${anchor}, shoulders in. Do not reprint the previous take's last frame. ${prop}. Never the lens — Shot 1 only`;
+      ? `JOIN CUT. Chest-up MCU on ${pictured} only, head and a portion of the chest, key light on the face. Do not reprint the previous take's last frame. ${prop}. Do not stack two faces, never the lens — Shot 1 only`
+      : `JOIN CUT. Cowboy or chest-up of ${pictured} at ${anchor}. One relevant person. Do not reprint the previous take's last frame. ${prop}. Do not stack two faces, never the lens — Shot 1 only`;
   }
   if (block.coverage === "cu") {
-    return `both faces close to the lens, stacked: ${pictured} and ${other} at ${anchor}, ${prop}, never the lens — Shot 1 only, later shots cut closer`;
+    return `close-up on ${pictured} only for heat, chin to collar, key light in the eyes, ${other} out of the tight frame at ${anchor}, ${prop}, do not stack two faces, never the lens — Shot 1 only`;
   }
   if (block.coverage === "single") {
     return `over-the-shoulder from behind ${other}, ${pictured} is the face, ${other} is a shoulder in the foreground, ${anchor} as staged, ${prop}, never the lens — Shot 1 only`;
@@ -299,6 +299,7 @@ export function sceneBlockingOf(input: {
     upper_frame: input.blocking?.upper_frame ?? null,
     staging: input.blocking?.staging ?? null,
     anchor: input.blocking?.anchor ?? null,
+    door_side: input.blocking?.door_side ?? lockDoorSide([input.blocking?.staging, input.camera, input.scene_script]),
   };
 }
 

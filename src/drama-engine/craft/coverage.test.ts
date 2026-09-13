@@ -13,14 +13,15 @@ describe("dialogue coverage", () => {
     expect(new Set(coverageStations("classic")).size).toBe(4);
     expect(framingForRole("classic", "setup")).toBe("master");
     expect(framingForRole("classic", "peak")).toBe("ots");
+    expect(framingForRole("classic", "answer")).toBe("cu");
     expect(framingForRole("reverse", "peak")).toBe("cu");
     expect(joinOpenFraming({ takeIndex: 0 })).toBe("master");
-    expect(["cu", "tight_two"]).toContain(joinOpenFraming({ takeIndex: 1 }));
+    expect(["master", "dirty"]).toContain(joinOpenFraming({ takeIndex: 1 }));
     expect(joinOpenFraming({ takeIndex: 1 })).not.toBe(framingForRole("classic", "land"));
-    expect(["cu", "tight_two"]).toContain(joinOpenFraming({ takeIndex: 2 }));
+    expect(["master", "dirty"]).toContain(joinOpenFraming({ takeIndex: 2 }));
   });
 
-  it("writes over-the-shoulder and stacked faces, never a held profile", () => {
+  it("writes over-the-shoulder and chest-up MCU, never stacked faces", () => {
     const ots = coverageDirection({
       framing: "ots",
       speaker: "MARA",
@@ -57,10 +58,10 @@ describe("dialogue coverage", () => {
       entrance: "",
       exit: "",
     });
-    expect(stacked).toMatch(/Both faces close/);
-    expect(stacked).toMatch(/the person on camera-right holds the upper frame/);
+    expect(stacked).toMatch(/Cowboy of|wider MCU|Chest-up MCU/i);
+    expect(stacked).toMatch(/FORBIDDEN: two faces stacked/);
     expect(stacked).not.toMatch(/COLE holds/);
-    expect(stacked).not.toMatch(/flat side/);
+    expect(stacked).not.toMatch(/Both faces close to the lens, stacked/);
     expect(listenerOf("MARA", "MARA", "COLE")).toBe("COLE");
   });
 });

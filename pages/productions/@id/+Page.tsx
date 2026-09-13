@@ -19,9 +19,9 @@ import {
   watchLinksForEpisodes,
 } from "@/engine/present.ts";
 import { LiveShowSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
-import { studio, type ProductionDetail } from "@/lib/api.ts";
+import { ApiError, studio, type ProductionDetail } from "@/lib/api.ts";
 import { readCache, writeCache } from "@/lib/cache.ts";
-import { useLiveReload, useSessionReady } from "@/lib/use-studio.ts";
+import { useLiveReload, useSessionReady, useStudio } from "@/lib/use-studio.ts";
 
 function taskColor(status: string) {
   if (status === "done" || status === "completed") return "success" as const;
@@ -35,6 +35,8 @@ export default function Page() {
   const id = page.routeParams.id;
   const paid = String(page.urlParsed.search.checkout ?? "") === "success";
   const sessionReady = useSessionReady();
+  const { data: account } = useStudio("account", () => studio.account());
+  const [paying, setPaying] = useState(false);
   const cacheKey = `production:${id}`;
   const [run, setRun] = useState<ProductionDetail | null>(() => readCache<ProductionDetail>(cacheKey));
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +96,19 @@ export default function Page() {
   const statusText = statusLabel(run.status, run.paused);
   const canPause = !run.paused && shooting;
   const canResume = run.paused && run.status !== "awaiting_payment" && run.status !== "cancelled";
-  const canCancel = !ready && run.status !== "cancelled" && run.status !== "awaiting_payment";
+  const canCancel = !ready && run.status !== "cancelled";
+  const unpaidDraft = run.status === "awaiting_payment" && Number(run.paid_amount ?? 0) <= 0;
   const cancel = () => {
+    if (unpaidDraft) {
+      if (!window.confirm("Discard this unpaid draft? The brief is deleted. Unpaid drafts are also removed after 14 days.")) return;
+      studio
+        .discardSeries(run.series_id)
+        .then(() => {
+          window.location.href = "/series";
+        })
+        .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not discard the draft"));
+      return;
+    }
     if (!window.confirm("Cancel this production? Finished takes stay on the show and unused credit stays on your balance.")) return;
     studio
       .cancel(run.id)
@@ -137,7 +150,7 @@ export default function Page() {
             ) : null}
             {canCancel ? (
               <Button color="tertiary" iconLeading={XCircle} onClick={cancel}>
-                Cancel
+                {unpaidDraft ? CTA.discardDraft : "Cancel"}
               </Button>
             ) : null}
             {watch.map((link) => (
@@ -146,17 +159,51 @@ export default function Page() {
               </Button>
             ))}
             {run.status === "awaiting_payment" ? (
-              <Button
-                color="primary"
-                onClick={() =>
-                  studio
-                    .confirmTest(run.id)
-                    .then(reload)
-                    .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not confirm"))
-                }
-              >
-                {CTA.payAndStart}
-              </Button>
+              <>
+                <Button
+                  color="primary"
+                  isDisabled={paying}
+                  onClick={() => {
+                    setPaying(true);
+                    const sku = Number(run.sku);
+                    studio
+                      .createProduction({
+                        series_id: run.series_id,
+                        sku: Number.isFinite(sku) && sku > 0 ? sku : 2,
+                        priority: run.priority,
+                        episode_length: run.episode_length,
+                        video_tier: run.video_tier ?? "pro",
+                        mode: run.mode === "studio" ? "studio" : "autopilot",
+                      })
+                      .then((created) => {
+                        window.location.href = `/productions/${created.id}`;
+                      })
+                      .catch((caught) => {
+                        setPaying(false);
+                        if (caught instanceof ApiError && caught.status === 402) {
+                          window.location.href = "/account/billing";
+                          return;
+                        }
+                        setError(caught instanceof Error ? caught.message : "Could not start the run");
+                      });
+                  }}
+                >
+                  {paying ? "Starting…" : CTA.payAgain}
+                </Button>
+                {account?.is_admin ? (
+                  <Button
+                    color="tertiary"
+                    onClick={() =>
+                      studio
+                        .confirmTest(run.id)
+                        .then(reload)
+                        .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not confirm"))
+                    }
+                  >
+                    Confirm test
+                  </Button>
+                ) : null}
+              </>
             ) : null}
             {run.series_id ? (
               <Button href={`/series/${run.series_id}`} color="tertiary">
@@ -197,26 +244,25 @@ export default function Page() {
       ) : null}
       <PageBody>
         {paid ? (
-          <div className="mb-5 rounded-xl border border-brand-200 bg-brand-25 px-4 py-3 text-sm">
+          <div className="mb-5 rounded-xl border border-brand bg-brand-primary_alt px-4 py-3 text-sm">
             Payment received. The studio started. You can leave this page.
           </div>
         ) : null}
 
         {ready ? null : (
-          <div className="mb-5 rounded-xl border border-secondary bg-primary p-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="text-xs font-semibold tracking-wide text-tertiary uppercase">Now</div>
-                <h2 className="mt-1 text-lg font-semibold">{working?.title ?? run.headline ?? "Preparing this show"}</h2>
+          <div className="mb-5 rounded-xl bg-primary p-5 ring-1 ring-secondary ring-inset">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="font-display text-lg font-semibold">{working?.title ?? run.headline ?? "Preparing this show"}</h2>
                 <p className="mt-1 text-sm text-secondary">{working?.detail ?? "You can close this page."}</p>
               </div>
-              <div className="text-right text-sm text-tertiary">
-                <div>
+              <div className="shrink-0 text-right">
+                <div className="figure text-md font-semibold text-primary">
                   Episode {Math.min(doneEpisodes + 1, totalEpisodes)} of {totalEpisodes}
                 </div>
-                <div className="mt-0.5 mono text-xs">
-                  {typeof run.spent === "number" ? `Spent $${run.spent.toFixed(2)} · ` : ""}
-                  Balance ${Number(run.balance ?? 0).toFixed(2)}
+                <div className="figure mt-0.5 text-sm text-tertiary">
+                  {typeof run.spent === "number" ? `$${run.spent.toFixed(2)} spent · ` : ""}
+                  ${Number(run.balance ?? 0).toFixed(2)} left
                 </div>
               </div>
             </div>
@@ -240,8 +286,8 @@ export default function Page() {
         )}
 
         {ready ? (
-          <div className="mb-5 rounded-xl border border-success-200 bg-success-50 p-5">
-            <h2 className="text-lg font-semibold">Ready to watch</h2>
+          <div className="mb-5 rounded-xl bg-success-primary p-5 ring-1 ring-success-secondary ring-inset">
+            <h2 className="font-display text-lg font-semibold">Ready to watch</h2>
             <p className="mt-1 text-sm text-secondary">The pilot is cut. Watch it, then approve the cast if it feels right.</p>
             <div className="mt-4">
               <EpisodeStrip
@@ -261,9 +307,9 @@ export default function Page() {
         <StudioFeed run={run} ready={ready} />
 
         {ready ? null : (
-          <div className="mt-5 rounded-xl border border-secondary bg-primary">
+          <div className="mt-5 overflow-hidden rounded-xl bg-primary ring-1 ring-secondary ring-inset">
             <div className="border-b border-secondary px-6 py-4">
-              <h3 className="text-lg font-semibold">What just happened</h3>
+              <h3 className="text-md font-semibold">What just happened</h3>
             </div>
             <div className="p-6">
               {(log.length ? log : [{ id: "idle", action: "waiting", status: run.status, error_code: null, title: "Waiting to start", detail: run.headline ?? "", status_label: statusText }]).map((task, index) => (

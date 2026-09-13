@@ -3,14 +3,31 @@ import { usePageContext } from "vike-react/usePageContext";
 import { DotsThree } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
+import { Tab, TabList, Tabs } from "@/components/base/tabs/tabs";
+import { cx } from "@/utils/cx";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
-import { CastCard } from "@/components/drama/cast-card.tsx";
+import { CastSheet } from "@/components/drama/cast-sheet.tsx";
 import { EpisodeStrip } from "@/components/drama/episode-strip.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { LoadError, ShowDetailSkeleton } from "@/components/drama/skeleton.tsx";
 import { CTA, episodeStripStates, statusLabel } from "@/engine/present.ts";
+import {
+  BLOCK_SKUS,
+  commissionLength,
+  commissionSku,
+  episodeSeconds,
+  finishedRuntimeLabel,
+  gapCharge,
+  retailFor,
+  runtimeLabel,
+  skuLabel,
+} from "@/lib/catalog.ts";
 import { ApiError, studio } from "@/lib/api.ts";
 import { useStudio } from "@/lib/use-studio.ts";
+
+function money(amount: number) {
+  return `$${Math.round(amount).toLocaleString("en-US")}`;
+}
 
 const TABS = [
   { id: "episodes", label: "Episodes" },
@@ -30,8 +47,12 @@ export default function Page() {
   );
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("episodes");
   const [menu, setMenu] = useState(false);
+  const [orderSku, setOrderSku] = useState<(typeof BLOCK_SKUS)[number]>(15);
   const [busy, setBusy] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gap, setGap] = useState<{ needed: number; available: number; shortfall: number } | null>(null);
+  const { data: billing } = useStudio("billing", () => studio.billing());
   const series = data?.series;
   const episodes = data?.episodes ?? [];
 
@@ -44,31 +65,74 @@ export default function Page() {
   const locations = bible?.locations ?? [];
   const bibleCast = bible?.characters ?? [];
   const firstReady = episodes.find((episode) => episode.status === "complete");
-  const live = series.productions.find((row) => row.id === series.active_production_id);
+  const live =
+    series.productions.find((row) => row.id === series.active_production_id) ??
+    series.productions.find((row) => row.status === "awaiting_payment");
   const blocked = live?.status === "needs_user";
+
+  const draftLength = commissionLength(series.episode_length ?? live?.episode_length);
+  const draftTier = series.video_tier === "catalog" || live?.video_tier === "catalog" ? "catalog" : "pro";
+  const draftSku = commissionSku(series.target_episode_count ?? live?.sku);
+  const isDraft = !series.paid && (action === "pay_pilot" || action === "continue_draft");
+  const retail = retailFor(draftSku, live?.priority === "fast" || live?.priority === "quality" ? live.priority : "balanced", draftLength, draftTier);
+  const wallet = billing?.credit_balance ?? 0;
+  const shortfall = gap?.shortfall ?? Math.max(0, Math.round((retail - wallet) * 100) / 100);
+  const needsLoad = shortfall > 0.009;
 
   const startCheckout = async (sku: number) => {
     setBusy(true);
     setError(null);
+    setGap(null);
     try {
       const created = await studio.createProduction({
         series_id: series.id,
         title: series.title,
         description: series.description ?? "",
         sku,
-        priority: "balanced",
-        episode_length: "60_90",
+        priority: live?.priority ?? "balanced",
+        episode_length: draftLength,
+        video_tier: draftTier,
         mode: "autopilot",
       });
-      if (created.checkout?.url) {
-        window.location.href = created.checkout.url;
-        return;
-      }
       window.location.href = `/productions/${created.id}`;
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : "Could not start checkout");
+      if (caught instanceof ApiError && caught.status === 402) {
+        setGap({
+          needed: Number(caught.body.needed ?? retail),
+          available: Number(caught.body.available ?? wallet),
+          shortfall: Number(caught.body.shortfall ?? Math.max(0, retail - wallet)),
+        });
+        return;
+      }
+      setError(caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : "Could not start the run");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const loadToStart = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const back = `/series/${series.id}`;
+      const session = await studio.loadCredits(gapCharge(shortfall || retail - wallet), { success: back, cancel: back });
+      window.location.href = session.url;
+    } catch (caught) {
+      setError(caught instanceof ApiError || caught instanceof Error ? caught.message : "Could not open checkout");
+      setBusy(false);
+    }
+  };
+
+  const discard = async () => {
+    if (!window.confirm("Discard this draft? The brief is deleted. Unpaid drafts are also removed after 14 days.")) return;
+    setDiscarding(true);
+    setError(null);
+    try {
+      await studio.discardSeries(series.id);
+      window.location.href = "/series";
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : caught instanceof Error ? caught.message : "Could not discard the draft");
+      setDiscarding(false);
     }
   };
 
@@ -83,13 +147,15 @@ export default function Page() {
 
   const statusText = blocked
     ? "Needs you"
-    : live
-      ? statusLabel(live.status, live.paused)
-      : series.pilot_approved
-        ? "Ready"
-        : series.paid
-          ? "Shooting"
-          : "Waiting for payment";
+    : isDraft
+      ? "Draft"
+      : live
+        ? statusLabel(live.status, live.paused)
+        : series.pilot_approved
+          ? "Ready"
+          : series.paid
+            ? "Shooting"
+            : "Draft";
 
   return (
     <>
@@ -103,7 +169,7 @@ export default function Page() {
           </span>
         }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <>
             {blocked && live ? (
               <>
                 {live.intervention_type === "quality_budget" ? (
@@ -120,10 +186,26 @@ export default function Page() {
                 </Button>
               </>
             ) : null}
-            {!blocked && action === "pay_pilot" ? (
-              <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(2)}>
-                {busy ? "Starting checkout…" : CTA.startThePilot}
-              </Button>
+            {!blocked && (action === "pay_pilot" || action === "continue_draft") ? (
+              <>
+                {needsLoad ? (
+                  <Button color="primary" isDisabled={busy} onClick={() => void loadToStart()}>
+                    {busy ? "Opening checkout…" : `Load ${money(gapCharge(shortfall))} to start`}
+                  </Button>
+                ) : (
+                  <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(draftSku)}>
+                    {busy ? "Starting…" : `Start · ${money(retail)}`}
+                  </Button>
+                )}
+                <Button href={`/new?draft=${series.id}`} color="secondary">
+                  {CTA.editDraft}
+                </Button>
+                {series.can_discard !== false ? (
+                  <Button color="tertiary" isDisabled={discarding} onClick={() => void discard()}>
+                    {discarding ? "Discarding…" : CTA.discardDraft}
+                  </Button>
+                ) : null}
+              </>
             ) : null}
             {!blocked && action === "open_production" ? (
               <>
@@ -155,8 +237,28 @@ export default function Page() {
             ) : null}
             {!blocked && action === "buy_next_block" ? (
               <>
-                <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(12)}>
-                  {busy ? "Starting checkout…" : CTA.orderMore}
+                <div className="flex flex-wrap items-center gap-1">
+                  {BLOCK_SKUS.map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      aria-pressed={orderSku === count}
+                      aria-label={`${count} more episodes`}
+                      className={cx(
+                        "cursor-pointer rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition duration-100 ease-linear ring-inset outline-focus-ring",
+                        "focus-visible:outline-2 focus-visible:outline-offset-2",
+                        orderSku === count
+                          ? "bg-brand-solid text-white ring-transparent"
+                          : "text-tertiary ring-secondary hover:text-secondary",
+                      )}
+                      onClick={() => setOrderSku(count)}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
+                <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(orderSku)}>
+                  {busy ? "Starting checkout…" : `${CTA.orderMore} · ${skuLabel(orderSku)}`}
                 </Button>
                 {episodes.some((episode) => episode.status === "complete") ? (
                   <Button href={`/series/${id}/export`} color="secondary">
@@ -170,12 +272,20 @@ export default function Page() {
                 <DotsThree size={20} />
               </Button>
               {menu ? (
-                <div className="absolute right-0 z-10 mt-2 w-56 rounded-xl border border-secondary bg-primary p-3 shadow-lg">
+                <div className="absolute right-0 z-10 mt-2 w-56 rounded-xl bg-primary p-3 shadow-lg ring-1 ring-secondary ring-inset">
                   <div className="text-xs font-semibold text-tertiary">Show</div>
                   <div className="mt-2 space-y-1 text-sm">
                     <div className="flex justify-between gap-3">
                       <span className="text-tertiary">Target</span>
-                      <b>{series.target_episode_count ?? 60} episodes</b>
+                      <b>{series.target_episode_count ?? draftSku} episodes</b>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-tertiary">Length</span>
+                      <b>{runtimeLabel(episodeSeconds(draftLength))} each</b>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-tertiary">Picture</span>
+                      <b>{draftTier === "catalog" ? "Catalog" : "Pro"}</b>
                     </div>
                     <div className="flex justify-between gap-3">
                       <span className="text-tertiary">Pilot</span>
@@ -189,27 +299,69 @@ export default function Page() {
                 </div>
               ) : null}
             </div>
-          </div>
+          </>
         }
       />
-      <div className="border-b border-secondary bg-primary px-4 sm:px-8">
-        <div className="flex gap-1">
-          {TABS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setTab(item.id)}
-              className={`border-b-2 px-3 py-2.5 text-sm font-semibold ${tab === item.id ? "border-brand-600 text-brand-700" : "border-transparent text-tertiary"}`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+      <div className="bg-primary px-4 sm:px-8">
+        <Tabs selectedKey={tab} onSelectionChange={(key) => setTab(key as (typeof TABS)[number]["id"])}>
+          <TabList aria-label="Show sections">
+            {TABS.map((item) => (
+              <Tab key={item.id} id={item.id}>
+                {item.label}
+              </Tab>
+            ))}
+          </TabList>
+        </Tabs>
       </div>
       <PageBody>
         {error ? <p className="mb-5 text-sm text-error-primary">{error}</p> : null}
+        {isDraft ? (
+          <div className="mb-6 rounded-xl bg-primary p-5 ring-1 ring-secondary ring-inset">
+            <p className="text-sm font-semibold text-primary">Ready to start</p>
+            <p className="mt-1 text-sm text-secondary">
+              {skuLabel(draftSku)} · {runtimeLabel(episodeSeconds(draftLength))} each · {finishedRuntimeLabel(draftSku, draftLength)} finished
+              {draftTier === "catalog" ? " · Catalog picture" : " · Pro picture"}
+            </p>
+            <div className="mt-4 flex items-baseline justify-between gap-3">
+              <span className="text-sm text-tertiary">This run</span>
+              <b className="figure text-lg font-semibold text-primary">{money(retail)}</b>
+            </div>
+            <div className="mt-1 flex items-baseline justify-between gap-3 text-sm">
+              <span className="text-tertiary">Wallet</span>
+              <span className="figure text-secondary">{money(gap?.available ?? wallet)}</span>
+            </div>
+            {needsLoad ? (
+              <p className="mt-3 text-sm text-secondary">
+                Load {money(gapCharge(shortfall))} to start. Leftover stays in your wallet.
+              </p>
+            ) : (
+              <p className="mt-3 text-sm text-secondary">Wallet covers this run. Start when you are ready.</p>
+            )}
+            {series.description ? <p className="mt-3 text-sm text-secondary">{series.description}</p> : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {needsLoad ? (
+                <Button color="primary" isDisabled={busy} onClick={() => void loadToStart()}>
+                  {busy ? "Opening checkout…" : `Load ${money(gapCharge(shortfall))} to start`}
+                </Button>
+              ) : (
+                <Button color="primary" isDisabled={busy} onClick={() => void startCheckout(draftSku)}>
+                  {busy ? "Starting…" : `Start this show · ${money(retail)}`}
+                </Button>
+              )}
+              <Button color="secondary" onClick={() => setTab("cast")}>
+                Cast the show
+              </Button>
+              <Button href={`/new?draft=${series.id}`} color="tertiary">
+                Change length or count
+              </Button>
+            </div>
+            <p className="mt-3 text-xs text-tertiary">
+              Cast anyone you like first and the story is written around them. Unpaid drafts are removed after 14 days.
+            </p>
+          </div>
+        ) : null}
 
-        {tab === "episodes" ? (
+        {tab === "episodes" && isDraft ? null : tab === "episodes" ? (
           <>
             <div className="mb-4 flex items-baseline gap-3">
               <h3 className="text-lg font-semibold">Episodes</h3>
@@ -241,7 +393,9 @@ export default function Page() {
               </div>
             ) : (
               <div className="ds-empty mt-8">
-                <p className="text-sm font-semibold">{series.paid ? "Episodes will appear as they are cut." : "Pay for the pilot to start."}</p>
+                <p className="text-sm font-semibold">
+                  {isDraft ? "Nothing shot yet." : series.paid ? "Episodes will appear as they are cut." : "Start the run to shoot the first episodes."}
+                </p>
                 {series.paid && series.active_production_id ? (
                   <div className="mt-4">
                     <Button href={productionHref} color="secondary" size="sm">
@@ -254,37 +408,14 @@ export default function Page() {
           </>
         ) : null}
 
-        {tab === "cast" ? (
-          series.characters.length ? (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {series.characters.map((character) => (
-                <CastCard
-                  key={character.id}
-                  href={`/characters/${character.id}`}
-                  name={character.name}
-                  description={character.description}
-                  stillUrl={character.still_url}
-                  refs={character.refs}
-                  locked={character.locked}
-                  actorName={character.actor_name}
-                />
-              ))}
-            </div>
-          ) : (
-            <EmptyShow
-              title="Cast appears after the pilot starts"
-              body={series.paid ? "Faces and voices are generated while the show is shooting." : "Start the pilot to cast the show."}
-              href={series.paid ? productionHref : undefined}
-            />
-          )
-        ) : null}
+        {tab === "cast" ? <CastSheet seriesId={series.id} /> : null}
 
         {tab === "story" ? (
-          bible?.logline || bibleCast.length || bible?.episode_structure?.length || locations.length ? (
+          bible?.logline || bibleCast.length || bible?.episode_structure?.length || locations.length || series.description ? (
             <div className="max-w-3xl space-y-5">
               <div className="rounded-xl border border-secondary bg-primary p-6">
                 <h3 className="text-lg font-semibold">{bible?.title ?? series.title}</h3>
-                <p className="mt-3 text-md text-secondary">{bible?.logline}</p>
+                <p className="mt-3 text-md text-secondary">{bible?.logline || series.description}</p>
               </div>
               {bibleCast.length ? (
                 <div className="rounded-xl border border-secondary bg-primary p-6">
@@ -325,9 +456,16 @@ export default function Page() {
             </div>
           ) : (
             <EmptyShow
-              title="Story appears after the pilot starts"
-              body={series.paid ? "The studio writes this while it shoots." : "Start the pilot and come back."}
-              href={series.paid ? productionHref : undefined}
+              title={isDraft ? "No brief on this draft" : "Story appears after the pilot starts"}
+              body={
+                isDraft
+                  ? "Edit the brief to put the story back, or discard the draft."
+                  : series.paid
+                    ? "The studio writes this while it shoots."
+                    : "Start the pilot and come back."
+              }
+              href={isDraft ? `/new?draft=${series.id}` : series.paid ? productionHref : undefined}
+              action={isDraft ? CTA.editDraft : undefined}
             />
           )
         ) : null}
@@ -336,7 +474,7 @@ export default function Page() {
   );
 }
 
-function EmptyShow({ title, body, href }: { title: string; body: string; href?: string }) {
+function EmptyShow({ title, body, href, action }: { title: string; body: string; href?: string; action?: string }) {
   return (
     <div className="ds-empty">
       <p className="text-sm font-semibold">{title}</p>
@@ -344,7 +482,7 @@ function EmptyShow({ title, body, href }: { title: string; body: string; href?: 
       {href ? (
         <div className="mt-4">
           <Button href={href} color="secondary" size="sm">
-            {CTA.watchLive}
+            {action ?? CTA.watchLive}
           </Button>
         </div>
       ) : null}

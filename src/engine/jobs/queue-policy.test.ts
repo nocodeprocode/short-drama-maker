@@ -10,6 +10,12 @@ describe("queue policy", () => {
     expect(
       shotNeedsVideo(shot, [{ shot_id: "shot-1", job_type: "video", status: "generating" }]),
     ).toBe(false);
+    expect(
+      shotNeedsVideo(shot, [{ shot_id: "shot-1", job_type: "video", status: "ingesting" }]),
+    ).toBe(false);
+    expect(
+      shotNeedsVideo(shot, [{ shot_id: "shot-1", job_type: "video", status: "qc" }]),
+    ).toBe(false);
     expect(shotNeedsVideo(shot, [])).toBe(true);
     expect(shotNeedsVideo({ id: "shot-1", status: "audio_ready" }, [])).toBe(true);
     expect(shotNeedsVideo({ id: "shot-1", status: "complete" }, [])).toBe(false);

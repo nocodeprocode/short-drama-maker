@@ -1,3 +1,3 @@
 export default {
-  title: "Cookie Notice — Short Drama Maker",
+  title: "Cookie Notice — Takehaus",
 };

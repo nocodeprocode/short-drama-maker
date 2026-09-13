@@ -22,14 +22,7 @@ async function authorizedFetch(path: string, init: RequestInit, token: string | 
   return fetch(`${API_URL}${path}`, { ...init, headers });
 }
 
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  let token = getAccessToken();
-  let response = await authorizedFetch(path, init, token);
-  if (response.status === 401) {
-    const session = await refreshSession();
-    token = session?.access_token ?? getAccessToken();
-    if (token) response = await authorizedFetch(path, init, token);
-  }
+async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   let body: Record<string, unknown> = {};
   if (text) {
@@ -43,34 +36,70 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+  let token = getAccessToken();
+  let response = await authorizedFetch(path, init, token);
+  if (response.status === 401) {
+    const session = await refreshSession();
+    token = session?.access_token ?? getAccessToken();
+    if (token) response = await authorizedFetch(path, init, token);
+  }
+  return readJson<T>(response);
+}
+
+export async function publicApi<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return readJson<T>(await authorizedFetch(path, init, null));
+}
+
 export const studio = {
   me: () => api<Me>("/me"),
   home: () => api<Home>("/home"),
   account: () => api<Account>("/account"),
-  estimate: (sku: number, priority = "balanced", length = "60_90") =>
-    api<Estimate>(`/estimate?sku=${sku}&priority=${priority}&length=${length}`),
+  estimate: (sku: number, priority = "balanced", length = "60_90", videoTier = "pro") =>
+    api<Estimate>(`/estimate?sku=${sku}&priority=${priority}&length=${length}&video_tier=${videoTier}`),
   moderate: (text: string) =>
     api<{ allowed: boolean; reason: string | null }>("/moderation/check", {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
-  storyIdea: (body: { hint?: string; category?: string } = {}) =>
+  storyIdea: (body: { hint?: string; category?: string; lead?: string; opposite?: string; setting?: string } = {}) =>
     api<StoryIdea>("/story-ideas", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  adaptScript: (text: string) =>
+    api<AdaptedScript>("/story-scripts", {
+      method: "POST",
+      body: JSON.stringify({ text }),
     }),
   series: () => api<{ items: SeriesCard[] }>("/series"),
   seriesOne: (id: string) => api<SeriesDetail>(`/series/${id}`),
   seriesEpisodes: (id: string) => api<{ items: Episode[] }>(`/series/${id}/episodes`),
   seriesCharacters: (id: string) => api<{ items: Character[] }>(`/series/${id}/characters`),
   approvePilot: (id: string) => api<{ ok: boolean }>(`/series/${id}/approve-pilot`, { method: "POST" }),
+  discardSeries: (id: string) => api<{ ok: boolean }>(`/series/${id}`, { method: "DELETE" }),
   productions: (status?: string) =>
     api<{ items: Production[] }>(status ? `/productions?status=${status}` : "/productions"),
   production: (id: string) => api<ProductionDetail>(`/productions/${id}`),
   createProduction: (body: Record<string, unknown>) =>
-    api<Production & { checkout?: { id: string; url: string } }>("/productions", {
+    api<Production & { checkout?: { id: string; url: string }; paid_from?: string }>("/productions", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  loadCredits: (amount: number, paths?: { success?: string; cancel?: string }) =>
+    api<{ id: string; url: string }>("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify({
+        sku: "credit",
+        amount,
+        success_path: paths?.success,
+        cancel_path: paths?.cancel,
+      }),
+    }),
+  confirmTestCredit: (amount: number) =>
+    api<{ ok: boolean; credit_balance: number; amount: number }>("/billing/confirm-test", {
+      method: "POST",
+      body: JSON.stringify({ amount }),
     }),
   pause: (id: string) => api<Production>(`/productions/${id}/pause`, { method: "POST", body: "{}" }),
   resume: (id: string) => api<Production>(`/productions/${id}/resume`, { method: "POST", body: "{}" }),
@@ -86,6 +115,37 @@ export const studio = {
   recutEpisode: (episodeId: string) =>
     api<{ task_id: string; status: string; deduplicated?: boolean }>(`/episodes/${episodeId}/recut`, { method: "POST", body: "{}" }),
   confirmTest: (id: string) => api<Production>(`/productions/${id}/confirm-test`, { method: "POST", body: "{}" }),
+  checkout: (body: {
+    sku: number | "topup" | "credit";
+    series_id?: string;
+    production_id?: string;
+    priority?: string;
+    episode_length?: string;
+    video_tier?: string;
+    amount?: number;
+    email?: string;
+  }) =>
+    api<{ id: string; url: string }>("/billing/checkout", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  accept: () => api<{ ok: boolean }>("/me/accept", { method: "POST", body: "{}" }),
+  signup: (body: { email: string; password: string; turnstile_token?: string; accept?: boolean }) =>
+    publicApi<{ ok: boolean }>("/auth/signup", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  recover: (body: { email: string; turnstile_token?: string }) =>
+    publicApi<{ ok: boolean }>("/auth/recover", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  billing: () => api<Billing>("/billing"),
+  portal: () =>
+    api<{ url: string }>("/billing/portal", {
+      method: "POST",
+      body: "{}",
+    }),
   episode: (id: string) => api<EpisodeDetail>(`/episodes/${id}`),
   character: (id: string) => api<Character & { series_title?: string }>(`/characters/${id}`),
   castCharacter: (id: string, actor_id: string) =>
@@ -93,11 +153,14 @@ export const studio = {
       method: "POST",
       body: JSON.stringify({ actor_id }),
     }),
-  actors: () => api<{ items: Actor[] }>("/actors"),
+  actors: () => api<{ items: Actor[]; tags: string[] }>("/actors"),
   actor: (id: string) => api<ActorDetail>(`/actors/${id}`),
   createActor: (body: {
     name: string;
     description?: string;
+    tags?: string[];
+    /** The show being cast, so the face job lands on its task trail. */
+    series_id?: string;
     likeness_confirmed?: boolean;
     seed_base64?: string;
     seed_mime_type?: string;
@@ -106,6 +169,16 @@ export const studio = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  updateActor: (id: string, body: { name?: string; tags?: string[]; notes?: string }) =>
+    api<Actor>(`/actors/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteActor: (id: string) => api<{ ok: boolean }>(`/actors/${id}`, { method: "DELETE" }),
+  seriesCast: (id: string) => api<CastSheet>(`/series/${id}/cast`),
+  castRole: (
+    seriesId: string,
+    body: { role_name: string; actor_id?: string | null; role_note?: string; character_id?: string },
+  ) => api<CastSlot>(`/series/${seriesId}/cast`, { method: "POST", body: JSON.stringify(body) }),
+  uncastRole: (seriesId: string, slotId: string) =>
+    api<{ ok: boolean }>(`/series/${seriesId}/cast/${slotId}`, { method: "DELETE" }),
   attention: () => api<{ items: AttentionItem[]; activity: AttentionActivity[] }>("/attention"),
 };
 
@@ -114,7 +187,47 @@ export type Me = {
   email: string;
   display_name: string;
   is_admin: boolean;
+  beta: boolean;
   stripe_customer_id: string | null;
+  accepted_at: string | null;
+};
+
+export type BillingReceipt = {
+  id: string;
+  amount: number;
+  created_at: string;
+  series_id: string | null;
+  series_title: string | null;
+};
+
+export type BillingSku = {
+  sku: number | "topup" | "credit";
+  episode_count: number;
+  retail: number;
+  is_pilot?: boolean;
+  finished_runtime_label?: string;
+  video_tier?: "pro" | "catalog";
+};
+
+export type Billing = {
+  email: string;
+  slots_used: number;
+  slots_total: number;
+  stripe_customer_id: string | null;
+  last_payment: BillingReceipt | null;
+  receipts: BillingReceipt[];
+  series: Array<{
+    id: string;
+    title: string;
+    target_episode_count?: number;
+    episode_length?: string;
+    video_tier?: "pro" | "catalog";
+    started?: boolean;
+  }>;
+  skus: BillingSku[];
+  topup: BillingSku;
+  credit_balance: number;
+  credit_presets: number[];
 };
 
 export type Account = {
@@ -124,6 +237,7 @@ export type Account = {
   is_admin: boolean;
   slots_used: number;
   slots_total: number;
+  credit_balance?: number;
 };
 
 export type Estimate = {
@@ -142,6 +256,13 @@ export type StoryIdea = {
   title: string;
   brief: string;
   category: string;
+};
+
+export type AdaptedScript = {
+  title: string;
+  brief: string;
+  source_language: string;
+  source_language_name: string;
 };
 
 export type SeriesCard = {
@@ -189,9 +310,43 @@ export type Actor = {
   id: string;
   name: string;
   source: "generated" | "likeness";
+  tags: string[];
+  notes: string;
   still_url: string | null;
   refs: CharacterRef[];
+  /** Titles this face has already played in. */
+  shows: string[];
+  /** False while the face pack is still being generated. */
+  ready: boolean;
   created_at: string;
+};
+
+/** One part on a show and who plays it. */
+export type CastSlot = {
+  id: string;
+  series_id: string;
+  role_name: string;
+  role_note: string;
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_source: "generated" | "likeness" | null;
+  actor_still_url: string | null;
+  character_id: string | null;
+  character_still_url: string | null;
+  locked: boolean;
+  mode: "actor" | "generate";
+};
+
+export type CastSheet = {
+  series_id: string;
+  series_title: string;
+  items: CastSlot[];
+  /** Roles the story has written, whether cast or not. */
+  roles: Character[];
+  /** Written roles with no cast slot yet. */
+  unclaimed: Character[];
+  roster: Actor[];
+  story_written: boolean;
 };
 
 export type ActorAppearance = {
@@ -233,9 +388,12 @@ export type SeriesDetail = SeriesCard & {
   episode_count: number;
   pilot_required: boolean;
   paid?: boolean;
-  next_action?: "pay_pilot" | "open_production" | "approve_pilot" | "buy_next_block";
+  next_action?: "pay_pilot" | "continue_draft" | "open_production" | "approve_pilot" | "buy_next_block";
   active_production_id?: string | null;
   target_episode_count?: number;
+  can_discard?: boolean;
+  episode_length?: string;
+  video_tier?: "pro" | "catalog";
 };
 
 export type AttentionItem = {
@@ -267,6 +425,7 @@ export type Production = {
   poster_tone?: string;
   mode: string;
   sku: string;
+  video_tier?: "pro" | "catalog";
   priority: string;
   episode_length: string;
   episode_start: number;
@@ -365,6 +524,7 @@ export type EpisodeDetail = Episode & {
   series_title?: string;
   production_id?: string | null;
   production_mode?: string | null;
+  captions_url?: string | null;
   scenes: Array<{ id: string; position: number; location: string; status: string }>;
   shots: Array<{
     id: string;

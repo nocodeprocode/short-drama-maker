@@ -1,3 +1,3 @@
 export default {
-  title: "Data Residency — Short Drama Maker",
+  title: "Data Residency — Takehaus",
 };

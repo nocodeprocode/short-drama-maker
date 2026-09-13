@@ -6,5 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "ENVIRONMENT": "staging"
+  },
+  "env": {
+    "production": {
+      "name": "drama-space",
+      "vars": {
+        "ENVIRONMENT": "production"
+      }
+    }
   }
 }

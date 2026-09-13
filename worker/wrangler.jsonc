@@ -3,10 +3,15 @@
   "main": "src/container.ts",
   "compatibility_date": "2026-08-30",
   "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
   "containers": [
     {
       "class_name": "MediaWorker",
       "image": "./Dockerfile",
+      "image_build_context": "..",
       "instance_type": "standard-1",
       "max_instances": 2
     }

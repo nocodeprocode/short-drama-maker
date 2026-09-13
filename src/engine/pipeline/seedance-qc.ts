@@ -1,4 +1,5 @@
 import { cueRows, cueText } from "../../drama-engine/types/continuity.ts";
+import { wordErrorRate } from "../media/qc.ts";
 import type { TakeAnalysis } from "./take-analysis.ts";
 
 /**
@@ -59,6 +60,26 @@ export function joinCutFailReasons(
   return [];
 }
 
+/**
+ * How far the take may drift from the written lines before it is a different
+ * scene. Well above ASR noise on a correct take (~0.15–0.35), well below an
+ * improvised one: Seedance will happily invent a whole conversation, and
+ * nothing else in the pipeline notices — the captions still show the script,
+ * so it reads to a viewer as captions that do not match the actors.
+ */
+export const SPEECH_OFF_SCRIPT_WER = 0.6;
+
+export function speechOffScriptReasons(
+  transcript: string | null | undefined,
+  script: string | null | undefined,
+): string[] {
+  const heard = (transcript ?? "").replace(/\s+/g, " ").trim();
+  const planned = spokenScriptPlain(script);
+  // Too little to judge: a one-line button can legitimately transcribe short.
+  if (!heard || planned.split(/\s+/).filter(Boolean).length < 6) return [];
+  return wordErrorRate(planned, heard) > SPEECH_OFF_SCRIPT_WER ? ["speech_off_script"] : [];
+}
+
 export function sceneTakeObedienceReasons(input: {
   transcript?: string | null;
   namedCast?: readonly string[] | null;
@@ -72,8 +93,9 @@ export function sceneTakeObedienceReasons(input: {
     speakers: input.speakers,
     script: input.script,
   });
+  const offScript = speechOffScriptReasons(input.transcript, input.script);
   const join = input.analysis != null && input.takeIndex != null
     ? joinCutFailReasons(input.analysis, input.takeIndex)
     : [];
-  return [...leaks, ...join];
+  return [...leaks, ...offScript, ...join];
 }

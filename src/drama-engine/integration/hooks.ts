@@ -29,6 +29,9 @@ import {
   seasonMovementFor,
   TAG_STACK_RULE,
 } from "../types/micro-drama.ts";
+import { DROP_IN_RULES } from "../types/drop-in.ts";
+import { PHYSICS_RULES } from "../types/physics.ts";
+import { CUT_RULES } from "../types/cut.ts";
 import type { DramaLintResult } from "../types/qc-drama.ts";
 import type { GenreId, SkuPolicy } from "../types/genre.ts";
 import type { VideoRoute } from "../../engine/domain.ts";
@@ -54,6 +57,10 @@ export type DramaEngineHooks = {
     roomGeometry?: string | null;
     /** 0-based episode take index. Per-scene position resets and must not drive JOIN CUT. */
     takeIndex?: number;
+    /** Applicable series / episode / last-clip context for this generation. */
+    context?: string | null;
+    /** Last framing of the previous generation. Shot 1 must not reprint it. */
+    prevLand?: import("../types/cut.ts").CutFraming | null;
   }): string;
   allocateDurations(input: {
     wavSeconds: number;
@@ -90,7 +97,7 @@ export function createDramaEngineHooks(): DramaEngineHooks {
 
 ${playbookPrompt(playbook, sku)}
 Cast jobs: tag every named role Engine / Wall / Witness / Nuke. 4–5 named speaking roles. 3–5 reused locations. No unnamed extras.
-Cast look: every named adult is strikingly beautiful in a phone-close way. Write appearance.face as specific beauty (eyes, bone, mouth, hair), never average or plain. Short drama is sold on faces the viewer wants to stay with. Fictional adults only. Do not copy a public figure. Modest clothes stay on. Beauty is the face.
+Cast look: every named adult is strikingly beautiful. Write appearance.ethnicity_notes as a locked look (olive / pale-gold / cool brown / warm bronze) — never "unspecified fictional". Write appearance.face as specific beauty (eyes, bone, mouth, hair, skin). appearance.face is a HUMAN face and nothing else: write the eye colour, never a power. Never "eyes that flash gold", "glowing eyes", fangs, fur, or a mark that lights up — the face still is the only legal face, so a glow written here becomes permanent on every shot. The power lives in one scripted parenthetical, never in the look. Eye colour is an everyday human colour — brown, dark brown, hazel, grey, grey-green, dark blue. Never a jewel or neon iris (bright green, ice blue, amber, violet, gold): image and video models render a saturated iris as a self-lit eye in a dim room, which reads as a supernatural tell you did not write. Beauty is bone, mouth, skin, and hair — not eye colour. Boss and assistant must not share a face family. The still is the only legal face; do not recast race. Fictional adults only, every named role 24 or older. A sister is an adult in a hospital bed, not a dependent. Do not copy a public figure. Modest clothes stay on. Beauty is the face.
 ${TAG_STACK_RULE}
 Locations: each is one line — NAME — then the physical facts a video model needs: time of day, weather, the one anchor people gather at, walls, openings, light source, ground or floor. Write the place the story needs. If it is outside, write rain, pavement, masonry, the street lamp — never curtains, blinds, or kitchen furniture in the street. If it is inside, write a finished room with a ceiling. Never a default interior for an outdoor beat.
 Title is a 4–8 word trope label from this playbook — do not invent a new genre.
@@ -126,6 +133,8 @@ Do not write a 90-minute movie and slice it.`;
           takeIndex: input.takeIndex ?? 0,
           roomDescription: input.roomDescription,
           roomGeometry: input.roomGeometry,
+          context: input.context,
+          prevLand: input.prevLand,
         });
       }
       const twoShot = allowsTwoShot(data.function);
@@ -201,19 +210,43 @@ Do not write a 90-minute movie and slice it.`;
       const movement = seasonMovementFor(input.episodeNumber, episodeCount);
       const shape = cliffShapeFor(input.episodeNumber, episodeCount);
       const opener = isLoopOpener(input.episodeNumber);
+      const authored = input.bible.source === "script"
+        ? (input.bible.episode_structure ?? []).find((row) => row.episode_number === input.episodeNumber)
+        : undefined;
+      const source = authored?.source_beats?.length
+        ? `
+THIS EPISODE IS ADAPTED, NOT INVENTED. The writer uploaded a finished script and these are their beats for episode ${input.episodeNumber}, in order. Shoot these. Do not replace them with a different story, do not reorder them, do not skip one because a trope would be punchier.
+${authored.source_beats.map((beat, index) => `${index + 1}. ${beat}`).join("\n")}
+${
+            authored.source_dialogue?.length
+              ? `\nKeep these lines close to the writer's wording. Tighten only for breath and lip-sync:\n${authored.source_dialogue.map((line) => `- ${line}`).join("\n")}`
+              : ""
+          }
+Your job is staging, coverage, and camera. The story is already decided.
+`
+        : "";
+      // Other episodes' uploaded beats stay out of the dump. At 90 episodes they
+      // would dwarf the prompt, and this episode's beats are listed in full below.
+      const structure = enrichEpisodeStructure(input.bible).map(({ source_beats, source_dialogue, ...row }) => row);
       return `Write episode ${input.episodeNumber} as a commercial short-drama shot list for this bible:
-${JSON.stringify({ ...input.bible, episode_structure: enrichEpisodeStructure(input.bible) })}
-
+${JSON.stringify({ ...input.bible, episode_structure: structure })}
+${source}
 Dramatize THIS title and logline only: "${input.bible.title}" — ${input.bible.logline}
 Core expectation: ${coreExpectationFrom(input.bible.logline)} Every episode delays the answer and raises its price; nothing resolves before the finale.
 The objects, places, and conflict named in the logline and the bible are the episode. Never import an object, room, or plot from anywhere else.
+
+${DROP_IN_RULES}
+
+${PHYSICS_RULES}
+
+${CUT_RULES}
 
 SEASON POSITION. Movement: ${movement.movement} — ${movement.mission}. Loop ${loop.loop} (episodes ${loop.episodes[0]}–${loop.episodes[1]}): ${loop.function}; its pleasure point is "${loop.pleasure}" and it is a partial win only.
 END HOOK SHAPE for this episode: ${shape} — ${CLIFF_SHAPE_NOTES[shape]}. The last cue is that shape and no other; the previous episode ended differently.
 ${
   opener
-    ? "LOOP OPENER. A viewer may start here cold. Inside the first take, through conflict and never recap: both leads appear and speak, their relationship is stated on the nose in one line, and the staging shows who holds power. Name someone at most once, and only when it lands. By the end of the episode a cold viewer knows who these people are and what they want from each other."
-    : "MID-LOOP. A viewer who joined two episodes ago must still be able to say who wants what from whom — through conflict, not by saying names every line. Name someone at most once per take."
+    ? "LOOP OPENER. A viewer may start here cold. Inside the first take, through conflict and never recap: both leads appear and speak, their relationship is stated on the nose in one line, and the staging shows who holds power. Name someone at most once, and only when it lands. Never name-drop an off-screen person the viewer has not met — say the role in the same breath or put them in the doorway. By the end of the episode a cold viewer knows who these people are and what they want from each other."
+    : "MID-LOOP. A viewer who joined two episodes ago must still be able to say who wants what from whom — through conflict, not by saying names every line. Name someone at most once per take. Do not name someone who is not in this take unless the same line identifies them by role."
 }
 ${input.episodeNumber === 1 ? "Episode 1 opens mid-crisis at the height of the conflict, puts both leads on screen together, plants every kernel the season will pay off (the secret, the debt, the rival), and ends on the first unpaid question between the leads." : ""}
 

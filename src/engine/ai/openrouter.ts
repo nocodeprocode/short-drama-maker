@@ -31,7 +31,7 @@ export function openRouterHeaders(extra?: HeadersInit): Headers {
   headers.set("Authorization", `Bearer ${requireOpenRouterKey()}`);
   headers.set("Content-Type", "application/json");
   headers.set("HTTP-Referer", "https://shortdramamaker.app");
-  headers.set("X-Title", "Short Drama Maker");
+  headers.set("X-Title", "Takehaus");
   return headers;
 }
 

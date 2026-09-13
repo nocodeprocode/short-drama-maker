@@ -2,6 +2,7 @@ import { useState } from "react";
 import { usePageContext } from "vike-react/usePageContext";
 import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
+import { Select } from "@/components/base/select/select";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
 import { CharacterPack } from "@/components/drama/cast-card.tsx";
 import { AccountSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
@@ -86,23 +87,20 @@ export default function Page() {
           ) : null}
           {character.voice_description ? <p className="text-sm text-tertiary">{character.voice_description}</p> : null}
           {unlocked ? (
-            <div className="max-w-xl rounded-xl border border-secondary bg-primary p-5">
-              <h2 className="text-sm font-semibold">Attach an actor</h2>
+            <div className="max-w-xl rounded-xl bg-primary p-5 ring-1 ring-secondary ring-inset">
+              <h2 className="text-md font-semibold">Attach an actor</h2>
               <p className="mt-1 text-sm text-tertiary">Reuse a face from your roster. Looks are generated from this story.</p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <select
-                  className="min-w-48 rounded-lg border border-secondary bg-primary px-3 py-2 text-sm"
-                  value={actorId}
-                  onChange={(event) => setActorId(event.target.value)}
-                >
-                  <option value="">Choose actor</option>
-                  {(actors?.items ?? []).map((actor: Actor) => (
-                    <option key={actor.id} value={actor.id}>
-                      {actor.name}
-                    </option>
-                  ))}
-                </select>
-                <Button color="secondary" size="sm" onClick={() => void attach()} isDisabled={!actorId || casting}>
+              <div className="mt-4 flex flex-wrap items-end gap-2">
+                <div className="min-w-56 grow">
+                  <Select
+                    aria-label="Actor"
+                    placeholder="Choose actor"
+                    selectedKey={actorId || null}
+                    onSelectionChange={(key) => setActorId(key ? String(key) : "")}
+                    items={(actors?.items ?? []).map((actor: Actor) => ({ id: actor.id, label: actor.name }))}
+                  />
+                </div>
+                <Button color="secondary" size="md" onClick={() => void attach()} isDisabled={!actorId || casting}>
                   {casting ? "Attaching…" : "Attach"}
                 </Button>
               </div>

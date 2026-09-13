@@ -190,7 +190,8 @@ export type Character = {
   updated_at: string;
 };
 
-export type SeasonSku = 2 | 12 | 24 | 45 | 60;
+export type SeasonSku = 2 | 12 | 15 | 24 | 30 | 45 | 50 | 60 | 90;
+export type VideoTier = "pro" | "catalog";
 
 export type Series = {
   id: string;
@@ -249,6 +250,7 @@ export type ShotBlocking = {
   upper_frame?: string | null;
   staging?: string | null;
   anchor?: string | null;
+  door_side?: "camera-left" | "camera-right" | null;
 };
 export type SilenceLicense = "post_slap" | "post_nuke" | "button_freeze" | "illegal_opera";
 
@@ -446,7 +448,7 @@ export type GenerationJob = {
 export type LedgerEntry = {
   id: string;
   owner_id: string;
-  series_id: string;
+  series_id: string | null;
   entry_type: LedgerEntryType;
   amount: number;
   generation_job_id: string | null;
@@ -487,10 +489,20 @@ export type StoryBible = {
     cliffhanger?: string;
     tentpole?: boolean;
     paywall_flag?: boolean;
+    /** Ordered beats taken from the buyer's uploaded script. Authored mode only. */
+    source_beats?: string[];
+    /** Lines worth keeping close to the author's wording. Authored mode only. */
+    source_dialogue?: string[];
   }>;
   visual_style: Record<string, unknown>;
   rules: ScreenplayRules;
   season?: import("../drama-engine/plans/season-bible.ts").SeasonBible;
+  /**
+   * "script" means the buyer uploaded a finished screenplay and the episode
+   * structure is segmented from it. The planner adapts those beats instead of
+   * inventing, and the season log follows the author rather than a genre spine.
+   */
+  source?: "brief" | "script";
 };
 
 export type EpisodePlan = {

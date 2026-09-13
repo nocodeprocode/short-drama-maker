@@ -1,4 +1,8 @@
-export const BUSY_VIDEO_STATUSES = ["queued", "submitting", "generating", "ingesting"] as const;
+export const BUSY_VIDEO_STATUSES = ["queued", "submitting", "generating", "ingesting", "qc"] as const;
+
+export function isBusyVideoJob(status: string): boolean {
+  return (BUSY_VIDEO_STATUSES as readonly string[]).includes(status);
+}
 
 export function shotNeedsVideo(
   shot: { id: string; status: string },
@@ -11,7 +15,7 @@ export function shotNeedsVideo(
     (job) =>
       job.job_type === "video" &&
       job.shot_id === shot.id &&
-      (BUSY_VIDEO_STATUSES as readonly string[]).includes(job.status),
+      isBusyVideoJob(job.status),
   );
 }
 

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { captionsAlongTimeline, captionsFromAlignment, captionsFromSceneScript, cuesFromVtt, cuesToAss, cuesToVtt, wrapCaptionLines } from "./captions.ts";
+import {
+  captionsAlongTimeline,
+  captionsFromAlignment,
+  captionsFromSceneScript,
+  cuesFromVtt,
+  cuesToAss,
+  cuesToVtt,
+  holdCaptionsAcrossCuts,
+  wrapCaptionLines,
+} from "./captions.ts";
 import type { AlignmentTrack } from "../domain.ts";
 
 const track = (text: string, start: number, end: number): AlignmentTrack => ({
@@ -45,18 +54,52 @@ describe("captions along the cut", () => {
     expect(lines.join(" ")).toMatch(/question/);
   });
 
-  it("prefixes the speaker name on every dialogue cue", () => {
+  it("holds a caption over the cut instead of blinking out with it", () => {
+    // Take 1's last word lands at 14.4 and take 2's first at 15.2: without a
+    // hold the screen is blank across the join.
+    const held = holdCaptionsAcrossCuts([
+      { start: 12.0, end: 14.4, text: "Forty for the run and I'm gone." },
+      { start: 15.2, end: 17.0, text: "Then forty's not enough." },
+    ]);
+    // Hands over just under the next start: no blank frame, no two plates at
+    // once. The gap is far narrower than a frame, so nothing can land in it.
+    expect(held[0]!.end).toBeGreaterThan(14.4);
+    expect(held[0]!.end).toBeLessThan(15.2);
+    expect(15.2 - held[0]!.end).toBeLessThan(1 / 30);
+    const offGrid = holdCaptionsAcrossCuts([
+      { start: 12.0, end: 14.4, text: "One." },
+      { start: 15.213, end: 17, text: "Two." },
+    ]);
+    expect(offGrid[0]!.end).toBeLessThan(15.213);
+    expect(15.213 - offGrid[0]!.end).toBeLessThan(1 / 30);
+    expect(held[1]!.end).toBe(17.0);
+    // A real beat still clears the screen.
+    const beat = holdCaptionsAcrossCuts([
+      { start: 0, end: 1.5, text: "Sit down." },
+      { start: 6, end: 7, text: "So you're buying me." },
+    ]);
+    expect(beat[0]!.end).toBe(1.5);
+    // Overlaps are pulled back so two plates never stack.
+    const overlap = holdCaptionsAcrossCuts([
+      { start: 0, end: 3.2, text: "One." },
+      { start: 3.0, end: 4.0, text: "Two." },
+    ]);
+    expect(overlap[0]!.end).toBeLessThan(3.0);
+  });
+
+  it("burns the words only and keeps the speaker as cue metadata", () => {
     const cues = captionsAlongTimeline({
       shotDurations: [4],
       alignments: [track("I did not write the paper.", 0, 1.4)],
       pictureStarts: [0],
       speakers: ["Mara Voss"],
     });
-    expect(cues[0]?.text).toMatch(/^MARA:/);
+    expect(cues[0]?.text).not.toMatch(/MARA:/);
     expect(cues[0]?.text).toMatch(/I did not write the paper/);
+    expect(cues[0]?.speaker).toBe("Mara Voss");
   });
 
-  it("labels each cue with its own speaker instead of the take's first speaker", () => {
+  it("attributes each cue to its own speaker instead of the take's first speaker", () => {
     const cues = captionsAlongTimeline({
       shotDurations: [15],
       alignments: [track("How long Don't Three months", 0, 2)],
@@ -65,10 +108,11 @@ describe("captions along the cut", () => {
       scripts: ["MARA: How long?\nCOLE: Don't.\nMARA: Three months."],
     });
     expect(cues.map((cue) => cue.text.replace(/\n/g, " "))).toEqual([
-      expect.stringMatching(/^MARA: How long/),
-      expect.stringMatching(/^COLE: Don't/),
-      expect.stringMatching(/^MARA: Three months/),
+      "How long?",
+      "Don't.",
+      "Three months.",
     ]);
+    expect(cues.every((cue) => !/^[A-Z]+:/.test(cue.text))).toBe(true);
     expect(cues[0]?.speaker).toBe("MARA");
     expect(cues[1]?.speaker).toBe("COLE");
     expect(cues[0]?.start).toBeCloseTo(0, 5);

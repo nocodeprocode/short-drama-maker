@@ -1,10 +1,14 @@
 import { runOnce } from "../../../src/engine/jobs/runner.ts";
 import { setAssetFetch } from "../../../src/engine/storage/fetch.ts";
+import { mediaRunnerConfigured, pokeMediaRunner, wakeMediaRunner } from "./wake.ts";
 
 type MediaStoreFetcher = { fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> };
 
 type JobsEnv = Record<string, string | undefined> & {
   MEDIA_STORE?: MediaStoreFetcher;
+  MEDIA_RUNNER?: MediaStoreFetcher;
+  MEDIA_WORKER_TOKEN?: string;
+  MEDIA_WORKER_URL?: string;
 };
 
 type ExecutionContext = {
@@ -38,7 +42,12 @@ async function tick() {
 export default {
   async fetch(request: Request, env: JobsEnv, ctx: ExecutionContext) {
     if (request.method === "GET" && new URL(request.url).pathname === "/health") {
-      return Response.json({ ok: true, role: "jobs", runner_role: env.RUNNER_ROLE ?? "all" });
+      return Response.json({
+        ok: true,
+        role: "jobs",
+        runner_role: env.RUNNER_ROLE ?? "all",
+        media_runner: mediaRunnerConfigured(env),
+      });
     }
     if (request.method !== "POST") {
       return new Response("Not found", { status: 404 });
@@ -47,12 +56,20 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
     applyEnv(env);
-    const completed = await tick();
-    return Response.json({ ok: true, completed });
+    // A wake says "there is work", not "do the work now". Draining the queue can
+    // take as long as an image generation, and the caller is usually a user
+    // request waiting on a response, so the tick outlives the reply.
+    ctx.waitUntil(
+      tick()
+        .catch(() => undefined)
+        .then(() => pokeMediaRunner(env)),
+    );
+    return Response.json({ ok: true, woken: true, media_runner: mediaRunnerConfigured(env) });
   },
 
-  async scheduled(_event: unknown, env: JobsEnv, _ctx: ExecutionContext) {
+  async scheduled(_event: unknown, env: JobsEnv, ctx: ExecutionContext) {
     applyEnv(env);
     await tick();
+    wakeMediaRunner(env, (promise) => ctx.waitUntil(promise));
   },
 };

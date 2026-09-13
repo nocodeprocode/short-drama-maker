@@ -6,8 +6,8 @@ import { join } from "node:path";
 import type { RenderManifest } from "../domain.ts";
 import { ffmpegAvailable } from "../../drama-engine/editorial/cut-detect.ts";
 import { libraryReady, loadMusicBytes, pickMusic } from "../../drama-engine/craft/music/library.ts";
-import { CAPTION_STYLE, LOUDNESS, speakerCaptionColor, type HeardLane } from "../../drama-engine/types/audio.ts";
-import { cuesFromVtt, wrapCaptionLines } from "../pipeline/captions.ts";
+import { CAPTION_STYLE, LOUDNESS, type HeardLane } from "../../drama-engine/types/audio.ts";
+import { cuesFromVtt, holdCaptionsAcrossCuts, wrapCaptionLines } from "../pipeline/captions.ts";
 import { heardDelaySeconds, heardFileSkipSeconds } from "../pipeline/heard-audio.ts";
 import { visemeAlignForTake } from "./viseme-align.ts";
 
@@ -195,7 +195,7 @@ const DRAW_FONTS = [
   "/System/Library/Fonts/Helvetica.ttc",
 ].filter(Boolean);
 
-export function captionForceStyle(frameHeight = CAPTION_STYLE.canvas.height): string {
+export function captionForceStyle(frameHeight: number = CAPTION_STYLE.canvas.height): string {
   const bandPct = (CAPTION_STYLE.bandFromTopPct.min + CAPTION_STYLE.bandFromTopPct.max) / 2;
   const marginV = Math.round(frameHeight * (1 - bandPct / 100));
   return `Fontsize=24,Alignment=2,MarginV=${marginV},Outline=3,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000`;
@@ -214,75 +214,94 @@ export function captionOverlayFilter(
     .join(";");
 }
 
-function captionFillRgb(text: string): [number, number, number] {
-  const tag = /^([A-Z]{2,12}):/.exec(text.trim())?.[1] ?? "";
-  const hex = speakerCaptionColor(tag).replace("#", "");
-  return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)];
-}
-
-/** Character intro labels sit high in frame, clear of faces at FaceTime register and of the caption band. */
-export const INTRO_LABEL_SECONDS = 2.2;
-const INTRO_LABEL_FROM_TOP_PCT = 11;
+/**
+ * One subtitle plate.
+ *
+ * Broadcast subtitling, not a social-video sticker: white text, one weight, a
+ * thin dark stroke for legibility on a bright frame, and a soft shadow under it
+ * so the letters separate from the picture without a hard black halo. No per
+ * speaker colours, no band, no animation — the eye should read it and go back
+ * to the face.
+ */
+const CAPTION_FONT_SIZE = 50;
+const CAPTION_LINE_GAP = 14;
+const CAPTION_STROKE_PX = 2;
 
 async function renderCaptionPlate(
   file: string,
   text: string,
-  frameHeight = CAPTION_STYLE.canvas.height,
-  placement: "caption" | "label" = "caption",
+  frameHeight: number = CAPTION_STYLE.canvas.height,
 ): Promise<void> {
-  const bandPct =
-    placement === "label" ? INTRO_LABEL_FROM_TOP_PCT : (CAPTION_STYLE.bandFromTopPct.min + CAPTION_STYLE.bandFromTopPct.max) / 2;
+  const bandPct = (CAPTION_STYLE.bandFromTopPct.min + CAPTION_STYLE.bandFromTopPct.max) / 2;
   const y = Math.round(frameHeight * (bandPct / 100));
   const width = CAPTION_STYLE.canvas.width;
   const maxW = width - CAPTION_STYLE.keepOutLeftPx - CAPTION_STYLE.keepOutRightPx;
-  const lines = placement === "label" ? [text.replace(/\n/g, " ")] : wrapCaptionLines(text.replace(/\n/g, " "));
-  const fill: [number, number, number] = placement === "label" ? [255, 214, 10] : captionFillRgb(text);
-  const fontSize = placement === "label" ? 40 : 54;
-  const floorPct = placement === "label" ? 0.04 : 0.62;
+  const lines = wrapCaptionLines(text.replace(/\n/g, " "));
   const font = DRAW_FONTS.find((row) => existsSync(row)) ?? "";
   // Script name derived from the output file so the same manifest renders the same bytes.
   const script = `${file}.py`;
   await writeFile(
     script,
-    `from PIL import Image, ImageDraw, ImageFont
-img = Image.new("RGBA", (${width}, ${frameHeight}), (0, 0, 0, 0))
+    `from PIL import Image, ImageDraw, ImageFont, ImageFilter
+W, H = ${width}, ${frameHeight}
+img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 draw = ImageDraw.Draw(img)
 try:
-    font = ImageFont.truetype(${JSON.stringify(font)}, ${fontSize}) if ${JSON.stringify(font)} else ImageFont.load_default()
+    font = ImageFont.truetype(${JSON.stringify(font)}, ${CAPTION_FONT_SIZE}) if ${JSON.stringify(font)} else ImageFont.load_default()
 except Exception:
     font = ImageFont.load_default()
 lines = ${JSON.stringify(lines)}
 max_w = ${maxW}
-sizes = []
-for line in lines:
-    bbox = draw.textbbox((0, 0), line, font=font)
-    sizes.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
+
+def measure(f):
+    out = []
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=f, stroke_width=${CAPTION_STROKE_PX})
+        out.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
+    return out
+
+sizes = measure(font)
 while sizes and max(w for w, _ in sizes) > max_w:
     try:
-        size = max(18, font.size - 2)
+        size = max(28, font.size - 2)
+        if size == font.size:
+            break
         font = ImageFont.truetype(${JSON.stringify(font)}, size)
     except Exception:
         break
-    sizes = []
-    for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
-        sizes.append((bbox[2] - bbox[0], bbox[3] - bbox[1]))
-gap = 8
-block_h = sum(h for _, h in sizes) + gap * max(0, len(sizes) - 1)
+    sizes = measure(font)
+
+# Even line spacing off the font metric, so one-line and two-line cues sit on
+# the same baseline instead of jumping with the tallest glyph.
+ascent, descent = font.getmetrics()
+line_h = ascent + descent
+block_h = line_h * len(lines) + ${CAPTION_LINE_GAP} * max(0, len(lines) - 1)
 y0 = ${y} - block_h / 2
-bottom = ${frameHeight} - ${CAPTION_STYLE.keepOutBottomPx}
+bottom = H - ${CAPTION_STYLE.keepOutBottomPx}
 if y0 + block_h > bottom:
     y0 = bottom - block_h
-if y0 < ${frameHeight} * ${floorPct}:
-    y0 = ${frameHeight} * ${floorPct}
+
+placed = []
 cursor = y0
 for line, (tw, th) in zip(lines, sizes):
-    x = (${width} - min(tw, max_w)) / 2
-    x = max(${CAPTION_STYLE.keepOutLeftPx}, min(x, ${width} - ${CAPTION_STYLE.keepOutRightPx} - tw))
-    for dx, dy in ((-3,0),(3,0),(0,-3),(0,3),(-2,-2),(2,2),(-2,2),(2,-2)):
-        draw.text((x+dx, cursor+dy), line, font=font, fill=(0,0,0,255))
-    draw.text((x, cursor), line, font=font, fill=(${fill[0]},${fill[1]},${fill[2]},255))
-    cursor += th + gap
+    x = (W - tw) / 2
+    x = max(${CAPTION_STYLE.keepOutLeftPx}, min(x, W - ${CAPTION_STYLE.keepOutRightPx} - tw))
+    placed.append((line, x, cursor))
+    cursor += line_h + ${CAPTION_LINE_GAP}
+
+# Soft drop shadow first: separates text from a busy frame without a hard halo.
+shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+sdraw = ImageDraw.Draw(shadow)
+for line, x, ty in placed:
+    sdraw.text((x, ty + 3), line, font=font, fill=(0, 0, 0, 170),
+               stroke_width=${CAPTION_STROKE_PX + 1}, stroke_fill=(0, 0, 0, 170))
+shadow = shadow.filter(ImageFilter.GaussianBlur(7))
+img = Image.alpha_composite(img, shadow)
+
+draw = ImageDraw.Draw(img)
+for line, x, ty in placed:
+    draw.text((x, ty), line, font=font, fill=(255, 255, 255, 255),
+              stroke_width=${CAPTION_STROKE_PX}, stroke_fill=(0, 0, 0, 205))
 img.save(${JSON.stringify(file)})
 `,
   );
@@ -364,6 +383,28 @@ async function prepareClip(
 
 export type ClipJoin = { style: "dissolve" | "fadeblack" | "fadewhite" | "cut"; seconds: number };
 
+/** Three frames at 30fps. Longer fades — especially white — read as a camera flash. */
+export const HARD_CUT_XFADE_SECONDS = 0.1;
+export const MAX_JOIN_FADE_SECONDS = 0.12;
+
+/** Never pass fadewhite to ffmpeg. White joins look like a photo flash in a dark room. */
+export function xfadeTransitionFor(style: ClipJoin["style"]): "fade" | "fadeblack" {
+  if (style === "fadeblack" || style === "fadewhite") return "fadeblack";
+  return "fade";
+}
+
+export function clipJoinFor(shot: {
+  transition_in?: string | null;
+  transition_style?: ClipJoin["style"] | null;
+  transition_seconds?: number | null;
+}): ClipJoin {
+  if (shot.transition_in !== "fade") return { style: "cut", seconds: 0 };
+  const raw = shot.transition_style === "fadewhite" ? "fadeblack" : (shot.transition_style ?? "cut");
+  const seconds =
+    raw === "cut" ? HARD_CUT_XFADE_SECONDS : Math.min(shot.transition_seconds ?? HARD_CUT_XFADE_SECONDS, MAX_JOIN_FADE_SECONDS);
+  return { style: raw, seconds };
+}
+
 async function probeDurationSeconds(path: string): Promise<number> {
   const child = spawn("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", path], {
     stdio: ["ignore", "pipe", "ignore"],
@@ -403,9 +444,13 @@ export async function xfadeConcat(
     const maxOverlap = Math.max(0.1, Math.min(durations[i - 1]! - 0.3, durations[i]! - 0.3) / 2);
     // xfade needs at least a few frames of overlap or the chain stops at that join;
     // three frames at 30fps still reads as a hard cut.
-    const d = join.style === "cut" ? 0.1 : Math.max(0.1, Math.min(join.seconds, maxOverlap));
+    const d =
+      join.style === "cut"
+        ? HARD_CUT_XFADE_SECONDS
+        : Math.max(HARD_CUT_XFADE_SECONDS, Math.min(join.seconds, maxOverlap, MAX_JOIN_FADE_SECONDS));
     // xfade's own "dissolve" is a speckle dissolve; a true crossfade is "fade".
-    const transition = join.style === "cut" || join.style === "dissolve" ? "fade" : join.style;
+    // fadewhite is banned — it reads as a camera flash.
+    const transition = xfadeTransitionFor(join.style);
     const offset = Math.max(0, timeline - d);
     const vOut = i === clips.length - 1 ? "[vout]" : `[v${i}]`;
     const aOut = i === clips.length - 1 ? "[aout]" : `[a${i}]`;
@@ -633,11 +678,7 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     }
     let picture: string;
     if (useXfade) {
-      const joins: ClipJoin[] = shots.slice(1).map((shot) =>
-        shot.transition_in === "fade"
-          ? { style: shot.transition_style ?? "dissolve", seconds: shot.transition_seconds ?? 0.5 }
-          : { style: "cut", seconds: 0 },
-      );
+      const joins: ClipJoin[] = shots.slice(1).map((shot) => clipJoinFor(shot));
       if (slate) joins.push({ style: "fadeblack", seconds: 0.4 });
       const joined = await xfadeConcat(dir, clips, joins, useTakeMux);
       picture = joined.path;
@@ -651,21 +692,9 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
     } else {
       picture = await concatClipsIncremental(dir, clips, 12, useTakeMux);
     }
-    const introPlates: Array<{ file: string; start: number; end: number }> = [];
-    for (const [index, shot] of shots.entries()) {
-      for (const [labelIndex, label] of (shot.intro_labels ?? []).entries()) {
-        const file = join(dir, `label-${index}-${labelIndex}.png`);
-        try {
-          await renderCaptionPlate(file, label, CAPTION_STYLE.canvas.height, "label");
-          // Stagger when two people are introduced in the same clip.
-          const start = (shot.picture_start_seconds ?? 0) + 0.3 + labelIndex * (INTRO_LABEL_SECONDS + 0.2);
-          introPlates.push({ file, start, end: start + INTRO_LABEL_SECONDS });
-        } catch {
-          /* PIL missing — skip that plate */
-        }
-      }
-    }
-    if (input.vtt?.includes("-->") || introPlates.length) {
+    // No name cards and no title over the picture. The scene introduces people;
+    // a label burned in the corner reads as a rough assembly, not a finished cut.
+    if (input.vtt?.includes("-->")) {
       const cues = input.vtt?.includes("-->")
         ? cuesFromVtt(input.vtt).map((cue) => {
             const idx = input.manifest.shots.findIndex((shot, index) => {
@@ -680,8 +709,11 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
             return { ...cue, start: newStart + rel + pad, end: newStart + (cue.end - oldStart) + pad };
           })
         : [];
+      // Held on the final picture clock, after every take has been retimed, so a
+      // caption spans the join instead of blinking out with the cut.
+      const held = holdCaptionsAcrossCuts(cues);
       const plates: Array<{ file: string; start: number; end: number }> = [];
-      for (const [index, cue] of cues.entries()) {
+      for (const [index, cue] of held.entries()) {
         const file = join(dir, `cap-${index}.png`);
         try {
           await renderCaptionPlate(file, cue.text);
@@ -690,7 +722,6 @@ export async function assembleEpisodeMp4(input: MixInput): Promise<Uint8Array | 
           /* PIL missing — skip that plate */
         }
       }
-      plates.push(...introPlates);
       if (plates.length) {
         const captioned = join(dir, "picture-cap.mp4");
         const overlayArgs = ["-y", "-i", picture];

@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
+import { Tab, TabList, Tabs } from "@/components/base/tabs/tabs";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
+import { MediaRow } from "@/components/drama/media-row.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { CTA, statusBadgeColor, statusLabel } from "@/engine/present.ts";
 import { LoadError, PosterGridSkeleton } from "@/components/drama/skeleton.tsx";
@@ -58,46 +60,55 @@ export default function Page() {
           </Button>
         }
       />
-      <div className="border-b border-secondary bg-primary px-4 sm:px-8">
-        <div className="flex gap-1">
-          {FILTERS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setFilter(tab.id)}
-              className={cx(
-                "border-b-2 px-3 py-2.5 text-sm font-semibold",
-                filter === tab.id ? "border-brand-600 text-brand-700" : "border-transparent text-tertiary",
-              )}
-            >
-              {tab.label}
-              <span className="ml-1.5 text-xs font-medium text-tertiary">{counts[tab.id]}</span>
-            </button>
-          ))}
-        </div>
+      <div className="bg-primary px-4 sm:px-8">
+        <Tabs selectedKey={filter} onSelectionChange={(key) => setFilter(key as (typeof FILTERS)[number]["id"])}>
+          <TabList aria-label="Filter jobs">
+            {FILTERS.map((tab) => (
+              <Tab key={tab.id} id={tab.id} badge={counts[tab.id]}>
+                {tab.label}
+              </Tab>
+            ))}
+          </TabList>
+        </Tabs>
       </div>
       <PageBody>
         {!data ? <PosterGridSkeleton cols="jobs" count={4} /> : null}
         {data ? (
-          <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 xl:grid-cols-4">
+          <div className="flex flex-col gap-2 lg:grid lg:grid-cols-3 lg:gap-5 xl:grid-cols-4">
             {items.map((run) => (
-              <a key={run.id} href={`/productions/${run.id}`} className="text-left transition-transform hover:-translate-y-0.5">
-                <Poster
-                  tone={run.poster_tone}
-                  src={run.cover_url}
-                  title={`${run.series_title ?? "Show"} · ${run.sku === "2" ? "Pilot" : `E${run.episode_start}–${run.episode_end}`}`}
-                  progress={run.progress ?? (run.status === "ready" ? 100 : 24)}
-                />
-                <div className="mt-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-sm font-semibold">{run.series_title}</div>
-                    <Badge type="pill-color" color={statusBadgeColor(run.status, run.paused)} size="sm">
-                      {statusLabel(run.status, run.paused)}
-                    </Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-tertiary">{run.headline ?? run.agent_decision ?? "Preparing this show."}</div>
+              <div key={run.id}>
+                <div className="lg:hidden">
+                  <MediaRow
+                    href={`/productions/${run.id}`}
+                    tone={run.poster_tone}
+                    src={run.cover_url}
+                    title={run.series_title ?? "Show"}
+                    detail={run.headline ?? statusLabel(run.status, run.paused)}
+                    trailing={
+                      <Badge type="pill-color" color={statusBadgeColor(run.status, run.paused)} size="sm">
+                        {statusLabel(run.status, run.paused)}
+                      </Badge>
+                    }
+                  />
                 </div>
-              </a>
+                <a href={`/productions/${run.id}`} className="hidden text-left transition-transform hover:-translate-y-0.5 lg:block">
+                  <Poster
+                    tone={run.poster_tone}
+                    src={run.cover_url}
+                    title={`${run.series_title ?? "Show"} · ${run.sku === "2" ? "Pilot" : `E${run.episode_start}–${run.episode_end}`}`}
+                    progress={run.progress ?? (run.status === "ready" ? 100 : 24)}
+                  />
+                  <div className="mt-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="truncate text-sm font-semibold">{run.series_title}</div>
+                      <Badge type="pill-color" color={statusBadgeColor(run.status, run.paused)} size="sm">
+                        {statusLabel(run.status, run.paused)}
+                      </Badge>
+                    </div>
+                    <div className="mt-1 text-xs text-tertiary">{run.headline ?? run.agent_decision ?? "Preparing this show."}</div>
+                  </div>
+                </a>
+              </div>
             ))}
           </div>
         ) : null}

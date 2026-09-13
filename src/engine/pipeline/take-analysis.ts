@@ -60,6 +60,13 @@ export type TakeAnalysis = {
   face_box?: NormalizedFaceBox | null;
   /** Native transcript when STT ran; the voice onset came from its first word. */
   transcript?: string | null;
+  /**
+   * Word timings from that transcript, relative to the take. Scene takes speak
+   * native Seedance audio and never run TTS, so this is the only alignment the
+   * cut has — without it captions are guessed by dividing the take duration by
+   * word count, which drifts against the picture.
+   */
+  transcript_words?: Array<{ word: string; start: number; end: number }> | null;
   voice_onset_source?: "stt" | "level" | null;
   /** True when the audio was actually probed for speech (level and/or transcript). */
   speech_checked?: boolean;
@@ -93,7 +100,13 @@ export type TakeAnalysisInput = {
    * Speech-aware onset from a transcript with word timings. Native takes carry
    * ambience before the line, so a level detector alone fires on room tone.
    */
-  transcribe?: (mp3: Uint8Array) => Promise<{ text: string; speech_onset_seconds: number | null } | null>;
+  transcribe?: (
+    mp3: Uint8Array,
+  ) => Promise<{
+    text: string;
+    speech_onset_seconds: number | null;
+    words?: Array<{ word: string; start: number; end: number }>;
+  } | null>;
   /** Length of the spoken line from the TTS alignment; decides whether a pad still fits the take. */
   speechSeconds?: number | null;
   now?: () => string;
@@ -524,6 +537,7 @@ export async function analyzeTake(input: TakeAnalysisInput): Promise<TakeAnalysi
           const spoken = await input.transcribe(mp3);
           if (spoken) {
             base.transcript = spoken.text;
+            if (spoken.words?.length) base.transcript_words = spoken.words;
             if (spoken.speech_onset_seconds != null) {
               voice = spoken.speech_onset_seconds;
               base.voice_onset_source = "stt";

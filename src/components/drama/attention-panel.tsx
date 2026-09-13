@@ -13,10 +13,12 @@ type VisibleActivity = AttentionActivity & { localState: AttentionActivity["stat
 export function AttentionBell({
   count,
   onToggle,
+  plain = false,
 }: {
   count: number;
   open?: boolean;
   onToggle: () => void;
+  plain?: boolean;
 }) {
   return (
     <button
@@ -24,8 +26,12 @@ export function AttentionBell({
       onClick={onToggle}
       aria-label={count ? `${count} items need you` : "Studio activity"}
       className={cx(
-        "relative grid size-10 place-items-center rounded-full border bg-primary",
-        count ? "border-warning-300 text-warning-700" : "border-secondary text-tertiary",
+        "relative grid size-10 place-items-center rounded-full",
+        plain
+          ? count
+            ? "text-warning-700"
+            : "text-secondary"
+          : cx("border bg-primary", count ? "border-warning-300 text-warning-700" : "border-secondary text-tertiary"),
       )}
     >
       <Bell size={18} weight={count ? "fill" : "regular"} />
@@ -87,8 +93,9 @@ export function AttentionPanel({
       ) : null}
       <aside
         className={cx(
-          "fixed inset-y-0 right-0 z-40 flex h-dvh w-[360px] max-w-[100vw] flex-col border-l border-secondary bg-primary transition-transform duration-300",
-          open ? "translate-x-0" : "translate-x-full",
+          "fixed inset-x-0 bottom-0 z-40 flex max-h-[88dvh] w-full flex-col rounded-t-2xl border-t border-secondary bg-primary transition-transform duration-300",
+          "lg:inset-y-0 lg:right-0 lg:left-auto lg:h-dvh lg:max-h-none lg:w-[360px] lg:rounded-none lg:border-t-0 lg:border-l",
+          open ? "translate-y-0 lg:translate-x-0" : "translate-y-full lg:translate-y-0 lg:translate-x-full",
         )}
       >
         <div className="border-b border-secondary px-4 py-3">

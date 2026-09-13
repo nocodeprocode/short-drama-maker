@@ -29,6 +29,7 @@ export type DramaQcId =
   | "STAGED_TALK"
   | "CUE_COUNT"
   | "CAST_LOOK"
+  | "BOUNDARY_ECHO"
   | "LOOP_REANCHOR"
   | "ILLEGAL_SILENCE"
   | "INVENTED_SPEAKER"
@@ -53,7 +54,12 @@ export type DramaQcId =
   | "CHANNEL_MIX"
   | "ONE_SENTENCE"
   | "LEADS_MEET"
-  | "CORE_EXPECTATION";
+  | "CORE_EXPECTATION"
+  | "UNSEEN_NAME"
+  | "DROP_IN"
+  | "PHYSICS"
+  | "WHERE"
+  | "CUT";
 
 export type QcReport = {
   id: DramaQcId;

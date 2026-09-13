@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { LedgerEntry } from "../domain.ts";
 import {
   assertCanReserve,
+  canAllocateWallet,
   DailySpendLimitError,
   DuplicateLedgerEntryError,
   InsufficientBudgetError,
   projectBalance,
   reservedForJob,
+  seriesLedgerBalance,
+  walletBalance,
+  walletShortfall,
 } from "./budget.ts";
 
 function entry(
@@ -74,6 +78,19 @@ describe("project budget ledger", () => {
     expect(() => assertCanReserve(entries, "j9", 5, 248, 250)).toThrow(
       DailySpendLimitError,
     );
+  });
+
+  it("keeps wallet credit off a show ledger and will not drain Show A for Show B", () => {
+    const entries = [
+      entry("purchase", 500),
+      { ...entry("purchase", 100), id: "wallet", series_id: null },
+      { ...entry("purchase", 200), id: "show-b", series_id: "other" },
+    ];
+    expect(walletBalance(entries)).toBe(100);
+    expect(seriesLedgerBalance(entries, "s")).toBe(500);
+    expect(canAllocateWallet(100, 76)).toBe(true);
+    expect(canAllocateWallet(100, 1026)).toBe(false);
+    expect(walletShortfall(1026, 100)).toEqual({ needed: 1026, available: 100, shortfall: 926 });
   });
 
   it("lets admins skip series budget but not the platform daily cap", () => {

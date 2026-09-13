@@ -46,12 +46,15 @@ const STATUS_LABELS: Record<string, string> = {
   preparing: "Queued",
   producing: "Shooting",
   finishing: "Shooting",
+  draft: "Draft",
 };
 
 export const CTA = {
-  startPilot: "Start a 2-episode pilot",
-  startThePilot: "Start the pilot",
-  payAndStart: "Pay and start",
+  startPilot: "Commission a show",
+  startThePilot: "Commission a show",
+  payAndStart: "Start this run",
+  payAgain: "Pay again",
+  downloadSrt: "Download SRT",
   watchLive: "Watch live",
   watchEpisode: (n: number) => `Watch episode ${n}`,
   approveCast: "Approve the cast",
@@ -60,8 +63,11 @@ export const CTA = {
   openTimeline: "Open timeline",
   useBest: "Use best take",
   retry: "Retry",
-  newShow: "New show",
-  writeIdea: "Write a new idea",
+  newShow: "New run",
+  writeIdea: "Generate the story",
+  continueDraft: "Continue this show",
+  editDraft: "Edit the brief",
+  discardDraft: "Discard draft",
 } as const;
 
 export function greetingName(displayName?: string | null): string | null {
@@ -83,6 +89,7 @@ export function statusBadgeColor(
 
 export function nextActionLabel(action: SeriesNextAction | string | null | undefined): string {
   if (action === "pay_pilot") return CTA.startThePilot;
+  if (action === "continue_draft") return CTA.continueDraft;
   if (action === "open_production") return CTA.watchLive;
   if (action === "approve_pilot") return CTA.approveCast;
   if (action === "buy_next_block") return CTA.orderMore;
@@ -489,11 +496,11 @@ export function listFilterFor(status: string, paused: boolean): "running" | "nee
   return "other";
 }
 
-export type SeriesNextAction = "pay_pilot" | "open_production" | "approve_pilot" | "buy_next_block";
+export type SeriesNextAction = "pay_pilot" | "continue_draft" | "open_production" | "approve_pilot" | "buy_next_block";
 
 export function seriesNextAction(input: {
   pilot_approved: boolean;
-  productions: Array<{ id: string; status: string; paid_amount: number | string }>;
+  productions: Array<{ id: string; status: string; paid_amount: number | string; sku?: string | number }>;
 }): { next_action: SeriesNextAction; active_production_id: string | null } {
   const live = input.productions.filter((row) => row.status !== "cancelled");
   const paid = live.filter((row) => Number(row.paid_amount) > 0 || row.status !== "awaiting_payment");
@@ -503,11 +510,19 @@ export function seriesNextAction(input: {
     paid.find((row) => row.status === "ready") ??
     paid[0] ??
     null;
-  if (!active) return { next_action: "pay_pilot", active_production_id: null };
-  if (active.status === "ready" && !input.pilot_approved) {
+  if (!active) {
+    const unpaid = live.find((row) => row.status === "awaiting_payment");
+    if (unpaid) return { next_action: "continue_draft", active_production_id: unpaid.id };
+    return { next_action: "pay_pilot", active_production_id: null };
+  }
+  const startedLongRun = paid.some((row) => {
+    const sku = Number(row.sku);
+    return Number.isFinite(sku) && sku !== 2;
+  });
+  if (active.status === "ready" && !input.pilot_approved && !startedLongRun) {
     return { next_action: "approve_pilot", active_production_id: active.id };
   }
-  if (active.status === "ready" && input.pilot_approved) {
+  if (active.status === "ready") {
     return { next_action: "buy_next_block", active_production_id: active.id };
   }
   return { next_action: "open_production", active_production_id: active.id };

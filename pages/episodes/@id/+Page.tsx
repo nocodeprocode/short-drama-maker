@@ -8,7 +8,6 @@ import { EpisodeCut } from "@/components/drama/episode-cut.tsx";
 import { EpisodeSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
 import {
   CTA,
-  captionCues,
   downloadBasename,
   formatClock,
   playableShotUrls,
@@ -29,7 +28,6 @@ export default function Page() {
 
   const complete = episode.status === "complete";
   const files = playableShotUrls(episode.shots);
-  const cues = captionCues(episode.shots);
   const duration = episode.duration_seconds ? formatClock(episode.duration_seconds) : null;
 
   const download = async () => {
@@ -82,11 +80,6 @@ export default function Page() {
               <Button href={`/episodes/${id}/studio`} color={complete ? "secondary" : "primary"}>
                 {CTA.openTimeline}
               </Button>
-              {complete && cues.length ? (
-                <Button href={`/episodes/${id}/captions`} color="tertiary">
-                  Captions
-                </Button>
-              ) : null}
             </div>
             {episode.production_id ? (
               <div className="mt-4">

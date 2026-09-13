@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Shot } from "../../engine/domain.ts";
 import { groupEditorialScenes } from "./scene-groups.ts";
-import { buildRenderManifest, pickTransition } from "./manifest-builder.ts";
+import { buildRenderManifest, handoffStyleFor, pickTransition } from "./manifest-builder.ts";
 import { buildEditTimeline, speechNeedSeconds } from "./timeline.ts";
 
 function shot(partial: Partial<Shot["shot_data"]> & { id: string; position?: number }): Shot {
@@ -254,6 +254,27 @@ describe("editorial scenes", () => {
     expect(manifest.shots[0]?.intro_labels).toEqual(["MARA — Night delivery driver"]);
     expect(manifest.shots[1]?.intro_labels).toEqual(["COLE — Night clerk"]);
     expect(manifest.shots[1]?.transition_style).toBe("cut");
+    expect(manifest.shots[1]?.transition_style).not.toBe("fadewhite");
+    const button = shot({
+      id: "st3",
+      function: "button_cu",
+      edit_mode: "scene_take",
+      speaker: "COLE",
+      dialogue: "Then whose name?",
+      scene_script: "COLE: Then whose name?",
+      audio_role: "onscreen",
+      duration_hint_seconds: 14,
+      duration_seconds: 14,
+    });
+    expect(handoffStyleFor(button).transition_style).toBe("cut");
+    expect(handoffStyleFor(button).transition_style).not.toBe("fadewhite");
+    const buttonManifest = buildRenderManifest({
+      episode_id: "ep-no-flash",
+      shots: [first, second, button],
+      assetIdFor: (row) => row.id,
+    });
+    expect(buttonManifest.shots.every((row) => row.transition_style !== "fadewhite")).toBe(true);
+    expect(buttonManifest.shots.at(-1)?.transition_style).toBe("cut");
   });
 
   it("does not tail-trim a spoken take", () => {

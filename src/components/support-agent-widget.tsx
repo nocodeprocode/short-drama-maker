@@ -26,7 +26,7 @@ export function SupportAgentWidget() {
   return createElement("elevenlabs-convai", {
     "agent-id": agentId,
     variant: "compact",
-    "action-text": "Ask about Short Drama Maker",
+    "action-text": "Ask about Takehaus",
     "start-call-text": "Start call",
     "end-call-text": "End call",
     "listening-text": "Listening",

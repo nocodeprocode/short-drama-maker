@@ -160,7 +160,7 @@ function legalSceneTakeShots(): EpisodePlan["scenes"][number]["shots"] {
       edit_mode: "scene_take",
       speaker: "Sarah",
       dialogue: "How long?",
-      scene_script: fiveCueScript("Sarah", "David", "How long?", "Nora saw."),
+      scene_script: fiveCueScript("Sarah", "David", "How long?", "She saw us."),
       duration_hint_seconds: 15,
       camera: "medium two-shot, Sarah and David in the kitchen, dated paper on the table",
     }),
@@ -1135,6 +1135,42 @@ describe("handbook.60_90", () => {
     });
     const lawyer = validateEpisodePlan({ plan: plan(staged), namedCast: CAST3, length: "60_90" });
     expect(lawyer.blocking.map((row) => row.id)).toContain("STAGED_TALK");
+    const article = legalSceneTakeShots();
+    article[1] = shot({
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "David",
+      dialogue: "This constitutes a payment.",
+      scene_script: [
+        "David: This constitutes a payment.",
+        "Sarah: This is pack law.",
+        "David: That was never a letter.",
+        "Sarah: The black one, red wax.",
+        "David: A claim.",
+      ].join("\n"),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, dated receipt on marble",
+    });
+    const articleLint = validateEpisodePlan({ plan: plan(article), namedCast: CAST3, length: "60_90" });
+    expect(articleLint.blocking.map((row) => row.id)).toContain("STAGED_TALK");
+    const spoken = legalSceneTakeShots();
+    spoken[1] = shot({
+      function: "scene_take",
+      edit_mode: "scene_take",
+      speaker: "Sarah",
+      dialogue: "Are you trying to bribe me?",
+      scene_script: [
+        "Sarah: Are you trying to bribe me?",
+        "David: Sleep better calling it that.",
+        "Sarah: Then why pay my sister?",
+        "David: You opened it.",
+        "Sarah: So what is it?",
+      ].join("\n"),
+      duration_hint_seconds: 15,
+      camera: "medium two-shot, dated receipt on marble",
+    });
+    const spokenLint = validateEpisodePlan({ plan: plan(spoken), namedCast: CAST3, length: "60_90" });
+    expect(spokenLint.blocking.map((row) => row.id)).not.toContain("STAGED_TALK");
   });
 
   it("blocks a non-button take under 5 cues and an average bible face", () => {
@@ -1239,6 +1275,404 @@ describe("handbook.60_90", () => {
     expect(LINT_RULES.find((row) => row.id === "CUE_COUNT")?.severity).toBe("block");
     expect(LINT_RULES.find((row) => row.id === "CAST_LOOK")?.severity).toBe("block");
     expect(LINT_RULES.find((row) => row.id === "ON_THE_NOSE")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "BOUNDARY_ECHO")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "UNSEEN_NAME")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "DROP_IN")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "PHYSICS")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "WHERE")?.severity).toBe("block");
+    expect(LINT_RULES.find((row) => row.id === "CUT")?.severity).toBe("block");
+    const juno = legalSceneTakeShots();
+    juno[1] = {
+      ...juno[1]!,
+      scene_script: fiveCueScript("David", "Sarah", "Three months.", "Juno still gets her surgery?"),
+    };
+    const dropped = validateEpisodePlan({
+      plan: plan(juno),
+      namedCast: [...CAST3, "Juno"],
+      length: "60_90",
+    });
+    expect(dropped.blocking.map((row) => row.id)).toContain("UNSEEN_NAME");
+    const identified = legalSceneTakeShots();
+    identified[1] = {
+      ...identified[1]!,
+      scene_script: fiveCueScript("David", "Sarah", "Three months.", "Your sister Juno still gets it?"),
+    };
+    const labeled = validateEpisodePlan({
+      plan: plan(identified),
+      namedCast: [...CAST3, "Juno"],
+      length: "60_90",
+    });
+    expect(labeled.blocking.map((row) => row.id)).not.toContain("UNSEEN_NAME");
+    const roleOnly = legalSceneTakeShots();
+    roleOnly[1] = {
+      ...roleOnly[1]!,
+      scene_script: fiveCueScript("David", "Sarah", "Three months.", "Your sister still gets her surgery?"),
+    };
+    const noName = validateEpisodePlan({
+      plan: plan(roleOnly),
+      namedCast: [...CAST3, "Juno"],
+      length: "60_90",
+    });
+    expect(noName.blocking.map((row) => row.id)).not.toContain("UNSEEN_NAME");
+    const met = legalSceneTakeShots();
+    met[2] = {
+      ...met[2]!,
+      speaker: "Juno",
+      scene_script: fiveCueScript("Juno", "Sarah", "I buzzed her at eleven.", "Say the name."),
+      blocking: { ...(met[2]!.blocking ?? { camera_left: "Juno", camera_right: "Sarah", prop: "paper", left_gesture: "", right_gesture: "" }), present: ["Juno", "Sarah"] },
+    };
+    met[3] = {
+      ...met[3]!,
+      scene_script: "Sarah: Juno signed it.",
+    };
+    const afterMeet = validateEpisodePlan({
+      plan: plan(met),
+      namedCast: [...CAST3, "Juno"],
+      length: "60_90",
+    });
+    expect(afterMeet.blocking.map((row) => row.id)).not.toContain("UNSEEN_NAME");
+    const dirty = legalSceneTakeShots();
+    dirty[1] = {
+      ...dirty[1]!,
+      scene_script: fiveCueScript("Sarah", "David", "Three months.", "Juno still gets her surgery?"),
+    };
+    const repairedNames = repairEpisodePlan({
+      plan: plan(dirty),
+      namedCast: [...CAST3, "Juno"],
+      length: "60_90",
+      bible: {
+        title: "You Knew",
+        logline: "When will he say it?",
+        characters: [
+          {
+            name: "Sarah",
+            description: "Engine",
+            appearance: {
+              age_look: "28",
+              ethnicity_notes: "olive",
+              hair: "black",
+              face: "almond eyes, high cheekbones, full mouth",
+              body: "",
+              default_wardrobe: "",
+            },
+            personality: {},
+            relationships: { "Juno Rhee": "Her adult sister in a hospital bed" },
+            voice_design_prompt: "",
+          },
+        ],
+        locations: ["penthouse kitchen"],
+        episode_structure: [],
+        visual_style: {},
+        rules: {
+          narration_mode: "on",
+          dialogue_first: true,
+          require_conflict_or_progression: true,
+          require_reactions: true,
+          require_episode_hook: true,
+          require_cliffhanger: true,
+          target_episode_seconds: 90,
+          min_shots: 4,
+          max_shots: 6,
+          min_shot_s: 12,
+          max_shot_s: 15,
+          max_dialogue_s: 15,
+        },
+      },
+    });
+    const repairedBlob = repairedNames.scenes.flatMap((scene) => scene.shots.map((shot) => shot.scene_script ?? "")).join("\n");
+    expect(repairedBlob).toMatch(/my sister still gets her surgery/i);
+    expect(repairedBlob).not.toMatch(/\bJuno\b/i);
+    const echo = legalSceneTakeShots();
+    echo[0] = {
+      ...echo[0]!,
+      scene_script: fiveCueScript("Sarah", "David", "How long?", "Finish the sentence."),
+    };
+    echo[1] = {
+      ...echo[1]!,
+      dialogue: "Finish the sentence.",
+      scene_script: fiveCueScript("Sarah", "David", "Finish the sentence.", "Look at me."),
+    };
+    const echoed = validateEpisodePlan({ plan: plan(echo), namedCast: CAST3, length: "60_90" });
+    expect(echoed.blocking.map((row) => row.id)).toContain("BOUNDARY_ECHO");
+    const unspecified = validateEpisodePlan({
+      plan: plan(legalSceneTakeShots()),
+      namedCast: CAST3,
+      length: "60_90",
+      bible: {
+        title: "You Knew",
+        logline: "When will he say the name?",
+        characters: [
+          {
+            name: "Sarah",
+            description: "Engine",
+            appearance: {
+              age_look: "28",
+              ethnicity_notes: "unspecified fictional",
+              hair: "black",
+              face: "almond eyes, high cheekbones, full mouth",
+              body: "",
+              default_wardrobe: "",
+            },
+            personality: {},
+            relationships: {},
+            voice_design_prompt: "",
+          },
+        ],
+        locations: ["penthouse kitchen"],
+        episode_structure: [],
+        visual_style: {},
+        rules: {
+          narration_mode: "on",
+          dialogue_first: true,
+          require_conflict_or_progression: true,
+          require_reactions: true,
+          require_episode_hook: true,
+          require_cliffhanger: true,
+          target_episode_seconds: 90,
+          min_shots: 4,
+          max_shots: 6,
+          min_shot_s: 12,
+          max_shot_s: 15,
+          max_dialogue_s: 15,
+        },
+      },
+    });
+    expect(unspecified.blocking.map((row) => row.id)).toContain("CAST_LOOK");
+  });
+
+  it("blocks DROP_IN on a solo opener and an unlabeled entrance, on every handbook episode", () => {
+    const ceo = legalSceneTakeShots();
+    ceo[0] = {
+      ...ceo[0]!,
+      speaker: "Vance",
+      scene_script: [
+        "Vance: You're late.",
+        "Vance: Sign it.",
+        "Vance: That's the job.",
+        "Vance: Then walk.",
+        "Vance: Now.",
+      ].join("\n"),
+    };
+    const lonelyCeo = validateEpisodePlan({
+      plan: plan(ceo, { scenes: [{ location: "corner office", time: "night", characters: ["Vance", "Kira"], shots: ceo }] }),
+      namedCast: ["Vance", "Kira", "Holt"],
+      length: "60_90",
+      episodeNumber: 16,
+    });
+    expect(lonelyCeo.blocking.map((row) => row.id)).toContain("DROP_IN");
+    expect(lonelyCeo.warnings.map((row) => row.id)).not.toContain("LOOP_REANCHOR");
+
+    const doctor = legalSceneTakeShots();
+    doctor[0] = {
+      ...doctor[0]!,
+      speaker: "Elena",
+      dialogue: "Stay in that bed.",
+      scene_script: [
+        "Elena: Stay in that bed.",
+        "Noah: You're not my doctor.",
+        "Elena: I am tonight.",
+        "Noah: Then say why.",
+        "Elena: Because you walked.",
+      ].join("\n"),
+    };
+    const twoFaces = validateEpisodePlan({
+      plan: plan(doctor, { scenes: [{ location: "night ward", time: "night", characters: ["Elena", "Noah"], shots: doctor }] }),
+      namedCast: ["Elena", "Noah", "Mira"],
+      length: "60_90",
+      episodeNumber: 16,
+    });
+    expect(twoFaces.blocking.map((row) => row.id)).not.toContain("DROP_IN");
+
+    const stranger = legalSceneTakeShots();
+    stranger[2] = {
+      ...stranger[2]!,
+      speaker: "Kira",
+      scene_script: [
+        "Kira: (enters) You wanted me.",
+        "Vance: Kira.",
+        "Kira: Say it.",
+        "Vance: Sit down.",
+        "Kira: Or I walk.",
+      ].join("\n"),
+      blocking: {
+        camera_left: "Vance",
+        camera_right: "Kira",
+        prop: "the contract",
+        left_gesture: "",
+        right_gesture: "",
+        present: ["Vance", "Kira"],
+        enters: ["Kira"],
+      },
+    };
+    const namedDrop = validateEpisodePlan({
+      plan: plan(stranger, { scenes: [{ location: "corner office", time: "night", characters: ["Vance", "Kira"], shots: stranger }] }),
+      namedCast: ["Vance", "Kira", "Sarah", "David", "Nora"],
+      length: "60_90",
+      episodeNumber: 16,
+    });
+    expect(namedDrop.blocking.map((row) => row.id)).toContain("DROP_IN");
+
+    const identified = legalSceneTakeShots();
+    identified[2] = {
+      ...identified[2]!,
+      speaker: "Oren",
+      scene_script: [
+        "Oren: (enters) Boss.",
+        "Roman: My second.",
+        "Oren: They're waiting.",
+        "Roman: Then stall them.",
+        "Oren: How long.",
+      ].join("\n"),
+      blocking: {
+        camera_left: "Roman",
+        camera_right: "Oren",
+        prop: "the contract",
+        left_gesture: "",
+        right_gesture: "",
+        present: ["Roman", "Oren"],
+        enters: ["Oren"],
+      },
+    };
+    const second = validateEpisodePlan({
+      plan: plan(identified, { scenes: [{ location: "corner office", time: "night", characters: ["Roman", "Oren"], shots: identified }] }),
+      namedCast: ["Roman", "Oren", "Sarah", "David", "Nora"],
+      length: "60_90",
+      episodeNumber: 16,
+    });
+    expect(second.blocking.map((row) => row.id)).not.toContain("DROP_IN");
+
+    const nurse = legalSceneTakeShots();
+    nurse[2] = {
+      ...nurse[2]!,
+      speaker: "Mira",
+      scene_script: [
+        "Elena: The night nurse is here.",
+        "Mira: (enters) He spiked again.",
+        "Elena: Keep him here.",
+        "Mira: That's not my call.",
+        "Elena: It is tonight.",
+      ].join("\n"),
+      blocking: {
+        camera_left: "Elena",
+        camera_right: "Mira",
+        prop: "the chart",
+        left_gesture: "",
+        right_gesture: "",
+        present: ["Elena", "Mira"],
+        enters: ["Mira"],
+      },
+    };
+    const nightNurse = validateEpisodePlan({
+      plan: plan(nurse, { scenes: [{ location: "night ward", time: "night", characters: ["Elena", "Mira"], shots: nurse }] }),
+      namedCast: ["Elena", "Mira", "Sarah", "David", "Nora"],
+      length: "60_90",
+      episodeNumber: 2,
+    });
+    expect(nightNurse.blocking.map((row) => row.id)).not.toContain("DROP_IN");
+
+    const legal = validateEpisodePlan({ plan: plan(legalSceneTakeShots()), namedCast: CAST3, length: "60_90", episodeNumber: 16 });
+    expect(legal.blocking.map((row) => row.id)).not.toContain("DROP_IN");
+    expect(legal.blocking.map((row) => row.id)).not.toContain("PHYSICS");
+    expect(legal.blocking.map((row) => row.id)).not.toContain("CUT");
+
+    const flipped = legalSceneTakeShots();
+    flipped[0] = {
+      ...flipped[0]!,
+      scene_script: fiveCueScript("Sarah", "David", "I opened your envelope.", "The wax was cracked."),
+      blocking: {
+        camera_left: "Sarah",
+        camera_right: "David",
+        prop: "the same black envelope with red wax, STATE sealed: intact seal",
+        left_gesture: "",
+        right_gesture: "",
+        staging: "door camera-right",
+        present: ["Sarah", "David"],
+        door_side: "camera-right",
+      },
+    };
+    flipped[1] = {
+      ...flipped[1]!,
+      blocking: {
+        camera_left: "Sarah",
+        camera_right: "David",
+        prop: "the same black envelope with red wax, STATE sealed: intact seal",
+        left_gesture: "",
+        right_gesture: "",
+        staging: "Nora already inside; door camera-left",
+        present: ["Sarah", "David", "Nora"],
+        door_side: "camera-left",
+      },
+    };
+    const physics = validateEpisodePlan({ plan: plan(flipped), namedCast: CAST3, length: "60_90", episodeNumber: 16 });
+    expect(physics.blocking.map((row) => row.id)).toContain("PHYSICS");
+
+    const dirtyEntrance = legalSceneTakeShots();
+    dirtyEntrance[2] = {
+      ...dirtyEntrance[2]!,
+      speaker: "Kira",
+      scene_script: [
+        "Kira: (enters) You wanted me.",
+        "Vance: Kira.",
+        "Kira: Say it.",
+        "Vance: Sit down.",
+        "Kira: Or I walk.",
+      ].join("\n"),
+      blocking: {
+        camera_left: "Vance",
+        camera_right: "Kira",
+        prop: "the contract",
+        left_gesture: "",
+        right_gesture: "",
+        present: ["Vance", "Kira"],
+        enters: ["Kira"],
+      },
+    };
+    const repairedEntrance = repairEpisodePlan({
+      plan: plan(dirtyEntrance),
+      namedCast: ["Vance", "Kira", ...CAST3],
+      length: "60_90",
+      bible: {
+        title: "The Floor",
+        logline: "When will he admit the intern is the heir?",
+        characters: [
+          {
+            name: "Vance",
+            description: "Engine",
+            appearance: {
+              age_look: "40",
+              ethnicity_notes: "olive",
+              hair: "black",
+              face: "sharp jaw, dark eyes, full mouth",
+              body: "",
+              default_wardrobe: "",
+            },
+            personality: {},
+            relationships: { Kira: "His intern on the trading floor" },
+            voice_design_prompt: "",
+          },
+        ],
+        locations: ["corner office"],
+        episode_structure: [],
+        visual_style: {},
+        rules: {
+          narration_mode: "on",
+          dialogue_first: true,
+          require_conflict_or_progression: true,
+          require_reactions: true,
+          require_episode_hook: true,
+          require_cliffhanger: true,
+          target_episode_seconds: 90,
+          min_shots: 4,
+          max_shots: 6,
+          min_shot_s: 12,
+          max_shot_s: 15,
+          max_dialogue_s: 15,
+        },
+      },
+    });
+    const repairedBlob = repairedEntrance.scenes.flatMap((scene) => scene.shots.map((shot) => shot.scene_script ?? "")).join("\n");
+    expect(repairedBlob).toMatch(/my intern/i);
+    expect(repairedBlob).not.toMatch(/Vance: Kira\./i);
   });
 });
 
@@ -1249,12 +1683,13 @@ describe("prompt fragments", () => {
     expect(system).not.toMatch(/12 to 25/);
     expect(system).not.toMatch(/prefer fewer longer talking-head/);
     expect(system).toMatch(/CONTINUOUS SCENE TAKES/i);
+    expect(system).toMatch(/DROP-IN/);
     expect(system).toMatch(/DECENCY/);
     expect(system).toMatch(/Clothes stay on/);
     expect(system).toMatch(/No drugs/);
     expect(system).toMatch(/CAST LOOK/);
     expect(system).toMatch(/FACE DISTANCE/);
-    expect(system).toMatch(/FaceTime-close/);
+    expect(system).toMatch(/chest-up MCU|FACE LOCK|Do not recast for beauty/);
     expect(system).toMatch(/strikingly beautiful/);
     expect(system).not.toMatch(/Names constantly/i);
     const long = systemDramaRules("900_1080");
@@ -1262,6 +1697,9 @@ describe("prompt fragments", () => {
     expect(long).toMatch(/FACE DISTANCE/);
     const { writeEpisodeShape } = await import("../craft/prompt-fragments.ts");
     expect(writeEpisodeShape("60_90")).toMatch(/Name someone at most once/);
+    expect(writeEpisodeShape("60_90")).toMatch(/your sister|woman in the doorway|not met on camera/i);
+    expect(writeEpisodeShape("60_90")).toMatch(/DROP-IN/);
+    expect(writeEpisodeShape("60_90")).toMatch(/this constitutes/);
     expect(writeEpisodeShape("60_90")).not.toMatch(/Names constantly/i);
     const { dramaHooks } = await import("../integration/hooks.ts");
     const prompt = dramaHooks.writeEpisodeUserPrompt({
@@ -1285,8 +1723,12 @@ describe("prompt fragments", () => {
     expect(prompt).toMatch(/closed wolf-dog carrier/);
     expect(prompt).toMatch(/Never import an object, room, or plot from anywhere else/);
     expect(prompt).toMatch(/END HOOK SHAPE for this episode: revelation/);
+    expect(prompt).toMatch(/DROP-IN/);
+    expect(prompt).toMatch(/PHYSICS LOCK/);
+    expect(prompt).toMatch(/Every cut MUST move/);
     expect(prompt).toMatch(/LOOP OPENER/);
     expect(prompt).toMatch(/both leads appear and speak/);
+    expect(prompt).toMatch(/name-drop|not met|doorway/i);
     expect(prompt).not.toMatch(/named out loud/i);
     expect(prompt).toMatch(/Movement: hook/);
     expect(prompt).not.toMatch(/Names constantly/i);
@@ -1310,6 +1752,8 @@ describe("prompt fragments", () => {
       length: "60_90",
     });
     expect(mid).toMatch(/Name someone at most once/);
+    expect(mid).toMatch(/DROP-IN/);
+    expect(mid).toMatch(/my second/);
     expect(mid).not.toMatch(/Re-anchor names constantly/i);
     expect(mid).not.toMatch(/Names constantly/i);
     const { framingForFunction, lockedTakePrompt } = await import("../craft/prompt-fragments.ts");

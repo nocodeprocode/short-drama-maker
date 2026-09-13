@@ -40,6 +40,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "Stopped",
   done: "Done",
   cancelled: "Cancelled",
+  draft: "Draft",
   completed: "Ready",
   preparing: "Queued",
   producing: "Shooting",
@@ -95,11 +96,11 @@ export function progressForPhase(phase: string | null | undefined, status: strin
   return 12;
 }
 
-export type SeriesNextAction = "pay_pilot" | "open_production" | "approve_pilot" | "buy_next_block";
+export type SeriesNextAction = "pay_pilot" | "continue_draft" | "open_production" | "approve_pilot" | "buy_next_block";
 
 export function seriesNextAction(input: {
   pilot_approved: boolean;
-  productions: Array<{ id: string; status: string; paid_amount: number | string }>;
+  productions: Array<{ id: string; status: string; paid_amount: number | string; sku?: string | number }>;
 }): { next_action: SeriesNextAction; active_production_id: string | null } {
   const live = input.productions.filter((row) => row.status !== "cancelled");
   const paid = live.filter((row) => Number(row.paid_amount) > 0 || row.status !== "awaiting_payment");
@@ -109,11 +110,19 @@ export function seriesNextAction(input: {
     paid.find((row) => row.status === "ready") ??
     paid[0] ??
     null;
-  if (!active) return { next_action: "pay_pilot", active_production_id: null };
-  if (active.status === "ready" && !input.pilot_approved) {
+  if (!active) {
+    const unpaid = live.find((row) => row.status === "awaiting_payment");
+    if (unpaid) return { next_action: "continue_draft", active_production_id: unpaid.id };
+    return { next_action: "pay_pilot", active_production_id: null };
+  }
+  const startedLongRun = paid.some((row) => {
+    const sku = Number(row.sku);
+    return Number.isFinite(sku) && sku !== 2;
+  });
+  if (active.status === "ready" && !input.pilot_approved && !startedLongRun) {
     return { next_action: "approve_pilot", active_production_id: active.id };
   }
-  if (active.status === "ready" && input.pilot_approved) {
+  if (active.status === "ready") {
     return { next_action: "buy_next_block", active_production_id: active.id };
   }
   return { next_action: "open_production", active_production_id: active.id };

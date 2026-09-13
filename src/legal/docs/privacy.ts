@@ -37,7 +37,7 @@ export const privacyDocument: LegalDocument = {
       blocks: [
         {
           type: "p",
-          text: "This Policy describes how we process personal information and project content when you use Short Drama Maker (the “Service”). It applies to consumer creator accounts. If a studio or other business customer uploads third-party personal data, that customer is typically the controller of that data and we act as its processor under a Data Processing Addendum.",
+          text: "This Policy describes how we process personal information and project content when you use Takehaus (the “Service”). It applies to consumer creator accounts. If a studio or other business customer uploads third-party personal data, that customer is typically the controller of that data and we act as its processor under a Data Processing Addendum.",
         },
       ],
     },

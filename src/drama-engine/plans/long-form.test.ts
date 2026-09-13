@@ -21,7 +21,7 @@ const BIBLE: StoryBible = {
       description: "Lead.",
       appearance: {
         age_look: "early thirties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "auburn bun",
         face: "X-scar",
         body: "average",
@@ -36,7 +36,7 @@ const BIBLE: StoryBible = {
       description: "Wall.",
       appearance: {
         age_look: "mid thirties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "dark",
         face: "open",
         body: "tall",
@@ -51,7 +51,7 @@ const BIBLE: StoryBible = {
       description: "Witness.",
       appearance: {
         age_look: "late twenties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "short",
         face: "sharp",
         body: "slight",
@@ -81,6 +81,9 @@ describe("shotBudget", () => {
     expect(LENGTH_BUDGETS["60_90"].max_shots).toBe(6);
     expect(LENGTH_BUDGETS["900_1080"].min_shots).toBe(120);
     expect(LENGTH_BUDGETS["900_1080"].max_shots).toBe(200);
+    expect(lengthFromSeconds(38)).toBe("30_45");
+    expect(lengthFromSeconds(60)).toBe("45_60");
+    expect(lengthFromSeconds(90)).toBe("60_90");
     expect(lengthFromSeconds(900)).toBe("900_1080");
   });
 });

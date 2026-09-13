@@ -1,5 +1,5 @@
-import type { EpisodePlan, ShotPlanScene } from "../../engine/domain.ts";
-import { cameraDescribesFace, objectPlateCamera, speakersForSceneTake } from "../craft/prompt-fragments.ts";
+import type { EpisodePlan, ShotPlanScene, StoryBible } from "../../engine/domain.ts";
+import { cameraDescribesFace, objectPlateCamera, peopleOnSceneTake, speakersForSceneTake } from "../craft/prompt-fragments.ts";
 import { groupEditorialScenes } from "../editorial/scene-groups.ts";
 import { cameraIsObjectPlate, isObjectInsert, isSceneTake, isWideCoverage } from "../types/editorial.ts";
 import { sanitizeCamera } from "../editorial/camera-sanitize.ts";
@@ -10,7 +10,18 @@ import {
   defaultCraftForShot,
 } from "../editorial/shot-budget.ts";
 import { consumeReactionPad, silenceLegal } from "../pacing/reaction-pad.ts";
-import { clipCueToBreath, DIALOGUE_MAX_WORDS, dialogueTooClose, sceneTakesAreCopies, wordCount } from "../types/dialogue.ts";
+import { clipCueToBreath, collapseSameSpeakerBreaths, DIALOGUE_MAX_WORDS, dialogueTooClose, dropOpeningEcho, rewriteUnseenNames, sceneTakesAreCopies, unseenNamesInScript, wordCount } from "../types/dialogue.ts";
+import { DROP_IN_ROLE_NOUN, peopleOnDropInTake, unlabeledEntranceHits } from "../types/drop-in.ts";
+import { stripWhereTakes } from "../types/where.ts";
+import {
+  applyDoorSide,
+  formatPropLock,
+  inferPropIdentity,
+  inferPropState,
+  lockDoorSide,
+  stripSpentEntrance,
+  stripUnarrivedFromStaging,
+} from "../types/physics.ts";
 import { channelOf, coreExpectationFrom, isOneSentence } from "../types/micro-drama.ts";
 import {
   assignSceneSides,
@@ -19,14 +30,13 @@ import {
   cueRows,
   cueText,
   fitCueRows,
-  inferPropLock,
   presenceLedger,
   splitCueSentences,
   spokenSeconds,
   upperFrameFor,
   type SceneBlocking,
 } from "../types/continuity.ts";
-import { LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
+import { isMicroDramaLength, isSceneTakeLength, LENGTH_BUDGETS, type LengthBudget } from "../types/pacing.ts";
 import { isLongFormLength } from "../../engine/config/catalog.ts";
 import { recapBudgetSeconds } from "../plans/index.ts";
 import { asksAQuestion, lineInMotion, type ValidatePlanInput } from "./validate-plan.ts";
@@ -248,7 +258,7 @@ export function collapseDuplicateButtons(shots: PlanShot[]): PlanShot[] {
 
 function growSpokenForSku(shots: PlanShot[], budget: LengthBudget): PlanShot[] {
   // Handbook 60_90 wants 1.5–3s used picture; do not inflate every line to 5–6s.
-  const floor = budget.length === "60_90" || budget.length === "30_45" ? 4 : 6;
+  const floor = isMicroDramaLength(budget.length) ? 4 : 6;
   return shots.map((shot) => {
     if (shot.silence_license === "post_nuke" || shot.silence_license === "post_slap") return shot;
     if (!isSpokenLine(shot) && shot.function !== "button_cu") return shot;
@@ -910,7 +920,21 @@ export function repairEpisodePlan(input: ValidatePlanInput): EpisodePlan {
     .flatMap((scene, sceneIndex) => scene.shots.map((shot) => ({ ...shot, origin_scene: shot.origin_scene ?? sceneIndex })))
     .map((shot, index, all) => craftShot(shot, index, all.length));
   if (isMicroDramaSku(budget)) {
-    shots = repairMicroDramaShots(shots, plan, budget, input.episodeNumber, input.namedCast);
+    shots = repairMicroDramaShots(shots, plan, budget, input.episodeNumber, input.namedCast, input.bible);
+    shots = stripWhereTakes(
+      shots.map((shot) => ({
+        ...shot,
+        script: shot.scene_script,
+        staging: shot.blocking?.staging,
+      })),
+    ).map((shot) => {
+      const { script, staging, ...rest } = shot;
+      return {
+        ...rest,
+        scene_script: script ?? shot.scene_script,
+        blocking: shot.blocking ? { ...shot.blocking, staging: staging ?? shot.blocking.staging } : shot.blocking,
+      };
+    });
     shots = collapseDuplicateButtons(shots);
     const head = plan.scenes[0] ?? { location: "interior", time: "night", characters: [] };
     let lastOrigin = shots.find((shot) => shot.origin_scene != null)?.origin_scene ?? 0;
@@ -1028,11 +1052,11 @@ export function repairEpisodePlan(input: ValidatePlanInput): EpisodePlan {
  * location, which is where mid-episode location jumps were born.
  */
 function isSceneTakeSku(budget: LengthBudget): boolean {
-  return budget.length === "60_90";
+  return isSceneTakeLength(budget.length);
 }
 
 function isMicroDramaSku(budget: LengthBudget): boolean {
-  return budget.length === "30_45" || budget.length === "60_90";
+  return isMicroDramaLength(budget.length);
 }
 
 function cueSpeech(row: string): { speaker: string; text: string } | null {
@@ -1337,12 +1361,94 @@ function ensureLeadsMeet(shots: PlanShot[], plan: EpisodePlan, episodeNumber?: n
   return out;
 }
 
-function repairMicroDramaShots(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudget, episodeNumber?: number, namedCast?: string[]): PlanShot[] {
+const ROLE_FROM_REL = new RegExp(`\\b(${DROP_IN_ROLE_NOUN})\\b`, "i");
+
+function roleStandIn(name: string, speaker: string, bible?: StoryBible | null): string | null {
+  const first = (value: string) => value.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const token = first(name);
+  if (!token) return null;
+  const chars = bible?.characters ?? [];
+  const speakerRow = chars.find((row) => first(row.name) === first(speaker));
+  const fromSpeaker = speakerRow
+    ? Object.entries(speakerRow.relationships ?? {}).find(([key]) => first(key) === token)?.[1]
+    : undefined;
+  if (fromSpeaker) {
+    const role = fromSpeaker.match(ROLE_FROM_REL)?.[1];
+    if (role) return `my ${role.toLowerCase()}`;
+  }
+  for (const row of chars) {
+    const text = Object.entries(row.relationships ?? {}).find(([key]) => first(key) === token)?.[1];
+    if (!text) continue;
+    const role = text.match(ROLE_FROM_REL)?.[1];
+    if (role) return `your ${role.toLowerCase()}`;
+  }
+  return null;
+}
+
+function dropUnseenSpokenNames(shots: PlanShot[], namedCast?: string[], bible?: StoryBible | null): PlanShot[] {
+  const roster = (namedCast?.length ? namedCast : bible?.characters.map((row) => row.name) ?? []).filter(Boolean);
+  const met: string[] = [];
+  return shots.map((shot) => {
+    if (!isSceneTake(shot) || !shot.scene_script) return shot;
+    const onCamera = peopleOnSceneTake({
+      sceneScript: shot.scene_script,
+      speaker: shot.speaker,
+      speakerOnCamera: shot.speaker_on_camera,
+      blocking: shot.blocking,
+    });
+    const hits = unseenNamesInScript({
+      script: shot.scene_script,
+      onCamera,
+      metThisEpisode: met,
+      namedCast: roster,
+    });
+    const nextScript = hits.length
+      ? rewriteUnseenNames(shot.scene_script, hits, (name, speaker) => roleStandIn(name, speaker, bible))
+      : shot.scene_script;
+    for (const name of onCamera) {
+      const token = name.trim().split(/\s+/)[0] ?? "";
+      if (token && !met.some((row) => row.toLowerCase() === token.toLowerCase())) met.push(token);
+    }
+    if (nextScript === shot.scene_script) return shot;
+    const first = cueRows(nextScript)[0];
+    return { ...shot, scene_script: nextScript, dialogue: first ? cueText(first) : shot.dialogue };
+  });
+}
+
+/** Same stand-in as unseen names: swap an unlabeled entrance name for a bible role. Do not invent plot. */
+function dropUnlabeledEntranceNames(shots: PlanShot[], bible?: StoryBible | null): PlanShot[] {
+  let present: string[] = [];
+  return shots.map((shot, index) => {
+    if (!isSceneTake(shot) || !shot.scene_script) return shot;
+    const take = {
+      script: shot.scene_script,
+      speaker: shot.speaker,
+      speakerOnCamera: shot.speaker_on_camera,
+      blocking: shot.blocking,
+    };
+    const hits = unlabeledEntranceHits({
+      take,
+      previousPresent: index === 0 ? [] : present,
+    });
+    const nextScript = hits.length
+      ? rewriteUnseenNames(shot.scene_script, hits, (name, speaker) => roleStandIn(name, speaker, bible))
+      : shot.scene_script;
+    const onCamera = peopleOnDropInTake(take);
+    if (onCamera.length) present = onCamera;
+    if (nextScript === shot.scene_script) return shot;
+    const first = cueRows(nextScript)[0];
+    return { ...shot, scene_script: nextScript, dialogue: first ? cueText(first) : shot.dialogue };
+  });
+}
+
+function repairMicroDramaShots(shots: PlanShot[], plan: EpisodePlan, budget: LengthBudget, episodeNumber?: number, namedCast?: string[], bible?: StoryBible | null): PlanShot[] {
   if (isSceneTakeSku(budget)) {
     let packed = collapseToSceneTakes(shots, plan, budget);
     packed = ensureLeadsMeet(packed, plan, episodeNumber, namedCast);
     packed = collapseToSceneTakes(packed, plan, budget);
     packed = dropRepeatedBoundaryCues(packed);
+    packed = dropUnseenSpokenNames(packed, namedCast, bible);
+    packed = dropUnlabeledEntranceNames(packed, bible);
     packed = sealSceneTakeEnds(packed, plan, budget);
     packed = fitSceneTakeSpeech(packed, plan, budget);
     packed = sealSceneTakeEnds(packed, plan, budget);
@@ -1479,8 +1585,9 @@ function buttonSpeaker(script: string, button: string, last: PlanShot, plan: Epi
 function dropRepeatedBoundaryCues(takes: PlanShot[]): PlanShot[] {
   const out = takes.map((take) => ({ ...take }));
   for (let i = 1; i < out.length; i += 1) {
+    const seam = dropOpeningEcho(out[i - 1]!.scene_script, out[i]!.scene_script);
     const previous = cueRows(out[i - 1]!.scene_script).map(cueText);
-    const rows = cueRows(out[i]!.scene_script);
+    const rows = cueRows(seam);
     // An echo can sit anywhere in the take, not only at the seam, and a
     // paraphrase of the previous line is the same repeat to a viewer. Drop each
     // one while the take still holds a conversation.
@@ -1494,8 +1601,9 @@ function dropRepeatedBoundaryCues(takes: PlanShot[]): PlanShot[] {
       }
       kept.push(row);
     }
-    if (kept.length === rows.length) continue;
-    out[i] = { ...out[i]!, scene_script: kept.join("\n"), dialogue: cueText(kept[0] ?? out[i]!.dialogue ?? "") };
+    const nextScript = kept.length ? kept.join("\n") : seam;
+    if (nextScript === (out[i]!.scene_script ?? "")) continue;
+    out[i] = { ...out[i]!, scene_script: nextScript, dialogue: cueText(kept[0] ?? cueRows(nextScript)[0] ?? out[i]!.dialogue ?? "") };
   }
   return out;
 }
@@ -1570,19 +1678,25 @@ function rebuildSceneTake(
     cues.map(cueText).find((line) => lineInMotion(line)) ??
     (opener && lineInMotion(source.dialogue) ? source.dialogue : null) ??
     (opener ? punch : cueText(first));
-  const nextCues = (
-    opener && firstLive && !cues.some((row) => cueText(row) === firstLive)
-      ? [`${firstName}: ${firstLive}`, ...cues.slice(1)]
-      : cues
-  ).map((row) => clipCueToBreath(row));
+  const liveAt = firstLive ? cues.findIndex((row) => cueText(row) === firstLive) : -1;
+  const pulled =
+    !opener || !firstLive
+      ? cues
+      : liveAt > 0
+        ? [cues[liveAt]!, ...cues.filter((_, index) => index !== liveAt)]
+        : liveAt < 0
+          ? [`${firstName}: ${firstLive}`, ...cues.slice(1)]
+          : cues;
+  const nextCues = pulled.map((row) => clipCueToBreath(row));
+  const collapsed = collapseSameSpeakerBreaths(nextCues);
   return {
     ...source,
     speaker: (closer ? lastName : firstName) ?? source.speaker,
     speaker_on_camera: (closer ? lastName : firstName) ?? source.speaker_on_camera,
-    dialogue: closer ? cueText(last) : opener ? firstLive : cueText(first),
-    scene_script: nextCues.join("\n"),
+    dialogue: closer ? cueText(collapsed.at(-1) ?? last) : opener ? cueText(collapsed[0] ?? first) : cueText(collapsed[0] ?? first),
+    scene_script: collapsed.join("\n"),
     // Speech plus one breath. Padding a short conversation to the model max is dead air.
-    duration_hint_seconds: Math.min(budget.max_shot_s, Math.max(budget.min_shot_s, Math.ceil(spokenSeconds(nextCues) + 1))),
+    duration_hint_seconds: Math.min(budget.max_shot_s, Math.max(budget.min_shot_s, Math.ceil(spokenSeconds(collapsed) + 1))),
     function: opener ? ("hook_cu" as const) : closer ? ("button_cu" as const) : ("scene_take" as const),
     hero: closer,
     edit_mode: "scene_take",
@@ -1597,7 +1711,10 @@ function fitSceneTakeSpeech(takes: PlanShot[], plan: EpisodePlan, budget: Length
   type Cue = { text: string; origin: number };
   const queue = takes.map((source, origin) => ({
     source,
-    cues: splitCueSentences(cueRows(source.scene_script)).map((text) => ({ text: clipCueToBreath(text), origin })),
+    cues: collapseSameSpeakerBreaths(splitCueSentences(cueRows(source.scene_script))).map((text) => ({
+      text: clipCueToBreath(text),
+      origin,
+    })),
   }));
   const packed: Array<{ cues: Cue[] }> = [];
   for (let i = 0; i < queue.length; i += 1) {
@@ -1665,7 +1782,9 @@ function fitSceneTakeSpeech(takes: PlanShot[], plan: EpisodePlan, budget: Length
 }
 
 function lockSceneBlocking(takes: PlanShot[], plan: EpisodePlan): PlanShot[] {
-  const props = new Map<string, string>();
+  const identityByLoc = new Map<string, string>();
+  const stateByLoc = new Map<string, ReturnType<typeof inferPropState>>();
+  const doorByLoc = new Map<string, ReturnType<typeof lockDoorSide>>();
   const stagingByLoc = new Map<string, string>();
   const anchorByLoc = new Map<string, string>();
   const firstNames = speakersForSceneTake({
@@ -1689,23 +1808,25 @@ function lockSceneBlocking(takes: PlanShot[], plan: EpisodePlan): PlanShot[] {
   return takes.map((take, index) => {
     const loc = locationOfTake(take, plan);
     const roster = ledger[index]!;
-    // A cast member the staging places in frame is in the room even if silent
-    // (FELIX stopped at the alley mouth). Their face must be packed too.
-    const staged = cast.filter(
-      (name) =>
-        new RegExp(`\\b${name.split(/\s+/)[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(take.blocking?.staging ?? "") &&
-        !roster.present.some((row) => row.toLowerCase().split(/\s+/)[0] === name.toLowerCase().split(/\s+/)[0]),
-    );
-    if (staged.length) {
-      roster.present = [...roster.present, ...staged].slice(0, 3);
-      roster.enters = [...roster.enters, ...staged.filter((name) => index === 0 || !ledger[index - 1]!.present.some((row) => row.toLowerCase() === name.toLowerCase()))];
+    if (index > 0) {
+      const already = ledger[index - 1]!.present;
+      roster.enters = roster.enters.filter(
+        (name) => !already.some((row) => row.toLowerCase().split(/\s+/)[0] === name.toLowerCase().split(/\s+/)[0]),
+      );
     }
+    roster.present = roster.present.slice(0, 3);
     const names = roster.present;
     const locked = episodeSides;
     const prev = index > 0 ? takes[index - 1] : null;
     const sameRoom = Boolean(prev && locationOfTake(prev, plan) === loc);
-    const prop = props.get(loc) ?? inferPropLock(`${take.camera}\n${take.scene_script}\n${prev?.camera ?? ""}`);
-    props.set(loc, prop);
+    const blob = `${take.camera}\n${take.scene_script}\n${take.blocking?.prop ?? ""}\n${prev?.camera ?? ""}`;
+    const identity = identityByLoc.get(loc) ?? inferPropIdentity(blob);
+    identityByLoc.set(loc, identity);
+    const nextState = inferPropState(`${take.scene_script}\n${take.blocking?.prop ?? ""}`) ?? stateByLoc.get(loc) ?? inferPropState(blob);
+    if (nextState) stateByLoc.set(loc, nextState);
+    const prop = formatPropLock(identity, nextState ?? (identity.includes("phone") ? "face-down" : "closed"));
+    const door = doorByLoc.get(loc) ?? lockDoorSide([take.blocking?.staging, take.blocking?.door_side, take.camera, prev?.blocking?.staging]);
+    doorByLoc.set(loc, door);
     const lastCue = sameRoom ? cueRows(prev?.scene_script).at(-1) : null;
     const leftStance =
       take.blocking?.left_gesture ?? takes[0]?.blocking?.left_gesture ?? "holds the position and posture written in STAGING, hands visible, does not walk";
@@ -1714,8 +1835,19 @@ function lockSceneBlocking(takes: PlanShot[], plan: EpisodePlan): PlanShot[] {
     // Staging is the planner's physics. A take without its own inherits the last
     // one in the room, so nobody teleports from the floor to a table.
     const previousStaging = sameRoom ? stagingByLoc.get(loc) ?? null : null;
-    const staging = take.blocking?.staging?.trim() || (previousStaging ? `${previousStaging}; same positions as the previous take` : null);
-    if (take.blocking?.staging?.trim()) stagingByLoc.set(loc, take.blocking.staging.trim());
+    let staging = take.blocking?.staging?.trim() || (previousStaging ? `${previousStaging}; same positions as the previous take` : null);
+    if (staging && !roster.enters.length) staging = stripSpentEntrance(staging);
+    if (staging) staging = applyDoorSide(staging, door);
+    const legal = [...roster.present, ...roster.enters];
+    if (staging) staging = stripUnarrivedFromStaging(staging, legal, cast);
+    if (roster.present.length >= 3 && staging && !/one step back|third person/i.test(staging)) {
+      staging = `${staging} The third person stays one step back. Never four faces.`;
+    }
+    if (roster.enters.length) {
+      const entrance = `${roster.enters.join(" and ")} is not in the room at the start. The locked door stays ${door}. ENTRANCE is a full-page shot of ${roster.enters.join(" and ")} coming through that ${door} door, not a seated cheek looking at the door.`;
+      staging = `${stripSpentEntrance(staging ?? "")} ${entrance}`.trim();
+    }
+    if (staging) stagingByLoc.set(loc, stripSpentEntrance(staging));
     const anchor = take.blocking?.anchor?.trim() || anchorByLoc.get(loc) || null;
     if (anchor) anchorByLoc.set(loc, anchor);
     const { coverage, pictured } = coverageForTake(index, takes.length, [locked.camera_left, locked.camera_right].filter(Boolean) as string[], take.emotion);
@@ -1728,13 +1860,14 @@ function lockSceneBlocking(takes: PlanShot[], plan: EpisodePlan): PlanShot[] {
       staging,
       anchor,
       start_from: lastCue
-        ? "They have just finished the last spoken line. Same sides. Same staging. Same prop. Do not reset the room. Do not repeat that line. JOIN CUT: open closer — a close-up or both faces stacked. Do not reprint the last frame."
+        ? "They have just finished the last spoken line. Same sides. Same staging. Same prop. Do not reset the room. Do not repeat that line. JOIN CUT: open on a chest-up MCU of the speaker. Do not stack faces. Do not reprint the last frame."
         : null,
       coverage,
       pictured,
       present: roster.present,
       enters: roster.enters,
       exits: roster.exits,
+      door_side: door,
       upper_frame: upperFrameFor(
         [locked.camera_left, locked.camera_right].filter((name): name is string => Boolean(name)),
         takes[0]?.blocking?.upper_frame ?? take.blocking?.upper_frame,

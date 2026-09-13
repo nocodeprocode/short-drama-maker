@@ -2,23 +2,23 @@
   "version": 1,
   "ship": true,
   "reasons": [],
-  "duration_seconds": 8.266666666666667,
-  "expected_duration_seconds": 8.298,
+  "duration_seconds": 8.333333333333334,
+  "expected_duration_seconds": 8.348,
   "has_audio": true,
   "black_frames": 0,
-  "integrated_lufs": -13.7,
+  "integrated_lufs": -13.8,
   "true_peak_dbfs": -1.4,
-  "loudness_range_lu": 6.8,
+  "loudness_range_lu": 8.1,
   "lines": [
     {
       "shot_id": "mara",
       "speaker": "MARA",
       "picture_start_s": 0,
-      "expected_voice_s": 0.38,
-      "voice_onset_s": 0.38,
+      "expected_voice_s": 0.39,
+      "voice_onset_s": 0.39,
       "mouth_open_s": 0.4,
-      "lag_ms": 20,
-      "limit_ms": 80,
+      "lag_ms": 10,
+      "limit_ms": 125,
       "pass": true,
       "head_step": 14.99,
       "settled_open": true
@@ -27,9 +27,9 @@
       "shot_id": "eli",
       "speaker": "ELI",
       "picture_start_s": 3.038,
-      "expected_voice_s": 6.338,
-      "voice_onset_s": 6.338,
-      "mouth_open_s": 6.278,
+      "expected_voice_s": 6.398,
+      "voice_onset_s": 6.398,
+      "mouth_open_s": 6.338,
       "lag_ms": -60,
       "limit_ms": 200,
       "pass": true,
@@ -37,7 +37,8 @@
       "settled_open": true
     }
   ],
-  "measured_at": "2026-09-01T21:17:29.424Z",
+  "measured_at": "2026-09-03T09:39:52.575Z",
+  "onset_source": "dialogue_stem",
   "path": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v9-engine.mp4",
   "watch_file": "/Users/yacinenedjar/short-drama-maker/assets/drama-lock-v9-engine.mp4",
   "do_not_overwrite": [
@@ -45,7 +46,7 @@
     "assets/drama-lock-v8.mp4",
     "assets/drama-lock-v7.mp4"
   ],
-  "sha256": "5a96fcd203f9c2ecfcfeb7320cf4559be4573bac94ccfd40e55fa3cb73ab896b",
+  "sha256": "dc84a637dbe4dfde51b48962c04e11c5554316c943a55b9d02ba0ffa3dff372d",
   "takes": [
     {
       "id": "mara",
@@ -99,8 +100,8 @@
           4.99
         ],
         "mouth_open_seconds": 3.4,
-        "voice_onset_seconds": 3.38,
-        "sync_lag_ms": -20,
+        "voice_onset_seconds": 3.39,
+        "sync_lag_ms": -10,
         "viseme_pad_seconds": 0,
         "audio_slip_seconds": 0,
         "internal_cut_count": 0,
@@ -110,7 +111,7 @@
         "sheer_or_bra": false,
         "face_similarity": null,
         "face_count": null,
-        "measured_at": "2026-09-01T21:17:15.414Z",
+        "measured_at": "2026-09-03T09:39:47.721Z",
         "settle_steps": [
           2.69,
           3.38,
@@ -150,7 +151,12 @@
           12.94,
           12.74,
           12.47
-        ]
+        ],
+        "audio_skip_seconds": 3,
+        "face_box": null,
+        "speech_checked": true,
+        "voice_onset_source": "level",
+        "speech_fits": null
       }
     },
     {
@@ -204,11 +210,11 @@
           5.91,
           2.57
         ],
-        "mouth_open_seconds": 3.54,
-        "voice_onset_seconds": 3.84,
-        "sync_lag_ms": 300,
+        "mouth_open_seconds": 3.6,
+        "voice_onset_seconds": 3.85,
+        "sync_lag_ms": 250,
         "viseme_pad_seconds": 0,
-        "audio_slip_seconds": 0.24,
+        "audio_slip_seconds": 0.19,
         "internal_cut_count": 0,
         "second_body": false,
         "chest_skin_fraction": 0.539,
@@ -216,7 +222,7 @@
         "sheer_or_bra": false,
         "face_similarity": null,
         "face_count": null,
-        "measured_at": "2026-09-01T21:17:17.975Z",
+        "measured_at": "2026-09-03T09:39:48.776Z",
         "settle_steps": [
           48.93,
           49.53,
@@ -256,7 +262,12 @@
           7.85,
           7.41,
           7.69
-        ]
+        ],
+        "audio_skip_seconds": 0.3,
+        "face_box": null,
+        "speech_checked": true,
+        "voice_onset_source": "level",
+        "speech_fits": null
       }
     }
   ],
@@ -287,7 +298,7 @@
         "picture_start_seconds": 3.0380000000000003,
         "audio_start_seconds": 3.0380000000000003,
         "hold_tail_seconds": 0,
-        "audio_slip_seconds": 0.24,
+        "audio_slip_seconds": 0.19,
         "scene_kind": "dialogue",
         "transition_in": "cut",
         "audio_role": "onscreen",

@@ -148,6 +148,49 @@ describe("video router", () => {
     expect(scene.reason).toMatch(/scene take/i);
   });
 
+  it("keeps Pro on Seedance 2.5 and routes every Catalog shot to mini", () => {
+    const spoken = shot({ type: "dialogue", audio_role: "onscreen" });
+    expect(router.selectVideoRoute(spoken, "standard", "auto").route.model).toBe("bytedance/seedance-2.5");
+    expect(router.selectVideoRoute(spoken, "standard", "economy").route.model).toBe("bytedance/seedance-2.5");
+    expect(router.selectVideoRoute(spoken, "standard", "economy", "catalog").route.model).toBe(
+      "bytedance/seedance-2.0-mini",
+    );
+    expect(router.selectVideoRoute(spoken, "standard", "auto", "catalog").route.model).toBe(
+      "bytedance/seedance-2.0-mini",
+    );
+    const scene = router.selectVideoRoute(
+      shot({
+        type: "dialogue",
+        edit_mode: "scene_take",
+        function: "scene_take",
+        scene_script: "Mara: How long?\nCole: Don't.",
+        duration_seconds: 15,
+      }),
+      "standard",
+      "auto",
+      "catalog",
+    );
+    expect(scene.route.model).toBe("bytedance/seedance-2.0-mini");
+    expect(scene.reason).toMatch(/catalog/i);
+  });
+
+  it("does not upgrade Catalog failover to Seedance 2.5", () => {
+    const mini: VideoRoute = {
+      model: "bytedance/seedance-2.0-mini",
+      provider: "openrouter",
+      role: "economy_default",
+      min_duration_seconds: 4,
+      max_duration_seconds: 15,
+      aspect_ratios: ["9:16"],
+      audio_conditioning_verified: false,
+      region_documented: false,
+      strict_privacy_allowed: false,
+    };
+    expect(failoverRoute(shot({}), mini).model).toBe("bytedance/seedance-2.5");
+    expect(failoverRoute(shot({}), mini, "catalog").model).toBe("bytedance/seedance-2.0");
+    expect(failoverRoute(shot({}), mini, "catalog").model).not.toBe("bytedance/seedance-2.5");
+  });
+
   it("does not expose an unprovable strict privacy route", () => {
     expect(() => router.selectVideoRoute(shot({}), "strict" as never, "auto")).toThrow(
       /STRICT privacy is not shipped/,

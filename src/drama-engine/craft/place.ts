@@ -140,9 +140,9 @@ export function placeGeometryRubric(location?: string | null): string {
 /** How a third person arrives in this place. */
 export function placeEntrance(location?: string | null): string {
   if (placeKind(location) === "outdoor") {
-    return "enters from the far end of the place (the street or alley mouth), stops one step in; the others turn their heads";
+    return "enters from the far end of the place (the street or alley mouth). ENTRANCE CUT: full-page chest-up or cowboy of the person arriving, key light on their face; do not stay on a seated cheek looking toward them";
   }
-  return "enters through the door in the background, stops one step inside; the others turn their heads";
+  return "enters through the door. ENTRANCE CUT: full-page chest-up or cowboy of the person in the doorway, key light on their face; do not stay on a seated cheek looking at the door";
 }
 
 export function placeExit(location?: string | null): string {

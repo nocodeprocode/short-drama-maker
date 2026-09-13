@@ -3,6 +3,7 @@ import { honestImageMime, imageDataUrl } from "../media/image-mime.ts";
 import type { ImageEngine } from "./types.ts";
 import { placePlateDressing, placePlateLead } from "../../drama-engine/craft/place.ts";
 import { MODEST_DRESS_RULE } from "./modesty.ts";
+import { HUMAN_EYE_CLAUSE } from "../../drama-engine/types/where.ts";
 import { providerFetch } from "./http.ts";
 import { costMeter, openRouterUsageCost } from "./meter.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
@@ -122,12 +123,13 @@ export function createOpenRouterImages(): ImageEngine {
             : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
           // create-engine/face-screen rejects a NEW still that fails CAST_LOOK; old locked PNGs are not recut.
           "Short-drama lead: strikingly beautiful adult, camera-ready, the kind of face a viewer pauses for. Clear skin, defined features, catchlight in the eyes. Flattering, not tired, not plain.",
+          HUMAN_EYE_CLAUSE,
           `Character: ${input.characterName}.`,
           input.description,
           `Pose / framing: ${input.kind}.`,
           MODEST_DRESS_RULE,
           "Fictional adult. Do not copy a public figure. Neutral set lighting. Single subject. ONE person only. Same wardrobe as described.",
-          "Ignore any sleepwear, bare-leg, or underdressed wardrobe in the character notes. Dress them modestly instead.",
+          "Ignore any sleepwear, bare-leg, open-collar, unbuttoned, or underdressed wardrobe in the character notes. Dress them modestly instead: opaque cloth to the throat, or a closed jacket over a buttoned shirt. No open chest.",
         ].join(" "),
       );
     },
@@ -151,6 +153,7 @@ export function createOpenRouterImages(): ImageEngine {
             ? "Same person as the reference photo. Tight vertical 9:16 HEAD-AND-SHOULDERS close-up. Face fills the frame. Cropped at the chest. NOT full body. NOT a second person."
             : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
           "Keep the same strikingly beautiful adult face. Flattering, camera-ready, catchlight in the eyes.",
+          HUMAN_EYE_CLAUSE,
           input.replaceWardrobe
             ? `Same face, hair, age, and identifying marks as the reference. REPLACE the clothing. New wardrobe only: ${input.replaceWardrobe}. Do not copy sheer, thin, or see-through fabric. No undergarment line.`
             : "Keep the same face, hair, age, and wardrobe as the reference photo. No costume change.",
@@ -159,7 +162,7 @@ export function createOpenRouterImages(): ImageEngine {
           `Pose / framing: ${input.kind}.`,
           MODEST_DRESS_RULE,
           "Adult only. Do not copy a public figure. Neutral set lighting. Single subject.",
-          "Ignore any sleepwear, bare-leg, or underdressed wardrobe in the notes. Dress them modestly instead.",
+          "Ignore any sleepwear, bare-leg, open-collar, unbuttoned, or underdressed wardrobe in the notes. Dress them modestly instead: opaque cloth to the throat, or a closed jacket over a buttoned shirt. No open chest.",
         ].join(" "),
         { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
       );
@@ -175,6 +178,7 @@ export function createOpenRouterImages(): ImageEngine {
           input.locationNote?.trim() ? `Lighting: ${input.locationNote.trim()}` : "",
           `Character: ${input.characterName}. ${input.description}`,
           MODEST_DRESS_RULE,
+          HUMAN_EYE_CLAUSE,
           "ONE person only. No second person, no reflection of another person, no crowd.",
           "Relight the person to match the room's key light so they belong in the space.",
           "No text, no captions, no watermark, no logos, no readable signage.",
@@ -197,6 +201,7 @@ export function createOpenRouterImages(): ImageEngine {
           "IDENTITY LOCK: the person must match that description exactly. Same face, hair, age, wardrobe. Do not invent a different person.",
           input.locationNote?.trim() ? `Lighting: ${input.locationNote.trim()}` : "",
           MODEST_DRESS_RULE,
+          HUMAN_EYE_CLAUSE,
           "ONE person only. Relight them to the room's key light.",
           "No text, no captions, no watermark, no logos, no readable signage.",
         ]

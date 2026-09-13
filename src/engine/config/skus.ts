@@ -1,33 +1,49 @@
+import { LENGTH_BUDGETS } from "../../drama-engine/types/pacing.ts";
 import { IMAGE_PRICE, LLM_PRICE, STT_PRICE_PER_MINUTE, VISION_PRICE, VOICE_DESIGN_PRICE } from "./models.ts";
 import { pricing, roundMoney } from "../ai/pricing.ts";
 import type { SeasonSku } from "../domain.ts";
 
-export const SEASON_SKUS = [2, 12, 24, 45, 60] as const;
+export const SEASON_SKUS = [2, 12, 15, 24, 30, 45, 50, 60, 90] as const;
 
-export type EpisodeLength = "30_45" | "60_90" | "120_180" | "900_1080";
+export type EpisodeLength = "30_45" | "45_60" | "60_90" | "120_180" | "900_1080";
 
 /**
- * Retail multiplier vs the 60s SKU.
- * 15 min of locked-take picture is 15× a 60s episode — not 1.9×.
- * COGS scales by finished seconds (900/75 = 12× video vs the 60s retail estimate).
+ * Retail multiplier vs the 60_90 SKU. Longer tiers carry a deliberate premium
+ * over pure runtime: they cost more to plan, judge, and conform per finished
+ * second, and the buyer is paying for a longer locked-identity take.
+ * Price per delivered minute is pinned by a test so the premium stays visible.
  */
 export const LENGTH_FACTOR: Record<EpisodeLength, number> = {
   "30_45": 0.6,
+  "45_60": 0.7,
   "60_90": 1,
-  "120_180": 1.9,
+  "120_180": 2,
   "900_1080": 15,
 };
 
-export type CatalogSku = SeasonSku | "topup";
+export type CatalogSku = SeasonSku | "topup" | "credit";
+export type VideoTier = "pro" | "catalog";
 
-export const SEASON_PRICES_USD: Record<CatalogSku, number> = {
+/** Catalog picture (Seedance 2.0 mini) vs Pro (2.5). Conservative COGS cut, not a second price book. */
+export const PICTURE_FACTOR: Record<VideoTier, number> = {
+  pro: 1,
+  catalog: 0.75,
+};
+
+export const SEASON_PRICES_USD: Record<Exclude<CatalogSku, "credit">, number> = {
   2: 76,
   12: 433,
+  15: 542,
   24: 821,
+  30: 1026,
   45: 1436,
+  50: 1596,
   60: 1824,
+  90: 2736,
   topup: 49,
 };
+
+export const CREDIT_PRESETS = [49, 100, 250, 500, 1000] as const;
 
 export const WAN_SECONDS_PER_EPISODE = 32;
 export const MINI_SECONDS_PER_EPISODE = 20;
@@ -49,13 +65,18 @@ export function isSeasonSku(value: unknown): value is SeasonSku {
 }
 
 export function isCatalogSku(value: unknown): value is CatalogSku {
-  return value === "topup" || isSeasonSku(value);
+  return value === "topup" || value === "credit" || isSeasonSku(value);
+}
+
+export function isVideoTier(value: unknown): value is VideoTier {
+  return value === "pro" || value === "catalog";
 }
 
 export function estimateSeries(input: {
   episode_count: SeasonSku;
   character_count?: number;
   length?: EpisodeLength;
+  video_tier?: VideoTier;
 }): {
   episode_count: SeasonSku;
   setup: number;
@@ -69,8 +90,10 @@ export function estimateSeries(input: {
     LLM_PRICE + characters * (VOICE_DESIGN_PRICE + IMAGE_PRICE),
   );
   const length = input.length ?? "60_90";
+  // Provider cost scales with finished seconds, measured against the 60_90 baseline the
+  // per-episode constants above were calibrated on.
   const pictureScale =
-    length === "900_1080" ? 900 / 75 : length === "120_180" ? 150 / 75 : length === "30_45" ? 38 / 75 : 1;
+    LENGTH_BUDGETS[length].target_episode_seconds / LENGTH_BUDGETS["60_90"].target_episode_seconds;
   const longForm = length === "900_1080";
   const perEpisode = roundMoney(
     pricing.estimateVideo("alibaba/wan-3.0", WAN_SECONDS_PER_EPISODE * pictureScale) +
@@ -89,7 +112,9 @@ export function estimateSeries(input: {
     generate,
     estimated_min,
     estimated_max: roundMoney(estimated_min * REGEN_BUFFER),
-    // Legacy season prices are the balanced 60s rate; longer episodes scale by the same factor the catalog uses.
-    retail: Math.round(SEASON_PRICES_USD[input.episode_count] * LENGTH_FACTOR[length]),
+    // Legacy season prices are the balanced 60s Pro rate; length and catalog picture scale the same way as retailForBlock.
+    retail: Math.round(
+      SEASON_PRICES_USD[input.episode_count] * LENGTH_FACTOR[length] * PICTURE_FACTOR[input.video_tier ?? "pro"],
+    ),
   };
 }

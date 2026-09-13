@@ -1,3 +1,3 @@
 export default {
-  title: "Data Processing Addendum — Short Drama Maker",
+  title: "Data Processing Addendum — Takehaus",
 };

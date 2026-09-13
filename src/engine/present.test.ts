@@ -132,6 +132,24 @@ describe("presentation", () => {
         productions: [],
       }),
     ).toEqual({ next_action: "pay_pilot", active_production_id: null });
+    expect(
+      seriesNextAction({
+        pilot_approved: false,
+        productions: [{ id: "open", status: "awaiting_payment", paid_amount: 0, sku: 60 }],
+      }),
+    ).toEqual({ next_action: "continue_draft", active_production_id: "open" });
+    expect(
+      seriesNextAction({
+        pilot_approved: false,
+        productions: [{ id: "long", status: "ready", paid_amount: 1026, sku: 30 }],
+      }),
+    ).toEqual({ next_action: "buy_next_block", active_production_id: "long" });
+    expect(
+      seriesNextAction({
+        pilot_approved: false,
+        productions: [{ id: "long-run", status: "running", paid_amount: 1824, sku: 60 }],
+      }),
+    ).toEqual({ next_action: "open_production", active_production_id: "long-run" });
   });
 
   it("keeps every shot_video in episode order and drops the finished-episode bag", () => {
@@ -173,7 +191,8 @@ describe("presentation", () => {
   });
 
   it("maps next actions to the product CTAs", () => {
-    expect(nextActionLabel("pay_pilot")).toBe("Start the pilot");
+    expect(nextActionLabel("pay_pilot")).toBe("Commission a show");
+    expect(nextActionLabel("continue_draft")).toBe("Continue this show");
     expect(nextActionLabel("open_production")).toBe("Watch live");
     expect(nextActionLabel("approve_pilot")).toBe("Approve the cast");
     expect(nextActionLabel("buy_next_block")).toBe("Order more episodes");

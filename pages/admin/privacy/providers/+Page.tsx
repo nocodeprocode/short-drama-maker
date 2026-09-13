@@ -1,7 +1,34 @@
 import { COMPANY_PRIVACY_POLICY } from "@/legal/policy.ts";
 import { AI_PROVIDER_ROUTES, INFRASTRUCTURE_PROVIDERS } from "@/legal/providers.ts";
+import { studio } from "@/lib/api.ts";
+import { useStudio } from "@/lib/use-studio.ts";
 
 export default function Page() {
+  const { data: me, error } = useStudio("me", () => studio.me());
+
+  if (error || (me && !me.is_admin)) {
+    return (
+      <article className="w-full max-w-3xl py-10">
+        <h1 className="text-display-sm font-semibold tracking-tight text-primary">Admins only</h1>
+        <p className="mt-3 text-md text-secondary">
+          The provider registry is an internal page. Sign in as an admin, or read the public{" "}
+          <a className="font-semibold text-brand-secondary" href="/legal/ai-processing">
+            AI processing
+          </a>{" "}
+          notice.
+        </p>
+      </article>
+    );
+  }
+
+  if (!me) {
+    return (
+      <article className="w-full max-w-3xl py-10">
+        <p className="text-sm text-tertiary">Checking access…</p>
+      </article>
+    );
+  }
+
   return (
     <article className="w-full max-w-6xl py-4 pb-10">
       <p className="text-sm font-semibold text-brand-secondary">Internal registry</p>

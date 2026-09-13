@@ -1,17 +1,24 @@
-export const SEASON_SKUS = [2, 12, 24, 45, 60] as const;
-export type CatalogSku = (typeof SEASON_SKUS)[number] | "topup";
+export const SEASON_SKUS = [2, 12, 15, 24, 30, 45, 50, 60, 90] as const;
+export type CatalogSku = (typeof SEASON_SKUS)[number] | "topup" | "credit";
 export type BlockSku = (typeof SEASON_SKUS)[number];
 export type ProductionPriority = "fast" | "balanced" | "quality";
-export type EpisodeLength = "30_45" | "60_90" | "120_180" | "900_1080";
+export type EpisodeLength = "30_45" | "45_60" | "60_90" | "120_180" | "900_1080";
+export type VideoTier = "pro" | "catalog";
 
-export const SEASON_PRICES_USD: Record<CatalogSku, number> = {
+export const SEASON_PRICES_USD: Record<Exclude<CatalogSku, "credit">, number> = {
   2: 76,
   12: 433,
+  15: 542,
   24: 821,
+  30: 1026,
   45: 1436,
+  50: 1596,
   60: 1824,
+  90: 2736,
   topup: 49,
 };
+
+export const CREDIT_PRESETS = [49, 100, 250, 500, 1000] as const;
 
 export const PRIORITY_RATES_USD: Record<ProductionPriority, number> = {
   fast: 24,
@@ -19,25 +26,39 @@ export const PRIORITY_RATES_USD: Record<ProductionPriority, number> = {
   quality: 62,
 };
 
-/** 15 min is 15× a 60s episode of picture. Do not 1.9× and eat margin. */
+/** Catalog picture (Seedance 2.0 mini) vs Pro (2.5). Conservative COGS cut, not a second price book. */
+export const PICTURE_FACTOR: Record<VideoTier, number> = {
+  pro: 1,
+  catalog: 0.75,
+};
+
+/** Must match LENGTH_FACTOR in src/engine/config/skus.ts. Guarded by src/lib/pricing-parity.test.ts. */
 export const LENGTH_FACTOR: Record<EpisodeLength, number> = {
   "30_45": 0.6,
+  "45_60": 0.7,
   "60_90": 1,
-  "120_180": 1.9,
+  "120_180": 2,
   "900_1080": 15,
 };
 
 export const LENGTH_LABEL: Record<EpisodeLength, string> = {
   "30_45": "30 to 45 sec",
-  "60_90": "60 to 90 sec",
-  "120_180": "2 to 3 min",
+  "45_60": "60 sec",
+  "60_90": "90 sec",
+  "120_180": "120 sec",
   "900_1080": "15 min",
 };
 
+/**
+ * Must equal LENGTH_BUDGETS[length].target_episode_seconds in
+ * src/drama-engine/types/pacing.ts. Deno cannot import from src/, so
+ * src/lib/pricing-parity.test.ts guards the copy.
+ */
 export const SECONDS_PER_EPISODE: Record<EpisodeLength, number> = {
   "30_45": 38,
-  "60_90": 75,
-  "120_180": 150,
+  "45_60": 60,
+  "60_90": 90,
+  "120_180": 120,
   "900_1080": 900,
 };
 
@@ -48,7 +69,7 @@ export function isSeasonSku(value: unknown): value is BlockSku {
 export const isBlockSku = isSeasonSku;
 
 export function isCatalogSku(value: unknown): value is CatalogSku {
-  return value === "topup" || isSeasonSku(value);
+  return value === "topup" || value === "credit" || isSeasonSku(value);
 }
 
 export function isPriority(value: unknown): value is ProductionPriority {
@@ -56,7 +77,11 @@ export function isPriority(value: unknown): value is ProductionPriority {
 }
 
 export function isEpisodeLength(value: unknown): value is EpisodeLength {
-  return value === "30_45" || value === "60_90" || value === "120_180" || value === "900_1080";
+  return value === "30_45" || value === "45_60" || value === "60_90" || value === "120_180" || value === "900_1080";
+}
+
+export function isVideoTier(value: unknown): value is VideoTier {
+  return value === "pro" || value === "catalog";
 }
 
 export function volumeDiscount(episodes: number): number {
@@ -71,9 +96,14 @@ export function retailForBlock(
   sku: BlockSku,
   priority: ProductionPriority = "balanced",
   length: EpisodeLength = "60_90",
+  videoTier: VideoTier = "pro",
 ): number {
   return Math.round(
-    PRIORITY_RATES_USD[priority] * LENGTH_FACTOR[length] * sku * volumeDiscount(sku),
+    PRIORITY_RATES_USD[priority] *
+      LENGTH_FACTOR[length] *
+      PICTURE_FACTOR[videoTier] *
+      sku *
+      volumeDiscount(sku),
   );
 }
 
@@ -95,10 +125,12 @@ export function estimateBlock(input: {
   sku: CatalogSku;
   priority?: ProductionPriority;
   length?: EpisodeLength;
+  video_tier?: VideoTier;
+  amount?: number;
 }) {
-  if (input.sku === "topup") {
+  if (input.sku === "topup" || input.sku === "credit") {
     return {
-      sku: "topup" as const,
+      sku: input.sku,
       episode_count: 0,
       priority: input.priority ?? "balanced",
       length: input.length ?? "60_90",
@@ -108,13 +140,15 @@ export function estimateBlock(input: {
       run_time_label: "—",
       estimated_min: 0,
       estimated_max: 0,
-      retail: SEASON_PRICES_USD.topup,
+      retail: input.amount && input.amount > 0 ? Math.round(input.amount) : SEASON_PRICES_USD.topup,
+      video_tier: input.video_tier ?? "pro",
       is_pilot: false,
     };
   }
   const sku = input.sku;
   const priority = input.priority ?? "balanced";
   const length = input.length ?? "60_90";
+  const videoTier = input.video_tier ?? "pro";
   const cogs = estimateSeries(sku);
   const finished = sku * SECONDS_PER_EPISODE[length];
   const runMinutes = Math.round((sku * 18) / Math.min(sku, 8));
@@ -130,7 +164,8 @@ export function estimateBlock(input: {
     run_time_label: runMinutes >= 60 ? `~${(runMinutes / 60).toFixed(1)} h` : `~${runMinutes} min`,
     estimated_min: cogs.estimated_min,
     estimated_max: cogs.estimated_max,
-    retail: retailForBlock(sku, priority, length),
+    retail: retailForBlock(sku, priority, length, videoTier),
+    video_tier: videoTier,
     is_pilot: sku === 2,
   };
 }

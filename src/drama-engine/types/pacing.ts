@@ -44,6 +44,17 @@ export const LENGTH_BUDGETS: Record<EpisodeLength, LengthBudget> = {
     duration_sum_min: MICRO_AD_CUT.min_seconds,
     duration_sum_max: MICRO_AD_CUT.max_seconds,
   },
+  "45_60": {
+    length: "45_60",
+    target_episode_seconds: 60,
+    min_shots: 4,
+    max_shots: 5,
+    min_shot_s: MICRO_EPISODE.gen_min_s,
+    max_shot_s: MICRO_EPISODE.gen_max_s,
+    max_dialogue_s: MICRO_EPISODE.gen_max_s,
+    duration_sum_min: 50,
+    duration_sum_max: 65,
+  },
   "60_90": {
     length: "60_90",
     target_episode_seconds: MICRO_EPISODE.target_seconds,
@@ -106,8 +117,17 @@ export function beatEngineFor(length: EpisodeLength): BeatEngine {
   };
 }
 
+export function isSceneTakeLength(length: EpisodeLength): boolean {
+  return length === "45_60" || length === "60_90";
+}
+
+export function isMicroDramaLength(length: EpisodeLength): boolean {
+  return length === "30_45" || isSceneTakeLength(length);
+}
+
 export function lengthFromSeconds(target: number): EpisodeLength {
   if (target <= 45) return "30_45";
+  if (target <= 70) return "45_60";
   if (target >= 700) return "900_1080";
   if (target >= 100) return "120_180";
   return "60_90";

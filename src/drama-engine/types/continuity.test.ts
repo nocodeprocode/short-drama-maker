@@ -7,6 +7,7 @@ import {
   inferPropLock,
   packCuesIntoWindows,
   peopleInTake,
+  presenceLedger,
   spokenSeconds,
 } from "./continuity.ts";
 
@@ -74,6 +75,8 @@ describe("screen direction", () => {
         blocking: { camera_left: "MARA", camera_right: "COLE", present: ["MARA", "COLE"] },
       }),
     ).toEqual(["MARA", "COLE", "FELIX"]);
+    expect(peopleInTake({ speakers: ["A", "B", "C", "D"] }).length).toBeLessThanOrEqual(3);
+    expect(presenceLedger([{ speakers: ["A", "B", "C", "D"], sameRoomAsPrevious: false }])[0]!.present.length).toBeLessThanOrEqual(3);
   });
 
   it("does not send an outdoor entrance through a door", () => {

@@ -33,15 +33,15 @@ function audioRole(shot: Shot): AudioRole {
 export { pickTransition };
 
 /**
- * Short-drama joins are hard cuts. The one stylistic transition is a short
- * white flash into the cliff take, so it reads as a sting, not a pause.
+ * Short-drama joins are hard cuts. Never a white flash — in a dark room it
+ * reads like a camera going off in the viewer's face. If a fade is ever
+ * used, it is a few frames of black, not white.
  */
 export const HANDOFF_CUT_SECONDS = 0.1;
-export const HANDOFF_FLASH_SECONDS = 0.22;
+/** Few-frame black only. Never emit fadewhite. */
+export const HANDOFF_BLACK_SECONDS = 3 / 30;
 
-export function handoffStyleFor(shot: Shot): { transition_style: RenderTransitionStyle; transition_seconds: number } {
-  const button = shot.shot_data.function === "button_cu" || shot.shot_data.function === "block_button";
-  if (button) return { transition_style: "fadewhite", transition_seconds: HANDOFF_FLASH_SECONDS };
+export function handoffStyleFor(_shot?: Shot): { transition_style: RenderTransitionStyle; transition_seconds: number } {
   return { transition_style: "cut", transition_seconds: HANDOFF_CUT_SECONDS };
 }
 

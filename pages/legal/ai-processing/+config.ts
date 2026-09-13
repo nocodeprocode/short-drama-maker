@@ -1,3 +1,3 @@
 export default {
-  title: "AI Processing & Subprocessors — Short Drama Maker",
+  title: "AI Processing & Subprocessors — Takehaus",
 };

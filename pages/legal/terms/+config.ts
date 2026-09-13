@@ -1,3 +1,3 @@
 export default {
-  title: "Terms of Service — Short Drama Maker",
+  title: "Terms of Service — Takehaus",
 };

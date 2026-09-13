@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseIdentityJudgement, type VisionEngine } from "../ai/vision.ts";
+import { IDENTITY_RUBRIC, parseIdentityJudgement, type VisionEngine } from "../ai/vision.ts";
 import { identitySampleTimes, runIdentityStage } from "./identity-check.ts";
 import { scoreTake, type TakeAnalysis } from "./take-analysis.ts";
 
@@ -45,6 +45,7 @@ describe("identity judgement parsing", () => {
     expect(parsed).toEqual({ face_count: 1, same_person: 1, notes: "same scar", model: "m" });
     expect(parseIdentityJudgement('{"face_count":"2","same_person":"0.2"}', "m").face_count).toBe(2);
     expect(parseIdentityJudgement('{"face_count":0}', "m").same_person).toBe(0.5);
+    expect(IDENTITY_RUBRIC).toMatch(/If race, skin tone, or hair family changed versus the reference still, same_person is 0/);
   });
 });
 

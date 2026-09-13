@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipCueToBreath, sceneTakesAreCopies, sceneTakesShareSpokenBeat, spokenTextFromSceneScript } from "./dialogue.ts";
+import { clipCueToBreath, collapseSameSpeakerBreaths, dropOpeningEcho, identifiesNameInBreath, rewriteUnseenNames, sceneTakesAreCopies, sceneTakesShareSpokenBeat, spokenTextFromSceneScript, unseenNamesInScript } from "./dialogue.ts";
 
 describe("clipCueToBreath", () => {
   it("keeps a short cue and clips a wordy one without dropping the speaker tag", () => {
@@ -60,5 +60,85 @@ describe("sceneTakesShareSpokenBeat", () => {
 
   it("does not treat two short lines that share one word as copies", () => {
     expect(sceneTakesAreCopies({ dialogue: "Count 2." }, { dialogue: "Count 8." })).toBe(false);
+  });
+});
+
+describe("unseen names", () => {
+  it("blocks a namedrop the viewer has not met, and allows role or an on-camera face", () => {
+    expect(identifiesNameInBreath("Your sister Juno still gets it?", "Juno")).toBe(true);
+    expect(identifiesNameInBreath("Juno, my sister, still gets it?", "Juno")).toBe(true);
+    expect(identifiesNameInBreath("Juno still gets her surgery?", "Juno")).toBe(false);
+    expect(identifiesNameInBreath("The night nurse Mira is here.", "Mira")).toBe(true);
+    expect(identifiesNameInBreath("Mira spiked again.", "Mira")).toBe(false);
+    expect(identifiesNameInBreath("My intern Kira stays.", "Kira")).toBe(true);
+    expect(identifiesNameInBreath("Kira stays.", "Kira")).toBe(false);
+    expect(
+      unseenNamesInScript({
+        script: "NYLA: Juno still gets her surgery?",
+        onCamera: ["NYLA", "ROMAN"],
+        metThisEpisode: ["NYLA", "ROMAN"],
+        namedCast: ["Nyla", "Roman", "Juno"],
+      }).map((row) => row.name),
+    ).toEqual(["Juno"]);
+    expect(
+      unseenNamesInScript({
+        script: "NYLA: My sister still gets her surgery?",
+        onCamera: ["NYLA", "ROMAN"],
+        namedCast: ["Nyla", "Roman", "Juno"],
+      }),
+    ).toEqual([]);
+    expect(
+      unseenNamesInScript({
+        script: "NYLA: Your sister Juno still gets it?",
+        onCamera: ["NYLA", "ROMAN"],
+        namedCast: ["Nyla", "Roman", "Juno"],
+      }),
+    ).toEqual([]);
+    expect(
+      unseenNamesInScript({
+        script: "JUNO: I'm still here.\nNYLA: Juno, sit up.",
+        onCamera: ["NYLA", "JUNO"],
+        namedCast: ["Nyla", "Juno"],
+      }),
+    ).toEqual([]);
+    expect(
+      rewriteUnseenNames("NYLA: Juno still gets her surgery?", [{ name: "Juno", line: "Juno still gets her surgery?" }], () => "my sister"),
+    ).toBe("NYLA: my sister still gets her surgery?");
+  });
+});
+
+describe("collapseSameSpeakerBreaths", () => {
+  it("joins two short Nyla lines into one breath and leaves a stunned beat alone", () => {
+    expect(
+      collapseSameSpeakerBreaths([
+        "NYLA: I opened your envelope.",
+        "NYLA: It was already cracked, so don't start.",
+        "ROMAN: Sit down.",
+      ]),
+    ).toEqual(["NYLA: I opened your envelope — It was already cracked, so don't start.", "ROMAN: Sit down."]);
+    expect(collapseSameSpeakerBreaths(["NYLA: I opened it.", "NYLA: (goes still) So you're buying me."])).toEqual([
+      "NYLA: I opened it.",
+      "NYLA: (goes still) So you're buying me.",
+    ]);
+  });
+});
+
+describe("dropOpeningEcho", () => {
+  it("drops Finish the sentence when it opens the next take", () => {
+    const prev = ["NYLA: You opened it.", "ROMAN: So what.", "NYLA: Finish the sentence."].join("\n");
+    const next = [
+      "NYLA: Finish the sentence.",
+      "ROMAN: You're mine.",
+      "NYLA: Say that again.",
+      "ROMAN: Not here.",
+      "NYLA: Then where.",
+    ].join("\n");
+    expect(dropOpeningEcho(prev, next)).toBe(
+      ["ROMAN: You're mine.", "NYLA: Say that again.", "ROMAN: Not here.", "NYLA: Then where."].join("\n"),
+    );
+    expect(dropOpeningEcho("NYLA: Finish the sentence.", "ROMAN: Finish the sentence.")).toBe("ROMAN: Finish the sentence.");
+    expect(dropOpeningEcho("NYLA: Finish the sentence.", "ROMAN: You're mine.\nNYLA: Say it.")).toBe(
+      "ROMAN: You're mine.\nNYLA: Say it.",
+    );
   });
 });

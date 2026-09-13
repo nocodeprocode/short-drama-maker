@@ -1,4 +1,5 @@
 import { locationRefForScene } from "./location-ref.ts";
+import { stripPowerLanguage } from "../../drama-engine/types/where.ts";
 
 export const STILL_KIND_ORDER = ["cu", "front", "three_quarter", "profile", "full_body", "default_wardrobe"] as const;
 export const FACE_KIND_ORDER = ["front", "three_quarter", "profile", "full_body"] as const;
@@ -68,6 +69,12 @@ export function stillRefEntries(visual: Record<string, unknown> | null | undefin
   return [...face, ...extraFace, ...looks];
 }
 
+/**
+ * Every still, wardrobe, blocking, and identity-judge prompt goes through here.
+ * WHERE applies to the picture, not just the video prompt: a bible that writes
+ * "eyes that flash gold" would bake the glow into the locked face, and the face
+ * still is declared the only legal face — so the glow would be permanent.
+ */
 export function appearanceDescription(input: {
   description?: string;
   age_look?: string;
@@ -77,7 +84,7 @@ export function appearanceDescription(input: {
   default_wardrobe?: string;
 }): string {
   return [input.description, input.age_look, input.hair, input.face, input.body, input.default_wardrobe]
-    .map((part) => part?.trim())
+    .map((part) => stripPowerLanguage(part).trim())
     .filter((part): part is string => Boolean(part))
     .join(". ");
 }

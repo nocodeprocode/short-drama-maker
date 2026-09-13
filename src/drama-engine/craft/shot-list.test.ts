@@ -17,7 +17,7 @@ describe("scene-take shot list", () => {
     });
     expect(list.map((row) => row.role)).toEqual(["setup", "peak", "answer", "land"]);
     expect(new Set(list.map((row) => row.framing)).size).toBeGreaterThanOrEqual(3);
-    expect(list.map((row) => row.framing)).toEqual(["master", "ots", "dirty", "tight_two"]);
+    expect(list.map((row) => row.framing)).toEqual(["master", "ots", "cu", "tight_two"]);
     const peak = list.find((row) => row.role === "peak");
     const answer = list.find((row) => row.role === "answer");
     expect(peak?.on).toBe("MARA");
@@ -26,7 +26,8 @@ describe("scene-take shot list", () => {
     expect(answer?.on).toBe("COLE");
     const text = shotListPrompt(list);
     expect(text).toMatch(/Shot 1/);
-    expect(text).toMatch(/NEW CAMERA|HARD CUT/);
+    expect(text).toMatch(/NEW CAMERA|HARD CUT CLOSER|HARD CUT WIDER|HARD CUT REVERSE|HARD CUT INSERT/);
+    expect(text).toMatch(/<swish>|<whoosh>/);
     expect(text).not.toMatch(/same camera position/);
     expect(text).not.toMatch(/locked-off medium two-shot/);
     expect(text).toMatch(/\{But it is my concern/);
@@ -81,6 +82,28 @@ describe("scene-take shot list", () => {
     expect(answer?.direction).toMatch(/\{I count money/);
   });
 
+  it("joins two opening thoughts from one mouth and cuts closer mid-breath", () => {
+    const list = sceneTakeShotList({
+      duration: 15,
+      takeIndex: 0,
+      blocking: { camera_left: "NYLA", camera_right: "ROMAN" },
+      script: [
+        "NYLA: I opened your envelope.",
+        "NYLA: It was already cracked, so don't start.",
+        "ROMAN: Couriers don't open anything.",
+        "NYLA: Then fire me, I'm not your staff.",
+        "NYLA: Forty for the run and I'm gone.",
+        "ROMAN: (rises, slow, hands still) Did you read what's inside?",
+        "ROMAN: Sit down.",
+      ].join("\n"),
+    });
+    const text = shotListPrompt(list);
+    expect(text).toMatch(/\{I opened your envelope — It was already cracked, so don't start\.\}/);
+    expect(text).toMatch(/Same mouth keeps talking/);
+    expect(text).toMatch(/Cut closer on the second thought/);
+    expect(text).not.toMatch(/\{I opened your envelope\.\}/);
+  });
+
   it("cuts a two-line take as a dirty single and the reverse, not one locked frame", () => {
     const list = sceneTakeShotList({ duration: 12, script: "MARA: Who sent it?\nCOLE: Nobody." });
     expect(list).toHaveLength(2);
@@ -88,6 +111,34 @@ describe("scene-take shot list", () => {
     expect(list[1]!.framing).toBe("ots");
     expect(list[0]!.direction).toMatch(/Dirty single on the person on camera/);
     expect(list[1]!.direction).toMatch(/Over-the-shoulder/);
+  });
+
+  it("repairs a reprint of the same size on the same face and joins on a new size", () => {
+    const reprint = sceneTakeShotList({
+      duration: 12,
+      takeIndex: 0,
+      blocking: { camera_left: "NYLA", camera_right: "ROMAN", prop: "the opened envelope" },
+      script: "NYLA: I opened it.\nNYLA: Don't start.",
+    });
+    expect(reprint.map((row) => row.framing)).not.toEqual(["dirty", "ots"]);
+    expect(reprint[0]!.on).toBe("NYLA");
+    expect(reprint[1]!.on).toBe("NYLA");
+    expect(reprint[0]!.framing).not.toBe(reprint[1]!.framing);
+    const joined = sceneTakeShotList({
+      duration: 14,
+      takeIndex: 1,
+      prevLand: "dirty",
+      blocking: { camera_left: "NYLA", camera_right: "ROMAN" },
+      script: [
+        "ROMAN: Then forty's not enough.",
+        "NYLA: I need your signature.",
+        "ROMAN: Sit down.",
+        "NYLA: So you're buying me.",
+      ].join("\n"),
+    });
+    expect(joined[0]!.framing).not.toBe("dirty");
+    expect(joined[0]!.direction).toMatch(/JOIN CUT/);
+    expect(joined[0]!.direction).toMatch(/<swish>/);
   });
 
   it("rotates the opening camera across consecutive takes", () => {
@@ -100,7 +151,7 @@ describe("scene-take shot list", () => {
     const a = sceneTakeShotList({ duration: 14, takeIndex: 0, script, blocking: { camera_left: "MARA", camera_right: "COLE" } });
     const b = sceneTakeShotList({ duration: 14, takeIndex: 1, script, blocking: { camera_left: "MARA", camera_right: "COLE" } });
     expect(a[0]!.framing).not.toBe(b[0]!.framing);
-    expect(["cu", "tight_two"]).toContain(b[0]!.framing);
+    expect(["master", "dirty"]).toContain(b[0]!.framing);
     expect(b[0]!.direction).toMatch(/JOIN CUT/);
     expect(b[0]!.framing).not.toBe(a.at(-1)!.framing);
   });

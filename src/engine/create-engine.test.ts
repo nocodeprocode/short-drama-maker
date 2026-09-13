@@ -42,7 +42,7 @@ const TEST_BIBLE: StoryBible = {
       description: "Fictional lead.",
       appearance: {
         age_look: "late twenties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "dark",
         face: "sharp",
         body: "average height",
@@ -57,7 +57,7 @@ const TEST_BIBLE: StoryBible = {
       description: "Fictional counterpart.",
       appearance: {
         age_look: "early thirties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "pale-gold",
         hair: "black",
         face: "open",
         body: "tall",
@@ -72,7 +72,7 @@ const TEST_BIBLE: StoryBible = {
       description: "Fictional witness. The night concierge who buzzed someone up.",
       appearance: {
         age_look: "early thirties",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "cool brown",
         hair: "black",
         face: "calm",
         body: "average height",
@@ -425,6 +425,96 @@ describe("engine phase 0", () => {
     );
     expect(app.store.characters.size).toBe(0);
     expect([...app.store.jobs.values()]).toHaveLength(0);
+  });
+
+  it("keeps a role its cast face when the run starts, and tells the writer the name", async () => {
+    let seen: readonly { name: string }[] | undefined;
+    const ai = testGateway();
+    const llm = ai.llm;
+    ai.llm = {
+      ...llm,
+      async analyzeStory(input) {
+        seen = input.required_cast;
+        return llm.analyzeStory(input);
+      },
+    };
+    const app = engine({ ai });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_cast_1",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    app.store.actors.set("actor-me", {
+      id: "actor-me",
+      owner_id: "user-1",
+      name: "Me",
+      source: "likeness",
+      seed_asset_id: null,
+      appearance_profile: TEST_BIBLE.characters[0]!.appearance,
+      visual_reference_asset_ids: { front: "asset-front" },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const analyzed = await app.analyze({
+      owner_id: "user-1",
+      series_id: series.id,
+      required_cast: [{ name: "Sarah Morgan", note: "the lead", actor_id: "actor-me" }],
+    });
+
+    expect(seen?.map((row) => row.name)).toEqual(["Sarah Morgan"]);
+    const lead = analyzed.characters.find((row) => row.name === "Sarah Morgan")!;
+    expect(lead.actor_id).toBe("actor-me");
+    expect(lead.visual_reference_asset_ids.front).toBe("asset-front");
+    // Nobody else inherits that face, and no throwaway actor was invented.
+    expect(analyzed.characters.filter((row) => row.actor_id === "actor-me")).toHaveLength(1);
+    expect(app.store.actors.size).toBe(1);
+  });
+
+  it("ignores a cast slot pointing at another account's actor", async () => {
+    const app = engine();
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_cast_2",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    app.store.actors.set("actor-theirs", {
+      id: "actor-theirs",
+      owner_id: "user-2",
+      name: "Theirs",
+      source: "generated",
+      seed_asset_id: null,
+      appearance_profile: TEST_BIBLE.characters[0]!.appearance,
+      visual_reference_asset_ids: { front: "asset-front" },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const analyzed = await app.analyze({
+      owner_id: "user-1",
+      series_id: series.id,
+      required_cast: [{ name: "Sarah Morgan", actor_id: "actor-theirs" }],
+    });
+
+    expect(analyzed.characters.every((row) => row.actor_id === null)).toBe(true);
   });
 
   it("finalizes dialogue duration from the wav, then generates independently regenerable shots", async () => {
@@ -884,6 +974,12 @@ describe("engine phase 0", () => {
     expect(
       app.store.ledger.filter((row) => row.entry_type === "reserve" && row.generation_job_id === first.job.id),
     ).toHaveLength(reserved.length);
+    expect(
+      [...app.store.jobs.values()].filter((job) => job.shot_id === shot.id && job.job_type === "video"),
+    ).toHaveLength(1);
+    app.store.jobs.set(first.job.id, { ...app.store.jobs.get(first.job.id)!, status: "ingesting" });
+    const third = await app.generateVideo({ owner_id: "user-1", shot_id: shot.id });
+    expect(third.job.id).toBe(first.job.id);
     expect(
       [...app.store.jobs.values()].filter((job) => job.shot_id === shot.id && job.job_type === "video"),
     ).toHaveLength(1);

@@ -41,8 +41,24 @@ Deno.serve(async (req) => {
     const ownerId = charge.metadata?.owner_id;
     const latestRefund = charge.refunds?.data?.[0]?.amount;
     const amount = (latestRefund ?? charge.amount_refunded ?? 0) / 100;
-    if (!seriesId || !ownerId) {
-      return json({ error: "Missing series or owner metadata on refund" }, 400);
+    if (!ownerId) {
+      return json({ error: "Missing owner metadata on refund" }, 400);
+    }
+    if (!seriesId) {
+      const unused = await unusedWallet(supabase, ownerId);
+      const debit = Math.min(Math.max(amount, 0), Math.max(unused, 0));
+      if (debit <= 0) return json({ ok: true, ignored: true, reason: "no_unused_budget" });
+      const { error } = await supabase.from("project_ledger").insert({
+        owner_id: ownerId,
+        series_id: null,
+        entry_type: "adjustment",
+        amount: -debit,
+        stripe_event_id: event.id,
+        price_snapshot_version: PRICE_SNAPSHOT_VERSION,
+      });
+      if (error?.code === "23505") return json({ ok: true, duplicate: true });
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true, event_id: event.id, debit, wallet: true });
     }
     const unused = await unusedBalance(supabase, seriesId);
     const debit = Math.min(Math.max(amount, 0), Math.max(unused, 0));
@@ -72,11 +88,16 @@ Deno.serve(async (req) => {
     return json({ ignored: true, reason: "unpaid" });
   }
 
-  const seriesId = session.metadata?.series_id;
-  const productionId = session.metadata?.production_id ?? session.client_reference_id;
+  const seriesId = session.metadata?.series_id || null;
+  const productionId = session.metadata?.production_id ?? (seriesId ? session.client_reference_id : undefined);
   const ownerId = session.metadata?.owner_id;
+  const sku = session.metadata?.sku;
   const amount = (session.amount_total ?? 0) / 100;
-  if (!seriesId || !ownerId) {
+  if (!ownerId) {
+    return json({ error: "Missing owner metadata" }, 400);
+  }
+  const wallet = !seriesId && (sku === "credit" || sku === "topup");
+  if (!seriesId && !wallet) {
     return json({ error: "Missing series or owner metadata" }, 400);
   }
 
@@ -90,7 +111,7 @@ Deno.serve(async (req) => {
 
   const { error } = await supabase.from("project_ledger").insert({
     owner_id: ownerId,
-    series_id: seriesId,
+    series_id: wallet ? null : seriesId,
     entry_type: "purchase",
     amount,
     stripe_event_id: event.id,
@@ -102,7 +123,7 @@ Deno.serve(async (req) => {
   }
   if (error) return json({ error: error.message }, 400);
 
-  if (productionId) {
+  if (!wallet && productionId) {
     await supabase
       .from("productions")
       .update({
@@ -128,6 +149,17 @@ Deno.serve(async (req) => {
   return json({ ok: true, event_id: event.id, production_id: productionId ?? null });
 });
 
+function ledgerBalance(rows: Array<{ entry_type: string; amount: number | string }>): number {
+  return rows.reduce((sum, row) => {
+    const amount = Number(row.amount);
+    if (row.entry_type === "purchase" || row.entry_type === "release" || row.entry_type === "adjustment") {
+      return sum + amount;
+    }
+    if (row.entry_type === "reserve" || row.entry_type === "settle") return sum - amount;
+    return sum;
+  }, 0);
+}
+
 async function unusedBalance(
   supabase: ReturnType<typeof serviceClient>,
   seriesId: string,
@@ -137,14 +169,20 @@ async function unusedBalance(
     .select("entry_type, amount")
     .eq("series_id", seriesId);
   if (error) throw new Error(error.message);
-  return (data ?? []).reduce((sum, row) => {
-    const amount = Number(row.amount);
-    if (row.entry_type === "purchase" || row.entry_type === "release" || row.entry_type === "adjustment") {
-      return sum + amount;
-    }
-    if (row.entry_type === "reserve" || row.entry_type === "settle") return sum - amount;
-    return sum;
-  }, 0);
+  return ledgerBalance(data ?? []);
+}
+
+async function unusedWallet(
+  supabase: ReturnType<typeof serviceClient>,
+  ownerId: string,
+): Promise<number> {
+  const { data, error } = await supabase
+    .from("project_ledger")
+    .select("entry_type, amount")
+    .eq("owner_id", ownerId)
+    .is("series_id", null);
+  if (error) throw new Error(error.message);
+  return ledgerBalance(data ?? []);
 }
 
 async function verifyStripeSignature(

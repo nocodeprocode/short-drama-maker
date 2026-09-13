@@ -114,8 +114,22 @@ describe("scene-take ref pack", () => {
       }),
     ).toEqual(["MARA", "COLE", "FELIX"]);
     expect(identityLockLine("MARA")).toMatch(/Keep MARA's locked adult face/);
+    expect(identityLockLine("MARA")).toMatch(/Do not change race, skin tone, or hair/);
+    expect(identityLockLine("MARA")).toMatch(/The still is the only legal face/);
     expect(identityLockLine("MARA")).not.toMatch(/MARA:\s/);
     expect(identityLockLine("MARA")).not.toMatch(/[A-Z]+: same adult/);
+    expect(identityLockLine("MARA", { ethnicity_notes: "warm-olive", hair: "long black" })).toMatch(/warm-olive/);
+    expect(identityLockLine("MARA", { ethnicity_notes: "warm-olive", hair: "long black" })).toMatch(/long black/);
+    // Eye colour is carried by the still. Naming it in the prompt is what made
+    // the model paint two lit points in a dark room.
+    const roman = identityLockLine("ROMAN", {
+      face: "pale green eyes that can flash gold, sharp jaw, faint scar through one eyebrow",
+    });
+    expect(roman).toMatch(/sharp jaw/);
+    expect(roman).toMatch(/faint scar/);
+    expect(roman).not.toMatch(/eyes/);
+    expect(roman).not.toMatch(/flash|gold/);
+    expect(identityLockLine("MARA", { ethnicity_notes: "warm-olive" })).not.toMatch(/MARA:\s/);
     expect(
       speakersForSceneTake({
         sceneScript: "MARA: You signed this the same day.\nCOLE: I know.",
@@ -131,10 +145,19 @@ describe("scene-take ref pack", () => {
     });
     expect(text).toMatch(/MARA and COLE/);
     expect(text).toMatch(/SPEECH/);
-    expect(text.indexOf("SPEECH")).toBeLessThan(text.indexOf("SHOT LIST"));
+    // The lines come before the rule stack. A 22k-character prompt that buried
+    // the SHOT LIST two-thirds down had Seedance inventing its own dialogue on
+    // every take; the words are what the model drops when the budget runs out.
+    expect(text.indexOf("SHOT LIST")).toBeLessThan(text.indexOf("COVERAGE"));
+    expect(text.indexOf("SHOT LIST")).toBeLessThan(text.indexOf("PHYSICS"));
+    expect(text.indexOf("SHOT LIST")).toBeLessThan(text.length / 2);
+    expect(text.length).toBeLessThan(12_000);
     expect(text.split("Speak only the text inside").length).toBe(2);
+    expect(text).toMatch(/SHOT LIST owns the words|spoken exactly once/);
     expect(text).toMatch(/\{You signed this\.\}/);
     expect(text).toMatch(/\{I know\.\}/);
+    expect((text.match(/\{You signed this\.\}/g) ?? []).length).toBe(1);
+    expect((text.match(/\{I know\.\}/g) ?? []).length).toBe(1);
     expect(text).toMatch(/Never speak a character name/);
     expect(text).not.toMatch(/A MARA: line/);
     expect(text).not.toMatch(/PETRA/);
@@ -150,6 +173,11 @@ describe("scene-take ref pack", () => {
     expect(text).toMatch(/Do not attach or remake a previous take/);
     expect(text).toMatch(/STAGING/);
     expect(text).toMatch(/PHYSICS/);
+    expect(text).toMatch(/WHERE/);
+    expect(text).toMatch(/CUT/);
+    expect(text).toMatch(/<swish>/);
+    expect(text).toMatch(/real (scene|room)/);
+    expect(text).not.toMatch(/gold-eyes ECU|flashing gold/i);
     expect(text).not.toMatch(/waist or chest up/);
     expect(text).toMatch(/mid-thigh up/);
     expect(text).not.toMatch(/\bactor\b/i);
@@ -186,8 +214,11 @@ describe("scene-take ref pack", () => {
       people: ["MARA", "COLE"],
       sceneScript: "MARA: Open your eyes.\nCOLE: No hospital.\nMARA: Look at me.\nCOLE: I am.",
       takeIndex: 1,
+      context: "CONTEXT. SERIES: Night Run. LAST CLIP: they just said \"Open it.\" Do not say that last line again.",
     });
     expect(joined).toMatch(/JOIN CUT/);
+    expect(joined).toMatch(/CONTEXT\. SERIES: Night Run/);
+    expect(joined).toMatch(/Do not say that last line again/);
     expect(joined).toMatch(/Do not reprint the previous take's last frame/);
     const trio = sceneTakePrompt({
       location: "kitchen",

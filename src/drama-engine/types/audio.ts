@@ -90,10 +90,11 @@ export function speakerCaptionTag(name?: string | null): string | null {
   return first.replace(/[^A-Za-z]/g, "").toUpperCase() || null;
 }
 
-export function prefixSpeakerCaption(name: string | null | undefined, text: string): string {
-  const tag = speakerCaptionTag(name);
-  const cleaned = text.replace(/^\s*[A-Z]{2,12}:\s*/, "").trim();
-  if (!tag) return cleaned;
-  if (cleaned.toUpperCase().startsWith(`${tag}:`)) return cleaned;
-  return `${tag}: ${cleaned}`;
+/**
+ * Burned captions carry the words only. The audience can see who is talking —
+ * a "NYLA:" tag on every line is a script artifact, not subtitling. The speaker
+ * stays on the cue as metadata for sidecars and colour, never in the picture.
+ */
+export function captionSpokenText(text: string): string {
+  return text.replace(/^\s*[A-Z][A-Z' .-]{1,20}:\s*/, "").trim();
 }

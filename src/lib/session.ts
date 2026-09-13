@@ -70,6 +70,31 @@ export async function signIn(email: string, password: string) {
   return data.session;
 }
 
+export async function signUp(email: string, password: string) {
+  const { data, error } = await supabaseBrowser().auth.signUp({ email, password });
+  if (error) throw error;
+  if (data.session) rememberSession(data.session);
+  return data;
+}
+
+export async function requestPasswordReset(email: string) {
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const { error } = await supabaseBrowser().auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/login?mode=update`,
+  });
+  if (error) throw error;
+}
+
+export async function updatePassword(password: string) {
+  const { data, error } = await supabaseBrowser().auth.updateUser({ password });
+  if (error) throw error;
+  if (data.user) {
+    const session = await currentSession();
+    return session;
+  }
+  return currentSession();
+}
+
 export async function signOut() {
   await supabaseBrowser().auth.signOut();
   rememberSession(null);

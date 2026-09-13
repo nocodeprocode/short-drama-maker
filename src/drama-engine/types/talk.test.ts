@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptPolishedTalk, keepPlanAfterPolishFailure, isRefusalLoop, soundsStaged, talkProblems } from "./talk.ts";
+import { acceptPolishedTalk, keepPlanAfterPolishFailure, isRefusalLoop, soundsStaged, talkProblems, TALK_RULES } from "./talk.ts";
 
 describe("short-drama talk", () => {
   it("flags lawyer English and hospital loops", () => {
@@ -19,6 +19,39 @@ describe("short-drama talk", () => {
     ).toBe(true);
     expect(talkProblems("ELENA: It is not something that I can do.").length).toBeGreaterThan(0);
     expect(talkProblems("ELENA: I can't go there.\nALYSSA: You're burning up.")).toEqual([]);
+    expect(soundsStaged("This constitutes a payment.")).toBe(true);
+    expect(soundsStaged("Then this document constitutes a payment toward the outstanding balance.")).toBe(true);
+    expect(soundsStaged("This is the envelope.")).toBe(true);
+    expect(soundsStaged("This is pack law.")).toBe(true);
+    expect(soundsStaged("I am informing you.")).toBe(true);
+    expect(soundsStaged("The aforementioned writ is open.")).toBe(true);
+    expect(soundsStaged("That was never a letter.")).toBe(true);
+    expect(soundsStaged("Signed by my hand.")).toBe(true);
+    expect(soundsStaged("You broke a seal that wasn't yours.")).toBe(true);
+    expect(soundsStaged("A claim.")).toBe(true);
+    expect(soundsStaged("The black one, red wax.")).toBe(true);
+    expect(soundsStaged("I hereby claim you.")).toBe(true);
+    expect(soundsStaged("Under pack law you stay.")).toBe(true);
+    expect(soundsStaged("Are you trying to bribe me?")).toBe(false);
+    expect(soundsStaged("You opened it.")).toBe(false);
+    expect(soundsStaged("Don't play dumb.")).toBe(false);
+    expect(talkProblems("NYLA: Are you trying to bribe me?\nROMAN: Sleep better calling it that.")).toEqual([]);
+    expect(TALK_RULES).toMatch(/Same mouth does not wait/);
+    expect(TALK_RULES).toMatch(/Never name-drop someone the viewer has not met/);
+    expect(TALK_RULES).toMatch(/DROP-IN/);
+    expect(TALK_RULES).toMatch(/my second/);
+    expect(
+      talkProblems(
+        [
+          "NYLA: I opened your envelope.",
+          "NYLA: The black one, red wax.",
+          "ROMAN: That was never a letter.",
+          "ROMAN: A claim.",
+          "ROMAN: Signed by my hand.",
+        ].join("\n"),
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(talkProblems("ROMAN: This constitutes a claim.\nNYLA: Say that again.").length).toBeGreaterThan(0);
     expect(
       isRefusalLoop(
         ["ELENA: I can't believe you.", "ALYSSA: Don't start.", "ELENA: I have to think."].join("\n"),

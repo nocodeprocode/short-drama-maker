@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createAiGateway } from "../ai/index.ts";
 import { transcribeAudio } from "../ai/stt.ts";
 import { accessFromAppMetadata } from "../access.ts";
+import { bindCastPlan, castPlan } from "../casting.ts";
 import { createEngine, RenderIncompleteError } from "../create-engine.ts";
 import { classifyTaskFailure, failureDecision, redactTaskError, retryDelaySeconds, sanitizeTaskError } from "./errors.ts";
 import { createConfiguredAssetStore } from "../storage/create.ts";
@@ -12,6 +13,8 @@ import { voiceSexRepair } from "../ai/voice-sex.ts";
 import { isSceneTake } from "../../drama-engine/types/editorial.ts";
 import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
+import { isEpisodeLength } from "../config/catalog.ts";
+import { DRAFT_TTL_DAYS } from "../drafts.ts";
 
 /** Takes kept in flight per series; the provider renders them concurrently. */
 export const VIDEO_CONCURRENCY = Math.min(12, Math.max(1, Number(process.env.VIDEO_CONCURRENCY ?? 3) || 3));
@@ -26,6 +29,9 @@ export type EngineAction =
   | "design_voice"
   | "lock_character"
   | "lock_locations"
+  | "attach_cover"
+  | "attach_script"
+  | "segment_script"
   | "generate_cover"
   | "create_episode"
   | "plan_episode"
@@ -100,6 +106,9 @@ const ORCHESTRATION_ACTIONS: EngineAction[] = [
   "design_voice",
   "lock_character",
   "lock_locations",
+  "attach_cover",
+  "attach_script",
+  "segment_script",
   "generate_cover",
   "create_episode",
   "plan_episode",
@@ -219,6 +228,8 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
   });
   const payload = task.payload;
   const owner_id = task.owner_id;
+  /** Work that needs the committed rows, e.g. binding cast slots to characters. */
+  const afterCommit: Array<() => Promise<void>> = [];
 
   if (task.action === "generate_cover") {
     const { count } = await client
@@ -250,14 +261,20 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       "snapshot" in assets && typeof assets.snapshot === "function" ? assets.snapshot() : assetRows;
     await commitSeriesStore(client, engine.store, task.series_id, snapshot);
   }
+  for (const step of afterCommit) await step().catch(() => undefined);
   return result;
 
   async function runAction(): Promise<unknown> {
   let result: unknown;
   switch (task.action) {
-    case "analyze":
-      result = await engine.analyze({ owner_id, series_id: task.series_id });
+    case "analyze": {
+      const plan = await castPlan(client, task.series_id);
+      result = await engine.analyze({ owner_id, series_id: task.series_id, required_cast: plan });
+      // The story has named its roles now, so each slot can point at the
+      // character it filled. Runs after the commit below writes those rows.
+      afterCommit.push(() => bindCastPlan(client, task.series_id));
       break;
+    }
     case "generate_appearance":
       result = await engine.generateAppearance({
         owner_id,
@@ -300,6 +317,31 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
     case "lock_locations":
       result = await engine.lockLocations({ owner_id, series_id: task.series_id });
       break;
+    case "attach_cover":
+      result = await engine.attachSeriesCover({
+        owner_id,
+        series_id: task.series_id,
+        bytes:
+          typeof payload.cover_base64 === "string" && payload.cover_base64
+            ? Uint8Array.from(Buffer.from(payload.cover_base64, "base64"))
+            : new Uint8Array(),
+        mime_type: payload.cover_mime_type ? String(payload.cover_mime_type) : undefined,
+      });
+      break;
+    case "attach_script":
+      result = await engine.attachSourceScript({
+        owner_id,
+        series_id: task.series_id,
+        text: String(payload.script_text ?? ""),
+      });
+      break;
+    case "segment_script":
+      result = await engine.segmentSourceScript({
+        owner_id,
+        series_id: task.series_id,
+        episode_count: Number(payload.episode_count) || undefined,
+      });
+      break;
     case "generate_cover":
       result = await engine.generateSeriesCover({ owner_id, series_id: task.series_id });
       break;
@@ -315,23 +357,25 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
       result = await engine.planEpisode({
         owner_id,
         episode_id: String(payload.episode_id),
-        episode_length:
-          payload.episode_length === "30_45" ||
-          payload.episode_length === "60_90" ||
-          payload.episode_length === "120_180" ||
-          payload.episode_length === "900_1080"
-            ? payload.episode_length
-            : undefined,
+        episode_length: isEpisodeLength(payload.episode_length) ? payload.episode_length : undefined,
       });
       break;
     case "generate_dialogue":
       result = await engine.generateDialogue({ owner_id, shot_id: String(payload.shot_id) });
       break;
     case "generate_video":
-      result = await engine.generateVideo({ owner_id, shot_id: String(payload.shot_id) });
+      result = await engine.generateVideo({
+        owner_id,
+        shot_id: String(payload.shot_id),
+        video_tier: await productionVideoTier(client, task),
+      });
       break;
     case "regenerate_shot":
-      result = await engine.regenerateShot({ owner_id, shot_id: String(payload.shot_id) });
+      result = await engine.regenerateShot({
+        owner_id,
+        shot_id: String(payload.shot_id),
+        video_tier: await productionVideoTier(client, task),
+      });
       break;
     case "rejudge_shot":
       result = await engine.rejudgeShot({ owner_id, shot_id: String(payload.shot_id) });
@@ -487,6 +531,22 @@ async function writeTaskOutcome(
   delete patch.error_detail;
   const retry = await client.from("engine_tasks").update(patch).eq("id", task.id);
   if (retry.error) throw new Error(retry.error.message);
+}
+
+async function productionVideoTier(
+  client: SupabaseClient,
+  task: TaskRow,
+): Promise<"pro" | "catalog"> {
+  const fromPayload = task.payload.video_tier;
+  if (fromPayload === "catalog" || fromPayload === "pro") return fromPayload;
+  const productionId = task.production_id ?? task.payload.production_id;
+  if (!productionId) return "pro";
+  const { data } = await client
+    .from("productions")
+    .select("video_tier")
+    .eq("id", String(productionId))
+    .maybeSingle();
+  return data?.video_tier === "catalog" ? "catalog" : "pro";
 }
 
 async function recoverTechnicalStops(client: SupabaseClient): Promise<void> {
@@ -662,7 +722,49 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
   // The sweep ingests finished takes, which measures them with ffmpeg; an
   // orchestrator has none and leaves that to the media runner.
   if (runnerRole() !== "orchestrator") await sweepActiveJobs(client);
+  if (runnerRole() !== "media") await sweepExpiredDrafts(client).catch(() => undefined);
   return completed;
+}
+
+async function sweepExpiredDrafts(client: SupabaseClient): Promise<number> {
+  const cutoff = new Date(Date.now() - DRAFT_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data: drafts } = await client
+    .from("series")
+    .select("id")
+    .eq("status", "draft")
+    .is("deleted_at", null)
+    .lt("created_at", cutoff)
+    .limit(20);
+  let discarded = 0;
+  for (const row of drafts ?? []) {
+    const { data: paid } = await client
+      .from("productions")
+      .select("id")
+      .eq("series_id", row.id)
+      .gt("paid_amount", 0)
+      .limit(1);
+    if ((paid ?? []).length > 0) continue;
+    const now = new Date().toISOString();
+    await client
+      .from("engine_tasks")
+      .update({ status: "cancelled", error_code: "draft_expired", lease_until: null, updated_at: now })
+      .eq("series_id", row.id)
+      .in("status", ["queued", "running"]);
+    await client
+      .from("productions")
+      .update({
+        status: "cancelled",
+        paused: true,
+        ui_phase: "cancelled",
+        agent_decision: "Unpaid draft expired.",
+        updated_at: now,
+      })
+      .eq("series_id", row.id)
+      .in("status", ["awaiting_payment", "queued"]);
+    await client.from("series").update({ deleted_at: now }).eq("id", row.id).is("deleted_at", null);
+    discarded += 1;
+  }
+  return discarded;
 }
 
 async function queueTask(
@@ -745,6 +847,34 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     await queueTask(client, { owner_id, series_id, production_id: productionId, action: "analyze" });
     await markProduction(client, productionId, "running", "preparing", "Writing the story bible and locking the fictional cast.");
     return { queued };
+  }
+
+  // An uploaded script is cut into episodes before any episode row exists, so
+  // plan_episode adapts the writer's scenes instead of inventing a season.
+  const scriptAssetId = (series.style_profile ?? {})?.source_script_asset_id;
+  if (typeof scriptAssetId === "string" && scriptAssetId && series.story_bible.source !== "script") {
+    const { data: segmentTasks } = await client
+      .from("engine_tasks")
+      .select("id, status")
+      .eq("series_id", series_id)
+      .eq("action", "segment_script")
+      .in("status", ["queued", "running", "failed"]);
+    const failed = (segmentTasks ?? []).filter((row) => row.status === "failed").length;
+    const inflight = (segmentTasks ?? []).some((row) => row.status === "queued" || row.status === "running");
+    // Two clean failures means the segmenter cannot cut this script. Fall back to
+    // the brief rather than stranding a paid run.
+    if (failed < 2 && !inflight) {
+      queued.push("segment_script");
+      await queueTask(client, {
+        owner_id,
+        series_id,
+        production_id: productionId,
+        action: "segment_script",
+        payload: { episode_count: series.target_episode_count ?? production.episode_end },
+      });
+      await markProduction(client, productionId, "running", "preparing", "Cutting your script into episodes.");
+      return { queued };
+    }
   }
 
   for (const character of characters ?? []) {
@@ -878,7 +1008,17 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
     const refs = (visual.visual_reference_asset_ids ?? {}) as Record<string, unknown>;
     return Boolean(refs.front) || Object.keys(refs).length > 0;
   });
-  if (!series?.cover_asset_id && hasStill) {
+  // A cover the buyer uploaded wins, even while its attach task is still queued.
+  const { data: uploadedCover } = await client
+    .from("engine_tasks")
+    .select("id")
+    .eq("series_id", series_id)
+    .eq("action", "attach_cover")
+    .in("status", ["queued", "running", "done"])
+    .limit(1);
+  const coverIsUserSupplied = (uploadedCover ?? []).length > 0;
+
+  if (!series?.cover_asset_id && hasStill && !coverIsUserSupplied) {
     const { data: coverTasks } = await client
       .from("engine_tasks")
       .select("id, status")
@@ -1079,7 +1219,10 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
           series_id,
           production_id: productionId,
           action: "generate_video",
-          payload: { shot_id: shot.id },
+          payload: {
+            shot_id: shot.id,
+            video_tier: production.video_tier === "catalog" ? "catalog" : "pro",
+          },
         });
       }
     } else if (stillShooting.length || exhausted.length) {

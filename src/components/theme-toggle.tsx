@@ -1,22 +1,24 @@
-import { Moon01, Sun } from "@untitledui/icons";
-import { Button } from "@/components/base/buttons/button";
+import { Select } from "@/components/base/select/select";
 import { useTheme } from "@/providers/theme-provider";
 
-export function ThemeToggle() {
-    const { theme, setTheme } = useTheme();
-    const isDark =
-        theme === "dark" ||
-        (theme === "system" &&
-            typeof window !== "undefined" &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches);
+const OPTIONS = [
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "system", label: "Match device" },
+] as const;
 
-    return (
-        <Button
-            aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
-            color="tertiary"
-            size="sm"
-            iconLeading={isDark ? Sun : Moon01}
-            onClick={() => setTheme(isDark ? "light" : "dark")}
-        />
-    );
+export function ThemeSetting() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <Select
+      aria-label="Appearance"
+      selectedKey={theme}
+      onSelectionChange={(key) => {
+        if (key === "light" || key === "dark" || key === "system") setTheme(key);
+      }}
+      items={[...OPTIONS]}
+      className="w-40"
+    />
+  );
 }

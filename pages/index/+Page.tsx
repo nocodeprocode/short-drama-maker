@@ -12,6 +12,7 @@ import {
   statusLabel,
   type HomeShow,
 } from "@/engine/present.ts";
+import { MediaRow } from "@/components/drama/media-row.tsx";
 import { HomeSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
 import { studio } from "@/lib/api.ts";
 import { useStudio } from "@/lib/use-studio.ts";
@@ -41,7 +42,7 @@ export default function Page() {
               <h3 className="text-lg font-semibold">Your shows</h3>
               <span className="text-sm text-tertiary">{rest.length}</span>
             </div>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+            <div className="flex flex-col gap-2 lg:grid lg:grid-cols-3 lg:gap-4 xl:grid-cols-6">
               {rest.map((show) => (
                 <ShowCard key={show.id} show={show} />
               ))}
@@ -53,7 +54,7 @@ export default function Page() {
               <h3 className="text-lg font-semibold">Your shows</h3>
               <span className="text-sm text-tertiary">{shows.length}</span>
             </div>
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+            <div className="flex flex-col gap-2 lg:grid lg:grid-cols-3 lg:gap-4 xl:grid-cols-6">
               {shows.map((show) => (
                 <ShowCard key={show.id} show={show} />
               ))}
@@ -69,9 +70,9 @@ function EmptyHome() {
   return (
     <PageBody className="flex min-h-[60vh] flex-col justify-center">
       <div className="mx-auto max-w-xl text-center">
-        <h1 className="text-display-sm font-semibold tracking-tight">Start your first show</h1>
+        <h1 className="font-display text-display-sm font-semibold tracking-tight">Your studio is ready</h1>
         <p className="mt-3 text-md text-secondary">
-          Describe the story. We write, cast, shoot, and cut a 2-episode pilot. You watch it when it is ready.
+          Pick a season size. We write, cast, shoot, and cut. You watch episodes as they land.
         </p>
         <div className="mt-6">
           <Button href="/new" color="primary" size="lg">
@@ -79,7 +80,7 @@ function EmptyHome() {
           </Button>
         </div>
         <p className="mt-5 text-sm text-tertiary">
-          Typical pilot: about 20 to 40 minutes of studio time.
+          15 to 90 episodes at 60, 90, or 120 seconds.
           <br />
           You can leave this page. We only stop if we need you.
         </p>
@@ -91,8 +92,8 @@ function EmptyHome() {
 function ShowHero({ show }: { show: HomeShow }) {
   const shooting = !show.paused && (show.status === "running" || show.status === "queued");
   return (
-    <div className="mb-10 flex flex-col gap-3 rounded-2xl border border-secondary bg-primary p-5 sm:flex-row sm:items-center">
-      <div className="w-16 shrink-0">
+    <div className="mb-8 flex flex-col gap-4 rounded-xl bg-primary p-4 ring-1 ring-secondary ring-inset sm:flex-row sm:items-center sm:p-5">
+      <div className="w-14 shrink-0 sm:w-16">
         <Poster tone={show.poster_tone} src={show.cover_url} progress={show.progress} />
       </div>
       <div className="min-w-0 grow">
@@ -123,11 +124,16 @@ function ShowHero({ show }: { show: HomeShow }) {
 
 function ShowCard({ show }: { show: HomeShow }) {
   return (
-    <a href={show.href} className="text-left transition-transform hover:-translate-y-0.5">
-      <Poster tone={show.poster_tone} src={show.cover_url} title={show.title} progress={show.progress} />
-      <div className="mt-2.5 text-sm font-semibold">{show.title}</div>
-      <div className="text-xs text-tertiary">{showCopy(show)}</div>
-    </a>
+    <div>
+      <div className="lg:hidden">
+        <MediaRow href={show.href} tone={show.poster_tone} src={show.cover_url} title={show.title} detail={showCopy(show)} />
+      </div>
+      <a href={show.href} className="hidden text-left transition-transform hover:-translate-y-0.5 lg:block">
+        <Poster tone={show.poster_tone} src={show.cover_url} title={show.title} progress={show.progress} />
+        <div className="mt-2.5 text-sm font-semibold">{show.title}</div>
+        <div className="text-xs text-tertiary">{showCopy(show)}</div>
+      </a>
+    </div>
   );
 }
 

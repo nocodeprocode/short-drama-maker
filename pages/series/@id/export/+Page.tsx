@@ -22,6 +22,7 @@ export default function Page() {
     [id],
   );
   const [busy, setBusy] = useState<string | null>(null);
+  const [captionsById, setCaptionsById] = useState<Record<string, string | null>>({});
   const series = data?.series;
   const episodes = data?.episodes ?? [];
   const ready = episodes.filter((episode) => episode.status === "complete");
@@ -34,6 +35,7 @@ export default function Page() {
       const base = downloadBasename(series?.title ?? detail.series_title, episode.episode_number);
       // The finished cut is the deliverable. Per-shot files are only a fallback
       // for an episode that has takes but has not been assembled yet.
+      setCaptionsById((current) => ({ ...current, [episode.id]: detail.captions_url ?? null }));
       const finalUrl = detail.final_url ?? episode.final_url;
       if (finalUrl) {
         await downloadMedia(finalUrl, `${base}.mp4`);
@@ -97,16 +99,40 @@ export default function Page() {
                       </div>
                       <p className="mt-1 line-clamp-2 text-sm text-tertiary">{episode.title}</p>
                       {done ? (
-                        <Button
-                          color="primary"
-                          size="sm"
-                          className="mt-3"
-                          iconLeading={DownloadSimple}
-                          isDisabled={busy === episode.id}
-                          onClick={() => void downloadEpisode(episode)}
-                        >
-                          {busy === episode.id ? "Downloading…" : CTA.downloadMp4}
-                        </Button>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Button
+                            color="primary"
+                            size="sm"
+                            iconLeading={DownloadSimple}
+                            isDisabled={busy === episode.id}
+                            onClick={() => void downloadEpisode(episode)}
+                          >
+                            {busy === episode.id ? "Downloading…" : CTA.downloadMp4}
+                          </Button>
+                          <Button
+                            color="secondary"
+                            size="sm"
+                            isDisabled={busy === `${episode.id}:srt`}
+                            onClick={() => {
+                              setBusy(`${episode.id}:srt`);
+                              const base = downloadBasename(series?.title ?? "", episode.episode_number);
+                              studio
+                                .episode(episode.id)
+                                .then((detail) => {
+                                  setCaptionsById((current) => ({ ...current, [episode.id]: detail.captions_url ?? null }));
+                                  if (!detail.captions_url) throw new Error("No SRT for this episode yet");
+                                  return downloadMedia(detail.captions_url, `${base}.srt`);
+                                })
+                                .finally(() => setBusy(null));
+                            }}
+                          >
+                            {busy === `${episode.id}:srt`
+                              ? "Downloading…"
+                              : captionsById[episode.id] === null
+                                ? "No SRT"
+                                : CTA.downloadSrt}
+                          </Button>
+                        </div>
                       ) : (
                         <p className="mt-3 text-xs text-tertiary">Still shooting</p>
                       )}

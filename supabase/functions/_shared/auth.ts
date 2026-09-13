@@ -79,7 +79,7 @@ export function json(data: unknown, status = 200): Response {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
       "access-control-allow-headers": "authorization, content-type, apikey",
-      "access-control-allow-methods": "GET,POST,PATCH,OPTIONS",
+      "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
     },
   });
 }

@@ -7,7 +7,10 @@
     "build": "vike build",
     "preview": "vike build && vike preview --host 0.0.0.0 --port 43123",
     "deploy:staging": "DRAMA_CF=1 vike build && wrangler deploy --config dist/server/wrangler.json",
+    "deploy:prod": "DRAMA_CF=1 vike build && wrangler deploy --config dist/server/wrangler.json --env production",
     "deploy:jobs": "wrangler deploy --config workers/jobs/wrangler.jsonc",
+    "deploy:media-store": "wrangler deploy --config workers/media-store/wrangler.jsonc",
+    "deploy:media": "wrangler deploy --config worker/wrangler.jsonc",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:live": "tsx scripts/live-suite.ts",
@@ -32,6 +35,8 @@
     "agents:add": "elevenlabs agents add \"Short Drama Maker Support\" --from-file agent_configs/short-drama-maker-support.json"
   },
   "dependencies": {
+    "@cloudflare/containers": "^0.3.7",
+    "@fontsource-variable/geist": "^5.3.0",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/roboto-mono": "^5.3.0",
     "@phosphor-icons/react": "^2.1.10",

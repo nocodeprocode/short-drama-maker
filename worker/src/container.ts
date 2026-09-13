@@ -3,10 +3,23 @@ import { Container } from "@cloudflare/containers";
 export class MediaWorker extends Container<Env> {
   defaultPort = 8080;
   sleepAfter = "30m";
+  enableInternet = true;
+  pingEndpoint = "/health";
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.envVars = { MEDIA_WORKER_TOKEN: env.MEDIA_WORKER_TOKEN ?? "" };
+    this.envVars = {
+      RUNNER_ROLE: "media",
+      MEDIA_WORKER_TOKEN: env.MEDIA_WORKER_TOKEN ?? "",
+      SUPABASE_URL: env.SUPABASE_URL ?? env.VITE_SUPABASE_URL ?? "",
+      SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+      OPENROUTER_API_KEY: env.OPENROUTER_API_KEY ?? "",
+      OPENROUTER_WEBHOOK_SECRET: env.OPENROUTER_WEBHOOK_SECRET ?? "",
+      ELEVENLABS_API_KEY: env.ELEVENLABS_API_KEY ?? "",
+      MEDIA_STORE_URL: env.MEDIA_STORE_URL ?? "",
+      MEDIA_SIGNING_SECRET: env.MEDIA_SIGNING_SECRET ?? "",
+      MEDIA_STORE_TOKEN: env.MEDIA_STORE_TOKEN ?? "",
+    };
   }
 }
 
@@ -16,6 +29,15 @@ type Env = {
   MEDIA_WORKER_TOKEN?: string;
   /** How many container instances to spread renders across (default 2, matches wrangler max_instances). */
   MEDIA_WORKER_SHARDS?: string;
+  SUPABASE_URL?: string;
+  VITE_SUPABASE_URL?: string;
+  SUPABASE_SERVICE_ROLE_KEY?: string;
+  OPENROUTER_API_KEY?: string;
+  OPENROUTER_WEBHOOK_SECRET?: string;
+  ELEVENLABS_API_KEY?: string;
+  MEDIA_STORE_URL?: string;
+  MEDIA_SIGNING_SECRET?: string;
+  MEDIA_STORE_TOKEN?: string;
 };
 
 /**

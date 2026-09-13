@@ -50,11 +50,28 @@ export function seedanceCue(row: string, left?: string | null, right?: string | 
   return `${cameraWho(name, left, right)}: {${line}}`;
 }
 
+/** Consecutive lines from one mouth become one brace so Seedance does not wait. */
+export function speechBreaths(rows: readonly string[]): Array<{ name: string; line: string }> {
+  const out: Array<{ name: string; line: string }> = [];
+  for (const row of rows) {
+    const name = speakerOf(row);
+    const line = spokenLinePlain(row);
+    if (!line) continue;
+    const prev = out.at(-1);
+    if (prev && prev.name.toLowerCase() === name.toLowerCase() && !/\([^)]+\)/.test(cueText(row))) {
+      prev.line = `${prev.line.replace(/[.?!]+$/, "")} — ${line}`;
+      continue;
+    }
+    out.push({ name, line });
+  }
+  return out;
+}
+
 export function seedanceCuesOnly(
   rows: readonly string[],
   input?: { listener?: string | null; left?: string | null; right?: string | null },
 ): string {
-  const parts = rows.map((row) => seedanceCue(row, input?.left, input?.right)).filter((row): row is string => Boolean(row));
+  const parts = speechBreaths(rows).map((row) => `${cameraWho(row.name, input?.left, input?.right)}: {${row.line}}`);
   if (!parts.length) return "Nobody speaks. Mouths closed.";
   const still = input?.listener?.trim()
     ? ` ${cameraWho(input.listener, input.left, input.right)} stays silent, mouth closed.`
@@ -76,7 +93,9 @@ export function seedanceSpeechBlock(
   const rows = cueRows(script);
   const spoken = seedanceSpeech(rows, { left: sides?.camera_left, right: sides?.camera_right });
   return (
-    `SPEECH. Native speech. ${spoken} ` +
+    `SPEECH. Native speech. SAME BREATH. One person, two thoughts = one {brace}, no wait, no avatar pause. ` +
+    `Cut closer on the second thought while they are still talking. The only legal pause is a parenthetical stunned face. ` +
+    `${spoken} ` +
     `Parentheticals are face acting, not words. ` +
     `If a line is not inside braces, do not say it.`
   );

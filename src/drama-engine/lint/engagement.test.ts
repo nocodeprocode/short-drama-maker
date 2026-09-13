@@ -13,7 +13,7 @@ const BIBLE: StoryBible = {
       description: "Lead.",
       appearance: {
         age_look: "30",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "auburn",
         face: "scar",
         body: "average",
@@ -28,7 +28,7 @@ const BIBLE: StoryBible = {
       description: "Wall.",
       appearance: {
         age_look: "34",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "dark",
         face: "open",
         body: "tall",
@@ -43,7 +43,7 @@ const BIBLE: StoryBible = {
       description: "Witness.",
       appearance: {
         age_look: "28",
-        ethnicity_notes: "unspecified fictional",
+        ethnicity_notes: "warm-olive",
         hair: "short",
         face: "sharp",
         body: "slight",

@@ -43,6 +43,31 @@ export class DuplicateStripeEventError extends Error {
  * A completed job therefore writes `settle(actual)` AND `release(reserved)` so
  * the hold is fully unwound and only the actual cost stays debited.
  */
+/** Wallet credit is ledger with no series. Series leftover never mixes into this. */
+export function walletBalance(entries: readonly LedgerEntry[]): number {
+  return projectBalance(entries.filter((entry) => entry.series_id == null));
+}
+
+export function seriesLedgerBalance(entries: readonly LedgerEntry[], seriesId: string): number {
+  return projectBalance(entries.filter((entry) => entry.series_id === seriesId));
+}
+
+export function canAllocateWallet(available: number, needed: number): boolean {
+  return needed <= available + 1e-9;
+}
+
+export function walletShortfall(needed: number, available: number): {
+  needed: number;
+  available: number;
+  shortfall: number;
+} {
+  return {
+    needed,
+    available,
+    shortfall: Math.max(0, Math.round((needed - available) * 100) / 100),
+  };
+}
+
 export function projectBalance(entries: readonly LedgerEntry[]): number {
   return entries.reduce((sum, entry) => {
     switch (entry.entry_type) {

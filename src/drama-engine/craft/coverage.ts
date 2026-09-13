@@ -1,25 +1,31 @@
 import { cameraWho } from "./seedance-speech.ts";
+import { shortPropLabel } from "../types/physics.ts";
+import {
+  CUT_RULES,
+  cutMoveLine,
+  cutMoveOf,
+  cutSound,
+  joinOpenSize,
+  type CutFraming,
+  type CutShot,
+} from "../types/cut.ts";
 
 /**
  * Dialogue coverage. A scene is not one camera.
  *
- * Classic coverage: master, over-the-shoulder, reverse, clean/dirty singles,
- * close-ups, inserts. Size goes wider to tighter as heat rises. The 180-degree
- * line holds so camera-left stays camera-left. Consecutive shots must change
- * size or station — a held side-profile two-shot is a stage play, not a cut.
- *
- * Vertical drama uses the same grammar on the Z-axis: closer,
- * slightly behind one person, then the other, then both faces near the lens.
+ * Every numbered shot is a different size or a different person. AI lighting
+ * never matches a reprint — if the cut stays MCU on the same face, the lamp
+ * jumps. Size goes cowboy → MCU → CU, or we reverse, or we smash to the prop.
  */
 
-export type CoverageFraming = "master" | "tight_two" | "ots" | "dirty" | "cu" | "reaction";
+export type CoverageFraming = CutFraming;
 export type CoverageRole = "setup" | "peak" | "answer" | "land";
 export type CoveragePattern = "classic" | "reverse" | "pressure" | "pullback";
 
 const PATTERNS: Record<CoveragePattern, Record<CoverageRole, CoverageFraming>> = {
-  classic: { setup: "master", peak: "ots", answer: "dirty", land: "tight_two" },
-  reverse: { setup: "dirty", peak: "cu", answer: "reaction", land: "ots" },
-  pressure: { setup: "tight_two", peak: "cu", answer: "reaction", land: "dirty" },
+  classic: { setup: "master", peak: "ots", answer: "cu", land: "tight_two" },
+  reverse: { setup: "dirty", peak: "cu", answer: "reaction", land: "master" },
+  pressure: { setup: "tight_two", peak: "cu", answer: "insert", land: "dirty" },
   pullback: { setup: "ots", peak: "cu", answer: "dirty", land: "master" },
 };
 
@@ -60,15 +66,14 @@ export function joinOpenFraming(input: {
       }),
       "land",
     );
-  const prefer: CoverageFraming = prev === "cu" || prev === "reaction" ? "tight_two" : index % 2 === 1 ? "cu" : "tight_two";
-  return prefer === prev ? (prefer === "cu" ? "tight_two" : "cu") : prefer;
+  const opened = joinOpenSize(prev);
+  return opened === planned && prev === planned ? joinOpenSize(planned) : opened;
 }
 
 export const JOIN_CUT_CLAUSE =
-  "JOIN CUT. This is a new generation. Do not reprint the previous take's last frame. " +
-  "Wet ground, lamps, and skin highlights will not match if the size stays the same. " +
-  "Shot 1 MUST change size: a chin-to-hairline close-up, or both faces stacked near the lens (a tight two). " +
-  "Same bodies, same sides, same prop, same plate key. Never open on the same two-shot of the room.";
+  "JOIN CUT. New generation. Do not reprint the previous take's last frame — lamps and skin will not match at the same size. " +
+  "Shot 1 changes size (cowboy after an MCU or CU; MCU after a cowboy or insert), with a <swish> on the join. " +
+  "Same bodies, same sides, same prop, same key.";
 
 export function coverageStations(pattern: CoveragePattern): CoverageFraming[] {
   return (["setup", "peak", "answer", "land"] as const).map((role) => framingForRole(pattern, role));
@@ -110,6 +115,7 @@ export function coverageDirection(input: {
   entrance: string;
   exit: string;
   join?: boolean;
+  prev?: CutShot | null;
 }): string {
   const on = cameraWho(input.speaker, input.left, input.right);
   const other = cameraWho(input.listener, input.left, input.right);
@@ -119,55 +125,52 @@ export function coverageDirection(input: {
     input.left,
     input.right,
   );
-  const prop = input.prop?.trim() || "the locked prop";
+  // Short label only: the full prop lock is stated once in the prompt body.
+  const prop = shortPropLabel(input.prop);
   const beat = input.beat ?? "";
-  const cut = input.first
-    ? input.join
-      ? "JOIN CUT. NEW CAMERA. Different size than the last generation. Do not reprint that last frame."
-      : "NEW CAMERA."
-    : "HARD CUT. New camera position. Do not hold the previous frame.";
-  const hold = "Hold this shot for the entire line, two seconds minimum. This is not a one-frame flash.";
-  const line = "Keep the 180-degree line: camera-left stays camera-left, camera-right stays camera-right.";
+  const move = cutMoveOf(input.prev, { framing: input.framing, on: input.speaker });
+  const cut = cutMoveLine(move, input.first, input.join);
+  const swish = cutSound(move, input.first && !input.join);
+  const hold = "Hold for the whole line, two seconds minimum.";
+  const line = "Hold the 180 line.";
+  const room = "Same room, same key light.";
   const body = (() => {
     switch (input.framing) {
       case "master":
         return (
-          `${cut} Both upper bodies in frame, FaceTime-close, 3/4 — the For You page distance, not a tiny wide. ` +
-          `Faces large enough to read beauty: eyes, mouth, skin. You are never too far. ` +
-          `Camera sits closer to camera-left, slightly off the profile axis — NOT a flat side-on iPhone profile. ` +
-          `${prop} is visible where staged. ${line} ${input.mouths}`
+          `${cut}${swish} Cowboy of ${on}, head to hips, 3/4 — WIDER than a talking MCU. ` +
+          `${other} smaller behind them, never stacked. Key light on the speaker. ${prop} visible where staged. ${line} ${hold} ${input.mouths}`
         );
       case "tight_two":
         return (
-          `${cut} Both faces close to the lens, stacked in the vertical frame: ${high} holds the upper frame, ${low} lower. ` +
-          `This is closer than a medium two-shot. Faces large, shoulders in. NOT a wide profile. ${hold} ${input.mouths}`
+          `${cut}${swish} Cowboy of ${on} if standing, else a wide MCU showing the table. ` +
+          `${high} holds power by posture; ${low} is one step back. FORBIDDEN: two faces stacked in the 9:16 page. ${room} ${hold} ${input.mouths}`
         );
       case "ots":
         return (
-          `${cut} Over-the-shoulder: camera slightly behind ${other}, over ${other}'s near shoulder. ` +
-          `${on} is the face we see, 3/4 toward camera, eyes on ${other}. ` +
-          `${other} is only a shoulder and a sliver of jaw in the foreground, soft. ${hold} ${beat} ${input.mouths}`
+          `${cut}${swish} Over-the-shoulder from behind ${other}: ${on} is the face, chest-up MCU, 3/4, eyes on ${other}, key light on ${on}. ` +
+          `${other} is a thin shoulder only, never a foreground cheek. ${hold} ${beat} ${input.mouths}`
         );
       case "dirty":
         return (
-          `${cut} Dirty single on ${on}: medium close-up, closer than the last shot. ` +
-          `${other}'s shoulder or profile sits in the near edge of frame. ${on} fills the upper third. ${hold} ${beat} ${input.mouths}`
+          `${cut}${swish} Dirty single on ${on}, chest-up MCU — a new station, not the last size. ` +
+          `${other} clips the edge as a thin shoulder. Key light on ${on}. ${hold} ${beat} ${input.mouths}`
         );
       case "cu":
         return (
-          `${cut} Real close-up on ${on} only, chin to hairline, a sliver of the same place in the corners. ` +
-          `Slow push-in through the line. ${beat || "Eyes lock, jaw sets."} ${hold} ${input.mouths}`
+          `${cut}${swish} Close-up on ${on} only, chin to hairline, a sliver of collar. One face. Key light in the eyes, matte human iris. ` +
+          `Slow push-in through the line. ${beat || "Jaw sets."} ${hold} ${input.mouths}`
         );
       case "reaction":
-        return /\b(stun|freeze|eye|breath|scared|oh my)\b/i.test(beat)
-          ? (
-              `${cut} One-second extreme close-up on ${on}'s eye or mouth. They breathe. Then cut. Do not hold a long expression. ` +
-              `${input.mouths}`
-            )
-          : (
-              `${cut} Reverse close-up on ${on} only — the matching angle from the other side of the line. ` +
-              `Chin to hairline. ${other} is not in frame. ${beat || "The line lands on this face."} ${hold} ${input.mouths}`
-            );
+        return (
+          `${cut}${swish} Reverse on ${on} only, chest-up MCU from the other side of the line — a NEW face, not the last size. ` +
+          `${other} out of frame. ${beat || "The line lands on this face."} ${hold} ${input.mouths}`
+        );
+      case "insert":
+        return (
+          `${cut}${swish} INSERT of ${prop} on the table — this exact object from the prop still. Object only, no faces, no hands. ` +
+          `Never a substitute box or package. No printed text or logo. Same lamp, same desk. Any speech is off-camera. ${input.mouths}`
+        );
     }
   })();
   return `${body}${input.entrance}${input.last ? ` ${input.exit}`.trimEnd() : ""}`.replace(/\s+/g, " ").trim();
@@ -175,12 +178,8 @@ export function coverageDirection(input: {
 
 export const COVERAGE_CLAUSE =
   "COVERAGE. This take CUTS like a filmed dialogue scene, not a stage play. " +
-  "Each numbered shot is a different camera station or a different size. " +
-  "Legal stations: both upper bodies FaceTime-close, over-the-shoulder, a dirty single, a held close-up, " +
-  "a one-second eye ECU on a stun, the reverse, both faces stacked near the lens, a half-step that still keeps faces large, punch in on a doorway. " +
-  "FORBIDDEN: staying on one side-profile two-shot; a close-up that lasts one frame then snaps back; " +
-  "cutting back to the same camera position; a tiny wide that loses the faces; any frame where you cannot read the eyes; a prestige locked master. " +
-  "Most of the take is faces. You are never too far from the people. " +
-  "Both people stay in their staged positions. The CAMERA moves around them. " +
-  "180-degree line holds. Same place, same key light. " +
-  "A new take never opens on the same size as the last take ended.";
+  `${CUT_RULES} ` +
+  "Default talking size is chest-up MCU; close-ups are for heat, not the majority; standing is cowboy. " +
+  "FORBIDDEN: the same size on the same person twice in a row; two faces stacked in the 9:16 page; a split page; a huge foreground cheek; half-face ECU as the default. " +
+  "One relevant person fills the frame, a third stays one step back, never four faces. " +
+  "The bodies hold their staged positions and the CAMERA moves around them. 180-degree line holds.";

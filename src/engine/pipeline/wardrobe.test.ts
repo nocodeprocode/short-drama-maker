@@ -75,4 +75,15 @@ describe("wardrobe", () => {
       }),
     ).toBe("Nadia's husband. dark cropped hair. navy suit");
   });
+
+  it("never paints a power look into a still prompt", () => {
+    const text = appearanceDescription({
+      description: "Club owner",
+      face: "pale green eyes that flash gold for one beat, sharp jaw",
+      hair: "black swept back",
+    });
+    expect(text).toMatch(/pale green eyes/);
+    expect(text).toMatch(/sharp jaw/);
+    expect(text).not.toMatch(/flash|gold/i);
+  });
 });

@@ -1,6 +1,9 @@
+import { DOCUMENT_VERSIONS } from "../_shared/access.ts";
 import { json, requireAccess, serviceClient } from "../_shared/auth.ts";
+import { requireTurnstile } from "../_shared/turnstile.ts";
 import { moderateText } from "../_shared/moderation.ts";
 import {
+  allocateWalletToSeries,
   createProductionRecord,
   enqueue,
   ownedSeries,
@@ -11,21 +14,34 @@ import {
   seriesBalance,
   seriesSpent,
   seriesPoster,
+  walletBalance,
   type ProductionRow,
 } from "../_shared/productions.ts";
 import { generateStoryIdea, STORY_DIRECTIONS } from "../_shared/story-idea.ts";
-import { firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
+import { adaptUploadedScript } from "../_shared/story-script.ts";
+import { actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
+import {
+  bindCastPlan,
+  castActorOnCharacter,
+  normalizeRoleName,
+  normalizeTags,
+  presentCastSlot,
+  type CastSlotRow,
+} from "../_shared/casting.ts";
 import { presentPackedCharacter, signCharacterPacks } from "../_shared/characters.ts";
 import { LIKENESS_RIGHTS_VERSION, likenessGate } from "../_shared/likeness.ts";
+import { discardUnpaidSeries } from "../_shared/drafts.ts";
 import { actionLabel, activityDetail, attentionKind, interventionMessage, seriesNextAction, sortShotVideoRows, stillAssetIds, usd } from "../_shared/present.ts";
 import { wakeJobs } from "../_shared/jobs.ts";
 import { signAssetRows } from "../_shared/sign.ts";
 import {
+  CREDIT_PRESETS,
   estimateBlock,
   isCatalogSku,
   isEpisodeLength,
   isPriority,
   isSeasonSku,
+  isVideoTier,
   posterTone,
   retailForBlock,
   SEASON_PRICES_USD,
@@ -42,7 +58,7 @@ Deno.serve(async (req) => {
         headers: {
           "access-control-allow-origin": "*",
           "access-control-allow-headers": "authorization, content-type, apikey",
-          "access-control-allow-methods": "GET,POST,PATCH,OPTIONS",
+          "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
         },
       });
     }
@@ -51,7 +67,7 @@ Deno.serve(async (req) => {
     const path = url.pathname.replace(/^\/api/, "") || "/";
 
     if (req.method === "GET" && path === "/health") {
-      return json({ ok: true, phase: "drama-space", product: "Drama Space" });
+      return json({ ok: true, phase: "drama-space", product: "Takehaus" });
     }
 
     if (req.method === "POST" && path === "/privacy/requests") {
@@ -68,6 +84,13 @@ Deno.serve(async (req) => {
       });
     }
 
+    if (req.method === "POST" && path === "/auth/signup") {
+      return createSignup(req);
+    }
+    if (req.method === "POST" && path === "/auth/recover") {
+      return createRecover(req);
+    }
+
     const { supabase, user, access } = await requireAccess(req);
 
     if (req.method === "GET" && path === "/story-ideas/directions") {
@@ -80,6 +103,9 @@ Deno.serve(async (req) => {
         const idea = await generateStoryIdea({
           hint: String(body.hint ?? ""),
           category: String(body.category ?? "surprise"),
+          lead: String(body.lead ?? ""),
+          opposite: String(body.opposite ?? ""),
+          setting: String(body.setting ?? ""),
         });
         return json(idea);
       } catch (error) {
@@ -89,12 +115,29 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (req.method === "POST" && path === "/story-scripts") {
+      const body = await req.json().catch(() => ({}));
+      try {
+        return json(await adaptUploadedScript(String(body.text ?? "")));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not adapt the script";
+        const name = error instanceof Error ? error.name : "";
+        const status = name === "PolicyError" ? 422 : name === "InputError" ? 400 : 502;
+        return json({ error: message, reason: message }, status);
+      }
+    }
+
     if (req.method === "GET" && path === "/me") {
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("id, stripe_customer_id")
-        .eq("id", user.id)
-        .maybeSingle();
+      const [{ data: profile }, { data: accepted }] = await Promise.all([
+        supabase.from("profiles").select("id, stripe_customer_id").eq("id", user.id).maybeSingle(),
+        supabase
+          .from("legal_acceptances")
+          .select("accepted_at")
+          .eq("user_id", user.id)
+          .order("accepted_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
       return json({
         id: user.id,
         email: user.email,
@@ -103,11 +146,12 @@ Deno.serve(async (req) => {
         beta: access.beta,
         is_admin: access.isAdmin,
         stripe_customer_id: profile?.stripe_customer_id ?? null,
+        accepted_at: accepted?.accepted_at ?? null,
       });
     }
 
     if (req.method === "POST" && path === "/me/accept") {
-      return json({ ok: true });
+      return recordAcceptances(supabase, user.id, req, "accepted");
     }
 
     if (req.method === "GET" && path === "/account") {
@@ -123,6 +167,7 @@ Deno.serve(async (req) => {
         is_admin: access.isAdmin,
         slots_used: count ?? 0,
         slots_total: 4,
+        credit_balance: await walletBalance(supabase, user.id),
       });
     }
 
@@ -130,7 +175,72 @@ Deno.serve(async (req) => {
       const { data, error } = await supabase.from("actors").select("*").eq("owner_id", user.id).order("created_at");
       if (error) return json({ error: error.message }, 400);
       const signed = await signActorPacks(supabase, data ?? []);
-      return json({ items: (data ?? []).map((row) => presentActor(row, signed)) });
+      const shows = await actorShowTitles(supabase, (data ?? []).map((row) => String(row.id)));
+      const tags = [
+        ...new Set((data ?? []).flatMap((row) => (Array.isArray(row.tags) ? (row.tags as string[]) : []))),
+      ].sort((left, right) => left.localeCompare(right));
+      return json({
+        items: (data ?? []).map((row) => presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [] })),
+        tags,
+      });
+    }
+
+    if (req.method === "PATCH" && /^\/actors\/[^/]+$/.test(path)) {
+      const id = path.split("/")[2];
+      const body = await req.json().catch(() => ({}));
+      const { data: actor } = await supabase
+        .from("actors")
+        .select("*")
+        .eq("id", id)
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (!actor) return json({ error: "Not found" }, 404);
+      const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (typeof body.name === "string") {
+        const name = body.name.trim().slice(0, 80);
+        if (!name) return json({ error: "Name is required" }, 400);
+        const verdict = moderateText(name, "character_create");
+        if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+        patch.name = name;
+      }
+      if (body.tags !== undefined) patch.tags = normalizeTags(body.tags);
+      if (typeof body.notes === "string") patch.notes = body.notes.trim().slice(0, 600);
+      const { data: saved, error } = await supabase
+        .from("actors")
+        .update(patch)
+        .eq("id", id)
+        .eq("owner_id", user.id)
+        .select("*")
+        .single();
+      if (error || !saved) return json({ error: error?.message ?? "Could not save" }, 400);
+      const signed = await signActorPacks(supabase, [saved]);
+      const shows = await actorShowTitles(supabase, [String(saved.id)]);
+      return json(presentActor(saved, signed, { shows: shows.get(String(saved.id)) ?? [] }));
+    }
+
+    if (req.method === "DELETE" && /^\/actors\/[^/]+$/.test(path)) {
+      const id = path.split("/")[2];
+      const { data: actor } = await supabase
+        .from("actors")
+        .select("id")
+        .eq("id", id)
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (!actor) return json({ error: "Not found" }, 404);
+      // A face that already shot cannot be removed: takes in the can reference
+      // it, so deleting it would strand their identity.
+      const { data: locked } = await supabase
+        .from("characters")
+        .select("id")
+        .eq("actor_id", id)
+        .eq("locked", true)
+        .limit(1);
+      if ((locked ?? []).length > 0) {
+        return json({ error: "This actor is locked into a show that already shot." }, 409);
+      }
+      const { error } = await supabase.from("actors").delete().eq("id", id).eq("owner_id", user.id);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true, deleted: id });
     }
 
     if (req.method === "GET" && path.startsWith("/actors/")) {
@@ -145,7 +255,7 @@ Deno.serve(async (req) => {
         : { data: [] };
       const titles = new Map((seriesRows ?? []).map((row) => [String(row.id), String(row.title)]));
       return json({
-        ...presentActor(data, signed),
+        ...presentActor(data, signed, { shows: [...new Set([...titles.values()])] }),
         appearances: (roles ?? []).map((row) => ({
           character_id: row.id,
           series_id: row.series_id,
@@ -174,6 +284,8 @@ Deno.serve(async (req) => {
           owner_id: user.id,
           name,
           source: seed ? "likeness" : "generated",
+          tags: normalizeTags(body.tags),
+          notes: description.slice(0, 600),
           appearance_profile: { default_wardrobe: "", description },
         })
         .select("*")
@@ -188,7 +300,13 @@ Deno.serve(async (req) => {
         });
         if (acceptError) return json({ error: acceptError.message }, 400);
       }
-      const host = await firstOwnedSeriesId(supabase, user.id, access.isAdmin);
+      // A face made while casting a show belongs on that show's task trail; only
+      // fall back to an arbitrary series when the request has no show in hand.
+      const asked =
+        typeof body.series_id === "string" && body.series_id
+          ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
+          : null;
+      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
       if (host) {
         await enqueue(supabase, user.id, host, "generate_actor", {
           actor_id: actor.id,
@@ -203,11 +321,12 @@ Deno.serve(async (req) => {
       const sku = Number(url.searchParams.get("sku") ?? url.searchParams.get("episodes"));
       const priority = url.searchParams.get("priority") ?? "balanced";
       const length = url.searchParams.get("length") ?? "60_90";
-      if (!isSeasonSku(sku)) return json({ error: "sku must be 2|12|24|45|60" }, 400);
-      if (!isPriority(priority) || !isEpisodeLength(length)) {
-        return json({ error: "priority or length is invalid" }, 400);
+      const videoTier = url.searchParams.get("video_tier") ?? "pro";
+      if (!isSeasonSku(sku)) return json({ error: "sku must be 2|12|15|24|30|45|50|60|90" }, 400);
+      if (!isPriority(priority) || !isEpisodeLength(length) || !isVideoTier(videoTier)) {
+        return json({ error: "priority, length, or video_tier is invalid" }, 400);
       }
-      return json(estimateBlock({ sku, priority, length }));
+      return json(estimateBlock({ sku, priority, length, video_tier: videoTier }));
     }
 
     if (req.method === "GET" && path === "/home") {
@@ -232,11 +351,11 @@ Deno.serve(async (req) => {
 
     if (req.method === "POST" && path === "/series") {
       const body = await req.json();
-      const sku = body.sku ?? body.target_episode_count ?? 2;
+      const sku = body.sku ?? body.target_episode_count ?? 15;
       if (sku != null && !isSeasonSku(sku)) {
-        return json({ error: "sku must be 2|12|24|45|60" }, 400);
+        return json({ error: "sku must be 2|12|15|24|30|45|50|60|90" }, 400);
       }
-      const target = isSeasonSku(sku) ? sku : 2;
+      const target = isSeasonSku(sku) ? sku : 15;
       const { data, error } = await supabase
         .from("series")
         .insert({
@@ -246,6 +365,11 @@ Deno.serve(async (req) => {
           target_episode_count: target,
           sku: String(target),
           poster_tone: posterTone(String(body.title ?? user.id)),
+          style_profile: {
+            aspect: "9:16",
+            episode_length: isEpisodeLength(body.episode_length) ? body.episode_length : "60_90",
+            video_tier: isVideoTier(body.video_tier) ? body.video_tier : "pro",
+          },
         })
         .select()
         .single();
@@ -287,6 +411,46 @@ Deno.serve(async (req) => {
           ),
         });
       }
+      if (parts[3] === "cast") {
+        // A slot the writer has since named binds here, so opening the screen
+        // never shows a role as uncast when its character already exists.
+        await bindCastPlan(supabase, id);
+        const [{ data: slots }, { data: characters }, { data: actorRows }] = await Promise.all([
+          supabase.from("series_cast").select("*").eq("series_id", id).order("created_at"),
+          supabase.from("characters").select("*").eq("series_id", id).order("created_at"),
+          supabase.from("actors").select("*").eq("owner_id", series.owner_id).order("created_at"),
+        ]);
+        const signed = await signActorPacks(supabase, actorRows ?? []);
+        const shows = await actorShowTitles(supabase, (actorRows ?? []).map((row) => String(row.id)));
+        const roster = (actorRows ?? []).map((row) =>
+          presentActor(row, signed, { shows: shows.get(String(row.id)) ?? [] }),
+        );
+        const actorById = new Map(roster.map((row) => [String(row.id), row]));
+        const pack = await signCharacterPacks(supabase, characters ?? []);
+        const packed = pack.characters.map((row) =>
+          presentPackedCharacter(row, pack.signed, { fallback: pack.orphanByCharacter.get(String(row.id)) }),
+        );
+        const characterById = new Map(packed.map((row) => [String(row.id), row]));
+        const items = ((slots ?? []) as CastSlotRow[]).map((row) =>
+          presentCastSlot(row, {
+            actor: row.actor_id ? (actorById.get(row.actor_id) ?? null) : null,
+            character: row.character_id ? (characterById.get(row.character_id) ?? null) : null,
+          }),
+        );
+        // Roles the story wrote that nobody has claimed a slot for yet.
+        const claimed = new Set(items.map((row) => row.role_name.trim().toLowerCase()));
+        const unclaimed = packed.filter((row) => !claimed.has(String(row.name).trim().toLowerCase()));
+        return json({
+          series_id: id,
+          series_title: series.title,
+          items,
+          roles: packed,
+          unclaimed,
+          roster,
+          /** Before the story exists the buyer names the parts themselves. */
+          story_written: Boolean(series.story_bible),
+        });
+      }
       if (parts[3] === "continuity") {
         const bible = series.story_bible ?? {};
         return json({
@@ -325,11 +489,151 @@ Deno.serve(async (req) => {
           productions: productionRows,
           pilot_approved: Boolean(series.pilot_approved_at),
           pilot_required: !series.pilot_approved_at,
-          paid: next.next_action !== "pay_pilot",
+          paid: next.next_action !== "pay_pilot" && next.next_action !== "continue_draft",
           next_action: next.next_action,
           active_production_id: next.active_production_id,
+          can_discard: productionRows.every((row) => Number(row.paid_amount ?? 0) <= 0),
+          episode_length:
+            (productionRows[0] as { episode_length?: string } | undefined)?.episode_length ??
+            (series.style_profile as { episode_length?: string } | null)?.episode_length ??
+            "60_90",
+          video_tier:
+            (productionRows[0] as { video_tier?: string } | undefined)?.video_tier ??
+            (series.style_profile as { video_tier?: string } | null)?.video_tier ??
+            "pro",
         });
       }
+    }
+
+    if (req.method === "DELETE" && /^\/series\/[^/]+$/.test(path)) {
+      const id = path.split("/")[2];
+      const series = await ownedSeries(supabase, user.id, id, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const result = await discardUnpaidSeries(supabase, id);
+      if ("error" in result) return json({ error: result.error }, result.status);
+      return json({ ok: true, discarded: id });
+    }
+
+    if (req.method === "POST" && /^\/series\/[^/]+\/cast$/.test(path)) {
+      const seriesId = path.split("/")[2];
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const body = await req.json().catch(() => ({}));
+      const roleName = normalizeRoleName(body.role_name);
+      if (!roleName) return json({ error: "A role name is required" }, 400);
+      const verdict = moderateText(roleName, "character_create");
+      if (verdict.verdict === "block") return json({ error: verdict.reason, reason: verdict.reason }, 422);
+
+      let actorId: string | null = null;
+      if (typeof body.actor_id === "string" && body.actor_id) {
+        const { data: actor } = await supabase
+          .from("actors")
+          .select("id")
+          .eq("id", body.actor_id)
+          .eq("owner_id", user.id)
+          .maybeSingle();
+        if (!actor) return json({ error: "That actor is not in your catalog." }, 404);
+        actorId = String(actor.id);
+      }
+
+      // The role may already be a written character, either because the caller
+      // named it or because the story did.
+      const { data: characters } = await supabase
+        .from("characters")
+        .select("id, name, locked")
+        .eq("series_id", seriesId);
+      const character =
+        (typeof body.character_id === "string" && body.character_id
+          ? (characters ?? []).find((row) => String(row.id) === body.character_id)
+          : (characters ?? []).find(
+              (row) => String(row.name).trim().toLowerCase() === roleName.toLowerCase(),
+            )) ?? null;
+      if (character?.locked) {
+        return json({ error: "This role already shot. Its face stays locked." }, 409);
+      }
+
+      // Reuse the existing slot for this part whatever case it was typed in.
+      const wanted = (character ? String(character.name) : roleName).trim();
+      const { data: existing } = await supabase
+        .from("series_cast")
+        .select("id, role_name")
+        .eq("series_id", seriesId);
+      const match = (existing ?? []).find(
+        (row) => String(row.role_name).trim().toLowerCase() === wanted.toLowerCase(),
+      );
+      const { data: slot, error } = await supabase
+        .from("series_cast")
+        .upsert(
+          {
+            ...(match ? { id: match.id } : {}),
+            series_id: seriesId,
+            role_name: match ? String(match.role_name) : wanted,
+            role_note: String(body.role_note ?? "").trim().slice(0, 300),
+            actor_id: actorId,
+            character_id: character ? String(character.id) : null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "series_id,role_name" },
+        )
+        .select("*")
+        .single();
+      if (error || !slot) return json({ error: error?.message ?? "Could not save the cast" }, 400);
+
+      if (character && actorId) {
+        await castActorOnCharacter(supabase, String(character.id), actorId);
+        // A face with no stills yet needs generating before wardrobe can run.
+        const { data: actorRow } = await supabase
+          .from("actors")
+          .select("visual_reference_asset_ids")
+          .eq("id", actorId)
+          .maybeSingle();
+        const refs = (actorRow?.visual_reference_asset_ids ?? {}) as Record<string, unknown>;
+        if (Object.keys(refs).length === 0) {
+          await enqueue(supabase, user.id, seriesId, "generate_actor", { actor_id: actorId }, access.isAdmin);
+        }
+        // Wardrobe is dressed from the story's looks, so it can only run once the
+        // story exists.
+        if (series.story_bible) {
+          await enqueue(
+            supabase,
+            user.id,
+            seriesId,
+            "generate_wardrobe",
+            { character_id: character.id },
+            access.isAdmin,
+          );
+        }
+      }
+      return json(presentCastSlot(slot as CastSlotRow), 201);
+    }
+
+    if (req.method === "DELETE" && /^\/series\/[^/]+\/cast\/[^/]+$/.test(path)) {
+      const [, , seriesId, , slotId] = path.split("/");
+      const series = await ownedSeries(supabase, user.id, seriesId, access.isAdmin);
+      if (!series) return json({ error: "Not found" }, 404);
+      const { data: slot } = await supabase
+        .from("series_cast")
+        .select("*")
+        .eq("id", slotId)
+        .eq("series_id", seriesId)
+        .maybeSingle();
+      if (!slot) return json({ error: "Not found" }, 404);
+      if (slot.character_id) {
+        const { data: character } = await supabase
+          .from("characters")
+          .select("locked")
+          .eq("id", slot.character_id)
+          .maybeSingle();
+        if (character?.locked) return json({ error: "This role already shot." }, 409);
+        // Drop the chosen face so the run writes a fresh one.
+        await supabase
+          .from("characters")
+          .update({ actor_id: null, updated_at: new Date().toISOString() })
+          .eq("id", slot.character_id);
+      }
+      const { error } = await supabase.from("series_cast").delete().eq("id", slotId).eq("series_id", seriesId);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true, deleted: slotId });
     }
 
     if (req.method === "POST" && /\/series\/[^/]+\/analyze$/.test(path)) {
@@ -346,7 +650,7 @@ Deno.serve(async (req) => {
       if (!series) return json({ error: "Not found" }, 404);
       const { data, error } = await supabase
         .from("series")
-        .update({ pilot_approved_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .update({ pilot_approved_at: new Date().toISOString() })
         .eq("id", seriesId)
         .select()
         .single();
@@ -634,14 +938,18 @@ Deno.serve(async (req) => {
         .from("assets")
         .select("id, kind, mime_type, storage_path, metadata, created_at")
         .eq("series_id", episode.series_id)
-        .eq("kind", "episode_final")
+        .in("kind", ["episode_final", "episode_captions"])
         .is("deleted_at", null)
         .order("created_at", { ascending: false })
-        .limit(4);
-      const finalForEpisode = (finalRows ?? []).filter(
-        (row) => String((row.metadata as { episode_id?: string } | null)?.episode_id ?? "") === String(id),
-      );
-      const signedFinal = await signAssetRows(finalForEpisode.slice(0, 1));
+        .limit(12);
+      const forEpisode = (kind: string) =>
+        (finalRows ?? []).filter(
+          (row) =>
+            row.kind === kind &&
+            String((row.metadata as { episode_id?: string } | null)?.episode_id ?? "") === String(id),
+        );
+      const signedFinal = await signAssetRows(forEpisode("episode_final").slice(0, 1));
+      const signedCaptions = await signAssetRows(forEpisode("episode_captions").slice(0, 1));
       return json({
         ...episode,
         series_title: series.title,
@@ -649,6 +957,7 @@ Deno.serve(async (req) => {
         production_id: production?.id ?? null,
         production_mode: production?.mode ?? null,
         final_url: signedFinal[0]?.url ?? null,
+        captions_url: signedCaptions[0]?.url ?? null,
         scenes: scenes ?? [],
         shots: (shots ?? []).map((shot) => ({
           ...shot,
@@ -713,6 +1022,17 @@ Deno.serve(async (req) => {
         await enqueue(supabase, user.id, series.id, "generate_actor", { actor_id: actor.id }, access.isAdmin);
       }
       await enqueue(supabase, user.id, series.id, "generate_wardrobe", { character_id: characterId }, access.isAdmin);
+      // Keep the show's cast sheet in step with a role cast from its own page.
+      await supabase.from("series_cast").upsert(
+        {
+          series_id: series.id,
+          role_name: String(character.name),
+          actor_id: actor.id,
+          character_id: characterId,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "series_id,role_name" },
+      );
       const { data: next } = await supabase.from("characters").select("*").eq("id", characterId).single();
       const pack = await signCharacterPacks(supabase, [next ?? character]);
       return json(presentPackedCharacter(pack.characters[0] ?? next ?? character, pack.signed));
@@ -823,8 +1143,20 @@ Deno.serve(async (req) => {
       return json(data);
     }
 
+    if (req.method === "GET" && path === "/billing") {
+      return billingSummary(supabase, user.id, user.email);
+    }
+
     if (req.method === "POST" && path === "/billing/checkout") {
-      return createCheckout(req, supabase, user.id, access.isAdmin);
+      return createCheckout(req, supabase, user, access.isAdmin);
+    }
+
+    if (req.method === "POST" && path === "/billing/portal") {
+      return createPortal(req, supabase, user);
+    }
+
+    if (req.method === "POST" && path === "/billing/confirm-test") {
+      return confirmTestCredit(req, supabase, user.id);
     }
 
     // Operator health: what is stuck, what gave up, what failed recently. The
@@ -1131,7 +1463,7 @@ async function home(supabase: ReturnType<typeof serviceClient>, userId: string, 
       ? "A show needs you"
       : ownedComplete.length
         ? "Nothing is shooting right now"
-        : "Start a 2-episode pilot";
+        : "Commission a show";
 
   return json({
     display_name: displayName(email),
@@ -1179,7 +1511,9 @@ async function createProduction(
   const body = await req.json();
   const parsed = parseProductionBody(body);
   if ("error" in parsed && parsed.error) return json({ error: parsed.error }, 400);
-  if (!parsed.sku || parsed.sku === "topup") return json({ error: "productions use a block sku" }, 400);
+  if (!parsed.sku || parsed.sku === "topup" || parsed.sku === "credit") {
+    return json({ error: "productions use a block sku" }, 400);
+  }
 
   const verdict = moderateText(`${parsed.title ?? ""}\n${parsed.description ?? ""}`, "story_input");
   if (verdict.verdict === "block") {
@@ -1225,11 +1559,58 @@ async function createProduction(
         target_episode_count: parsed.sku === 2 ? 60 : parsed.sku,
         sku: String(parsed.sku === 2 ? 60 : parsed.sku),
         poster_tone: posterTone(parsed.title),
+        style_profile: {
+          aspect: "9:16",
+          episode_length: parsed.length,
+          video_tier: parsed.video_tier,
+        },
       })
       .select()
       .single();
     if (created.error || !created.data) return json({ error: created.error?.message ?? "series failed" }, 400);
     series = created.data;
+  } else {
+    const title = parsed.title ?? series.title;
+    const target = parsed.sku === 2 ? (series.target_episode_count ?? 60) : parsed.sku;
+    const { data: refreshed } = await supabase
+      .from("series")
+      .update({
+        title,
+        description: parsed.description ?? series.description,
+        target_episode_count: target,
+        sku: String(target),
+        style_profile: {
+          ...((series.style_profile as Record<string, unknown> | null) ?? {}),
+          aspect: "9:16",
+          episode_length: parsed.length,
+          video_tier: parsed.video_tier,
+        },
+      })
+      .eq("id", series.id)
+      .select()
+      .single();
+    if (refreshed) series = refreshed;
+  }
+
+  if (parsed.cover_base64) {
+    await supabase.from("engine_tasks").insert({
+      owner_id: userId,
+      series_id: series.id,
+      action: "attach_cover",
+      payload: { cover_base64: parsed.cover_base64, cover_mime_type: parsed.cover_mime_type ?? "image/jpeg" },
+      status: "queued",
+    });
+  }
+
+  if (parsed.script_text) {
+    // Stored now so `segment_script` can read it back after the bible exists.
+    await supabase.from("engine_tasks").insert({
+      owner_id: userId,
+      series_id: series.id,
+      action: "attach_script",
+      payload: { script_text: parsed.script_text },
+      status: "queued",
+    });
   }
 
   const { data: unpaid } = await supabase
@@ -1237,55 +1618,103 @@ async function createProduction(
     .select("*")
     .eq("series_id", series.id)
     .eq("status", "awaiting_payment")
-    .eq("sku", String(parsed.sku))
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  const created = unpaid
-    ? {
-        production: unpaid as ProductionRow,
-        estimate: estimateBlock({
-          sku: parsed.sku,
-          priority: parsed.priority,
-          length: parsed.length,
-        }),
-      }
-    : await createProductionRecord(supabase, {
-        ownerId: userId,
-        series,
+  let created;
+  if (unpaid && Number((unpaid as ProductionRow).paid_amount ?? 0) <= 0) {
+    const { data: synced } = await supabase
+      .from("productions")
+      .update({
+        sku: String(parsed.sku),
+        priority: parsed.priority,
+        episode_length: parsed.length,
+        video_tier: parsed.video_tier,
         mode: parsed.mode,
+        notify: parsed.notify,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", (unpaid as ProductionRow).id)
+      .select()
+      .single();
+    created = {
+      production: (synced ?? unpaid) as ProductionRow,
+      estimate: estimateBlock({
         sku: parsed.sku,
         priority: parsed.priority,
         length: parsed.length,
-        notify: parsed.notify,
-      });
+        video_tier: parsed.video_tier,
+      }),
+    };
+  } else {
+    created = await createProductionRecord(supabase, {
+      ownerId: userId,
+      series,
+      mode: parsed.mode,
+      sku: parsed.sku,
+      priority: parsed.priority,
+      length: parsed.length,
+      notify: parsed.notify,
+      video_tier: parsed.video_tier,
+    });
+  }
   if ("error" in created && created.error) return json({ error: created.error }, created.status);
 
-  const checkout = await stripeCheckout({
-    supabase,
-    userId,
-    email: parsed.email ?? email,
-    series,
-    production: created.production,
-    sku: parsed.sku,
-    amount: created.estimate.retail,
-    origin: req.headers.get("origin") ?? "http://127.0.0.1:43123",
-  });
-  if (!checkout.ok) return json({ error: checkout.error }, checkout.status);
+  const needed = created.estimate.retail;
+  const available = await walletBalance(supabase, userId);
+  if (available + 1e-9 >= needed) {
+    const allocated = await allocateWalletToSeries(supabase, {
+      ownerId: series.owner_id,
+      seriesId: series.id,
+      productionId: created.production.id,
+      amount: needed,
+    });
+    if ("error" in allocated) return json({ error: allocated.error }, 400);
+    const { data, error } = await supabase
+      .from("productions")
+      .update({
+        status: "queued",
+        ui_phase: "preparing",
+        paid_amount: needed,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", created.production.id)
+      .select()
+      .single();
+    if (error || !data) return json({ error: error?.message ?? "Could not start the run" }, 400);
+    await supabase.from("engine_tasks").insert({
+      owner_id: data.owner_id,
+      series_id: data.series_id,
+      production_id: data.id,
+      action: "advance_production",
+      payload: { production_id: data.id },
+      status: "queued",
+    });
+    await wakeJobs();
+    return json(
+      publicProduction(data as ProductionRow, {
+        series_title: series.title,
+        poster_tone: seriesPoster(series),
+        paid_from: "wallet",
+      }),
+      201,
+    );
+  }
 
-  await supabase
-    .from("productions")
-    .update({ stripe_checkout_id: checkout.id, updated_at: new Date().toISOString() })
-    .eq("id", created.production.id);
-
-  return json({
-    ...publicProduction(created.production, {
-      series_title: series.title,
-      poster_tone: seriesPoster(series),
-    }),
-    checkout: { id: checkout.id, url: checkout.url },
-  }, 201);
+  return json(
+    {
+      error: "insufficient_credit",
+      needed,
+      available,
+      shortfall: Math.max(0, Math.round((needed - available) * 100) / 100),
+      production: publicProduction(created.production, {
+        series_title: series.title,
+        poster_tone: seriesPoster(series),
+      }),
+    },
+    402,
+  );
 }
 
 async function loadProduction(
@@ -1467,6 +1896,7 @@ async function confirmTestPayment(
     Number(production.sku) as BlockSku,
     production.priority as ProductionPriority,
     production.episode_length as EpisodeLength,
+    production.video_tier === "catalog" ? "catalog" : "pro",
   );
   await supabase.from("project_ledger").insert({
     owner_id: production.owner_id,
@@ -1500,27 +1930,57 @@ async function confirmTestPayment(
   return json(publicProduction(data as ProductionRow));
 }
 
+function safeAppPath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("://")) return null;
+  if (value.includes("\\") || value.includes("\n") || value.includes("\r")) return null;
+  return value;
+}
+
 async function createCheckout(
   req: Request,
   supabase: ReturnType<typeof serviceClient>,
-  userId: string,
+  user: { id: string; email?: string | null },
   isAdmin: boolean,
 ) {
   const body = await req.json();
-  if (!isCatalogSku(body.sku)) return json({ error: "sku must be 2|12|24|45|60|topup" }, 400);
-  const series = await ownedSeries(supabase, userId, body.series_id, isAdmin);
+  if (!isCatalogSku(body.sku)) return json({ error: "sku must be 2|12|15|24|30|45|50|60|90|topup|credit" }, 400);
+  const walletLoad = body.sku === "credit" || (body.sku === "topup" && !body.series_id);
+  if (walletLoad) {
+    const amount = Number(body.amount ?? SEASON_PRICES_USD.topup);
+    if (!Number.isFinite(amount) || amount < 10 || amount > 20_000) {
+      return json({ error: "amount must be between 10 and 20000" }, 400);
+    }
+    const checkout = await stripeCheckout({
+      supabase,
+      userId: user.id,
+      email: typeof body.email === "string" && body.email.includes("@") ? body.email : user.email,
+      series: null,
+      production: null,
+      sku: body.sku === "credit" ? "credit" : "topup",
+      amount: Math.round(amount),
+      origin: req.headers.get("origin") ?? "http://127.0.0.1:43123",
+      successPath: safeAppPath(body.success_path) ?? "/account/billing",
+      cancelPath: safeAppPath(body.cancel_path) ?? safeAppPath(body.success_path) ?? "/account/billing",
+    });
+    if (!checkout.ok) return json({ error: checkout.error }, checkout.status);
+    return json({ id: checkout.id, url: checkout.url }, 201);
+  }
+  const series = await ownedSeries(supabase, user.id, body.series_id, isAdmin);
   if (!series) return json({ error: "Series not found" }, 404);
+  const videoTier = isVideoTier(body.video_tier) ? body.video_tier : "pro";
   const amount = body.sku === "topup"
     ? SEASON_PRICES_USD.topup
     : retailForBlock(
         body.sku,
         isPriority(body.priority) ? body.priority : "balanced",
         isEpisodeLength(body.episode_length) ? body.episode_length : "60_90",
+        videoTier,
       );
   const checkout = await stripeCheckout({
     supabase,
-    userId,
-    email: body.email,
+    userId: user.id,
+    email: typeof body.email === "string" && body.email.includes("@") ? body.email : user.email,
     series,
     production: body.production_id ? { id: body.production_id } : null,
     sku: body.sku,
@@ -1534,43 +1994,61 @@ async function createCheckout(
 async function stripeCheckout(input: {
   supabase: ReturnType<typeof serviceClient>;
   userId: string;
-  email?: string;
-  series: { id: string; owner_id: string };
+  email?: string | null;
+  series: { id: string; owner_id: string } | null;
   production: { id: string } | null;
   sku: string | number;
   amount: number;
   origin: string;
+  successPath?: string;
+  cancelPath?: string;
 }): Promise<{ ok: true; id: string; url: string } | { ok: false; error: string; status: number }> {
   const secret = Deno.env.get("STRIPE_SECRET_KEY");
   if (!secret) return { ok: false, error: "Stripe is not configured", status: 500 };
-  if (!secret.startsWith("sk_test_") && !secret.startsWith("rk_test_")) {
+  if (stripeLiveBlocked(secret)) {
     return { ok: false, error: "Live Stripe is blocked until the legal entity is complete", status: 503 };
   }
   const customerId = await ensureStripeCustomer(input.supabase, secret, input.userId, input.email);
+  const wallet = !input.series;
   const params = new URLSearchParams();
   params.set("mode", "payment");
   params.set(
     "success_url",
-    input.production
-      ? `${input.origin}/productions/${input.production.id}?checkout=success`
-      : `${input.origin}/productions?checkout=success`,
+    input.successPath
+      ? `${input.origin}${input.successPath}`
+      : input.production
+        ? `${input.origin}/productions/${input.production.id}?checkout=success`
+        : `${input.origin}/productions?checkout=success`,
   );
-      params.set("cancel_url", `${input.origin}/new?checkout=cancel`);
-  params.set("client_reference_id", input.production?.id ?? input.series.id);
-  params.set("metadata[owner_id]", input.series.owner_id);
-  params.set("metadata[series_id]", input.series.id);
+  params.set(
+    "cancel_url",
+    input.cancelPath
+      ? `${input.origin}${input.cancelPath}`
+      : wallet
+        ? `${input.origin}/account/billing`
+        : `${input.origin}/new?checkout=cancel`,
+  );
+  params.set("client_reference_id", input.production?.id ?? input.series?.id ?? input.userId);
+  params.set("metadata[owner_id]", input.series?.owner_id ?? input.userId);
   params.set("metadata[sku]", String(input.sku));
+  if (input.series) params.set("metadata[series_id]", input.series.id);
   if (input.production) params.set("metadata[production_id]", input.production.id);
-  params.set("payment_intent_data[metadata][owner_id]", input.series.owner_id);
-  params.set("payment_intent_data[metadata][series_id]", input.series.id);
+  params.set("payment_intent_data[metadata][owner_id]", input.series?.owner_id ?? input.userId);
   params.set("payment_intent_data[metadata][sku]", String(input.sku));
+  if (input.series) params.set("payment_intent_data[metadata][series_id]", input.series.id);
   if (input.production) params.set("payment_intent_data[metadata][production_id]", input.production.id);
   params.set("line_items[0][quantity]", "1");
   params.set("line_items[0][price_data][currency]", "usd");
   params.set("line_items[0][price_data][unit_amount]", String(Math.round(input.amount * 100)));
   params.set(
     "line_items[0][price_data][product_data][name]",
-    input.sku === "topup" ? "Season top-up" : input.sku === 2 || input.sku === "2" ? "2-episode pilot" : `${input.sku}-episode run`,
+    input.sku === "credit" || (input.sku === "topup" && wallet)
+      ? "Studio credit"
+      : input.sku === "topup"
+        ? "Season top-up"
+        : input.sku === 2 || input.sku === "2"
+          ? "2-episode pilot"
+          : `${input.sku}-episode run`,
   );
   if (customerId) params.set("customer", customerId);
 
@@ -1591,7 +2069,7 @@ async function ensureStripeCustomer(
   supabase: ReturnType<typeof serviceClient>,
   secret: string,
   userId: string,
-  email?: string,
+  email?: string | null,
 ): Promise<string | null> {
   const { data: profile } = await supabase
     .from("profiles")
@@ -1648,4 +2126,191 @@ async function createPrivacyRequest(req: Request) {
     .single();
   if (error) return json({ error: error.message }, 400);
   return json({ id: data.id, status: data.status }, 201);
+}
+
+function stripeLiveBlocked(secret: string) {
+  const test = secret.startsWith("sk_test_") || secret.startsWith("rk_test_");
+  if (test) return false;
+  return Deno.env.get("LEGAL_ENTITY_COMPLETE") !== "1";
+}
+
+async function recordAcceptances(
+  supabase: ReturnType<typeof serviceClient>,
+  userId: string,
+  req: Request,
+  context: string,
+) {
+  const rows = Object.entries(DOCUMENT_VERSIONS).map(([document_type, version]) => ({
+    user_id: userId,
+    document_type,
+    version,
+    context,
+    user_agent_summary: req.headers.get("user-agent")?.slice(0, 180) ?? null,
+  }));
+  const { error } = await supabase.from("legal_acceptances").insert(rows);
+  if (error) return json({ error: error.message }, 500);
+  return json({ ok: true, accepted: Object.keys(DOCUMENT_VERSIONS) });
+}
+
+async function createSignup(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const email = String(body.email ?? "").trim().toLowerCase();
+  const password = String(body.password ?? "");
+  if (!email.includes("@")) return json({ error: "email required" }, 400);
+  if (password.length < 8) return json({ error: "Use at least 8 characters" }, 400);
+  await requireTurnstile(req, body.turnstile_token, "signup");
+
+  const supabase = serviceClient();
+  const { data, error } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+  });
+  if (error || !data.user) {
+    const duplicate = /already/i.test(error?.message ?? "");
+    return json({ error: duplicate ? "An account with that email already exists" : (error?.message ?? "Could not create account") }, 400);
+  }
+  if (body.accept) {
+    const recorded = await recordAcceptances(supabase, data.user.id, req, "signup");
+    if (!recorded.ok) return recorded;
+  }
+  return json({ ok: true }, 201);
+}
+
+async function createRecover(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const email = String(body.email ?? "").trim().toLowerCase();
+  if (!email.includes("@")) return json({ error: "email required" }, 400);
+  await requireTurnstile(req, body.turnstile_token, "reset");
+  const origin = req.headers.get("origin") ?? "http://127.0.0.1:43123";
+  const supabase = serviceClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/login?mode=update`,
+  });
+  if (error) return json({ error: error.message }, 400);
+  return json({ ok: true });
+}
+
+async function billingSummary(supabase: ReturnType<typeof serviceClient>, userId: string, email?: string | null) {
+  const [{ count }, { data: purchases }, { data: profile }, { data: seriesRows }] = await Promise.all([
+    supabase
+      .from("productions")
+      .select("id", { count: "exact", head: true })
+      .eq("owner_id", userId)
+      .in("status", ["queued", "running", "needs_user"]),
+    supabase
+      .from("project_ledger")
+      .select("id, amount, series_id, created_at")
+      .eq("owner_id", userId)
+      .eq("entry_type", "purchase")
+      .order("created_at", { ascending: false })
+      .limit(20),
+    supabase.from("profiles").select("stripe_customer_id").eq("id", userId).maybeSingle(),
+    supabase
+      .from("series")
+      .select("id, title, target_episode_count, sku, style_profile")
+      .eq("owner_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+  ]);
+  const titles = new Map((seriesRows ?? []).map((row) => [String(row.id), String(row.title)]));
+  const series = (seriesRows ?? []).map((row) => {
+    const profile = (row.style_profile as { episode_length?: string; video_tier?: string } | null) ?? {};
+    const target = Number(row.target_episode_count ?? row.sku ?? 30);
+    return {
+      id: row.id,
+      title: row.title,
+      target_episode_count: Number.isFinite(target) && target > 0 ? target : 30,
+      episode_length: isEpisodeLength(profile.episode_length) ? profile.episode_length : "60_90",
+      video_tier: isVideoTier(profile.video_tier) ? profile.video_tier : "pro",
+      started: false,
+    };
+  });
+  if (series.length) {
+    const { data: paidRows } = await supabase
+      .from("productions")
+      .select("series_id")
+      .in(
+        "series_id",
+        series.map((row) => row.id),
+      )
+      .gt("paid_amount", 0);
+    const startedIds = new Set((paidRows ?? []).map((row) => String(row.series_id)));
+    for (const row of series) row.started = startedIds.has(row.id);
+  }
+  const receipts = (purchases ?? []).map((row) => ({
+    id: row.id,
+    amount: usd(row.amount),
+    created_at: row.created_at,
+    series_id: row.series_id,
+    series_title: titles.get(String(row.series_id)) ?? null,
+  }));
+  return json({
+    email: email ?? "",
+    slots_used: count ?? 0,
+    slots_total: 4,
+    stripe_customer_id: profile?.stripe_customer_id ?? null,
+    last_payment: receipts[0] ?? null,
+    receipts,
+    series,
+    credit_balance: await walletBalance(supabase, userId),
+    credit_presets: [...CREDIT_PRESETS],
+    skus: [15, 30, 45, 60, 90].map((sku) => estimateBlock({ sku })),
+    topup: estimateBlock({ sku: "topup" }),
+  });
+}
+
+async function createPortal(
+  req: Request,
+  supabase: ReturnType<typeof serviceClient>,
+  user: { id: string; email?: string | null },
+) {
+  const secret = Deno.env.get("STRIPE_SECRET_KEY");
+  if (!secret) return json({ error: "Stripe is not configured" }, 500);
+  if (stripeLiveBlocked(secret)) {
+    return json({ error: "Live Stripe is blocked until the legal entity is complete" }, 503);
+  }
+  const customerId = await ensureStripeCustomer(supabase, secret, user.id, user.email);
+  if (!customerId) return json({ error: "No Stripe customer yet. Pay once first." }, 400);
+  const origin = req.headers.get("origin") ?? "http://127.0.0.1:43123";
+  const params = new URLSearchParams();
+  params.set("customer", customerId);
+  params.set("return_url", `${origin}/account/billing`);
+  const response = await fetch("https://api.stripe.com/v1/billing_portal/sessions", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: params,
+  });
+  const session = await response.json();
+  if (!response.ok) return json({ error: session.error?.message ?? "Could not open the billing portal" }, 400);
+  return json({ url: session.url });
+}
+
+async function confirmTestCredit(
+  req: Request,
+  supabase: ReturnType<typeof serviceClient>,
+  userId: string,
+) {
+  const secret = Deno.env.get("STRIPE_SECRET_KEY") ?? "";
+  const test = !secret || secret.startsWith("sk_test_") || secret.startsWith("rk_test_");
+  if (!test) return json({ error: "Test credit is only available with Stripe test keys" }, 403);
+  const body = await req.json().catch(() => ({}));
+  const amount = Math.round(Number(body.amount ?? 0));
+  if (!Number.isFinite(amount) || amount < 10 || amount > 20_000) {
+    return json({ error: "amount must be between 10 and 20000" }, 400);
+  }
+  const eventId = `test_wallet_${userId}_${Date.now()}`;
+  const { error } = await supabase.from("project_ledger").insert({
+    owner_id: userId,
+    series_id: null,
+    entry_type: "purchase",
+    amount,
+    stripe_event_id: eventId,
+    price_snapshot_version: PRICE_SNAPSHOT_VERSION,
+  });
+  if (error) return json({ error: error.message }, 400);
+  return json({ ok: true, credit_balance: await walletBalance(supabase, userId), amount });
 }

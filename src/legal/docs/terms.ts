@@ -54,7 +54,7 @@ export const termsDocument: LegalDocument = {
       blocks: [
         {
           type: "p",
-          text: "Short Drama Maker helps you turn a story into a vertical drama: a persistent cast, dialogue-first scenes, independently regenerable shots, and a finished episode assembled from a render manifest. We orchestrate storage, jobs, and approved AI processors. We do not promise a general-purpose AI studio.",
+          text: "Takehaus helps you turn a story into a vertical drama: a persistent cast, dialogue-first scenes, independently regenerable shots, and a finished episode assembled from a render manifest. We orchestrate storage, jobs, and approved AI processors. We do not promise a general-purpose AI studio.",
         },
       ],
     },

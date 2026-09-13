@@ -98,8 +98,12 @@ import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pi
 import { wordErrorRate } from "./media/qc.ts";
 import { placeLockClause, placePlateRetry } from "../drama-engine/craft/place.ts";
 import { evidenceMotif, identityLockLine, NO_TEXT_CLAUSE, objectPlateCamera, peopleOnSceneTake, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
+import { dropOpeningEcho } from "../drama-engine/types/dialogue.ts";
 import { cueRows, cueText, exitsIn } from "../drama-engine/types/continuity.ts";
 import { playbookFor } from "../drama-engine/craft/genre-playbooks.ts";
+import { videoContextBlock } from "../drama-engine/craft/video-context.ts";
+import { lastFramingOf } from "../drama-engine/craft/shot-list.ts";
+import { humanMotifs } from "../drama-engine/types/where.ts";
 import { assertSeasonBible, buildSeasonBible, isLongFormLength, ledgerForEpisode, planLongFormEpisode } from "../drama-engine/plans/index.ts";
 import { failoverRoute } from "./ai/router.ts";
 import {
@@ -109,6 +113,7 @@ import {
   type IdentityRefPolicy,
 } from "./pipeline/identity-refs.ts";
 import { isActive, isTerminal, transitionJob } from "./jobs/state-machine.ts";
+import { isBusyVideoJob } from "./jobs/queue-policy.ts";
 import {
   assertCanReserve,
   DEFAULT_PRICE_SNAPSHOT_VERSION,
@@ -528,7 +533,12 @@ export function createEngine(deps: EngineDeps = {}) {
     return series;
   }
 
-  async function analyze(input: { owner_id: string; series_id: string }) {
+  async function analyze(input: {
+    owner_id: string;
+    series_id: string;
+    /** Parts the buyer cast before the story existed. */
+    required_cast?: ReadonlyArray<{ name: string; note?: string; actor_id?: string | null }>;
+  }) {
     const series = requireSeries(input.series_id, input.owner_id);
     await moderate(`${series.title}\n${series.description}`, "story_input", series.id, null);
     const job = createJob({
@@ -548,9 +558,11 @@ export function createEngine(deps: EngineDeps = {}) {
       expected_ready_at: addSeconds(clock, 5),
     });
     reserve(job);
+    const cast = (input.required_cast ?? []).filter((row) => row.name.trim());
     const bible = await ai.llm.analyzeStory({
       title: series.title,
       idea: series.description,
+      required_cast: cast.map((row) => ({ name: row.name, note: row.note })),
     });
     if (!bible.season) bible.season = buildSeasonBible(bible);
     bible.season = assertSeasonBible(bible.season);
@@ -570,15 +582,24 @@ export function createEngine(deps: EngineDeps = {}) {
       series.id,
       job.id,
     );
+    // A part the buyer cast keeps its face: the character is born pointing at
+    // that actor, so the prep pipeline never generates a stranger for it.
+    const castByName = new Map(
+      cast
+        .filter((row) => row.actor_id && store.actors.get(row.actor_id)?.owner_id === input.owner_id)
+        .map((row) => [row.name.trim().toLowerCase(), String(row.actor_id)]),
+    );
     for (const draft of bible.characters) {
+      const chosen = castByName.get(draft.name.trim().toLowerCase()) ?? null;
+      const chosenActor = chosen ? store.actors.get(chosen) : undefined;
       const character: Character = {
         id: ids.id(),
         series_id: series.id,
         name: draft.name,
         description: draft.description,
-        actor_id: null,
+        actor_id: chosenActor?.id ?? null,
         appearance_profile: draft.appearance,
-        visual_reference_asset_ids: {},
+        visual_reference_asset_ids: { ...(chosenActor?.visual_reference_asset_ids ?? {}) },
         wardrobe_asset_ids: {},
         voice_profile: {
           design_prompt: alignVoicePrompt(draft.voice_design_prompt, `${draft.name}. ${draft.description}`),
@@ -642,7 +663,7 @@ export function createEngine(deps: EngineDeps = {}) {
     return next;
   }
 
-  const STILL_LOOK_ATTEMPTS = 2;
+  const STILL_LOOK_ATTEMPTS = 5;
 
   /**
    * Beauty gate for NEW stills only. Old locked Mara/Cole PNGs are not re-gated.
@@ -1518,6 +1539,14 @@ export function createEngine(deps: EngineDeps = {}) {
       const first = cueRows(next)[0];
       if (first) shot.dialogue = cueText(first);
     }
+    const sceneShots = plan.scenes.flatMap((scene) => scene.shots).filter((shot) => isSceneTake(shot));
+    for (let i = 1; i < sceneShots.length; i += 1) {
+      const stripped = dropOpeningEcho(sceneShots[i - 1]!.scene_script, sceneShots[i]!.scene_script);
+      if (stripped === (sceneShots[i]!.scene_script ?? "")) continue;
+      sceneShots[i]!.scene_script = stripped;
+      const first = cueRows(stripped)[0];
+      if (first) sceneShots[i]!.dialogue = cueText(first);
+    }
     return plan;
   }
 
@@ -1855,9 +1884,11 @@ export function createEngine(deps: EngineDeps = {}) {
     quality?: QualityProfile;
     privacy?: PrivacyProfile;
     forceModel?: string;
+    video_tier?: import("./domain.ts").VideoTier;
   }) {
     const { shot, series, episode } = requireShot(input.shot_id, input.owner_id);
-    const quality = input.quality ?? "auto";
+    const videoTier = input.video_tier ?? "pro";
+    const quality = videoTier === "catalog" ? "economy" : (input.quality ?? "auto");
     const privacy: PrivacyProfile = input.privacy ?? "standard";
     assertStandardOnly(privacy);
 
@@ -1924,7 +1955,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const sceneNames = isSceneTake(live.shot_data) ? takeSpeakers : [];
     const identityLocks = sceneNames.flatMap((name) => {
       const character = characterBySpeaker(series.id, name);
-      return character ? [identityLockLine(character.name)] : [];
+      return character ? [identityLockLine(character.name, character.appearance_profile)] : [];
     });
     if (isSceneTake(live.shot_data)) {
       const prev = previousSceneTake({
@@ -1937,7 +1968,7 @@ export function createEngine(deps: EngineDeps = {}) {
         note ||
         live.shot_data.blocking?.start_from ||
         (prev
-          ? "They have just finished the last spoken line. Same sides. Same staging. Same prop. Do not reset the room. Do not repeat that line. JOIN CUT: open closer — a close-up or both faces stacked. Do not reprint the last frame."
+          ? "They have just finished the last spoken line. Same sides. Same staging. Same prop. Do not reset the room. Do not repeat that line. JOIN CUT: open on a chest-up MCU of the speaker. Do not stack faces. Do not reprint the last frame."
           : null);
       if (startFrom || live.shot_data.blocking) {
         store.shots.set(live.id, {
@@ -1966,10 +1997,20 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     const prompted = store.shots.get(live.id)!;
     const episodeTakes = store.shotsForEpisode(episode.id);
+    const takeIndex = Math.max(0, sceneTakeIndexOf(prompted, episodeTakes));
+    const bible = series.story_bible;
+    const structure = bible?.episode_structure?.find((row) => row.episode_number === episode.episode_number);
+    const genre = seriesGenre(series);
+    const priorEpisode = [...store.episodes.values()].find(
+      (row) => row.series_id === series.id && row.episode_number === episode.episode_number - 1,
+    );
+    const priorEpisodeTakes = priorEpisode
+      ? store.shotsForEpisode(priorEpisode.id).filter((row) => isSceneTake(row.shot_data))
+      : [];
     const prompt = dramaHooks.buildVideoPrompt({
       location,
       locationNote: await locationNoteFor(series.id, location),
-      genre: seriesGenre(series),
+      genre,
       shot: prompted,
       partner,
       peopleCount: isSceneTake(prompted.shot_data) ? takeSpeakers.length : allowsTwoShot(prompted.shot_data.function) ? 2 : 1,
@@ -1977,7 +2018,55 @@ export function createEngine(deps: EngineDeps = {}) {
       identityLocks,
       roomDescription: roomDescriptionFor(series, location),
       roomGeometry: await roomGeometryFor(series.id, location),
-      takeIndex: Math.max(0, sceneTakeIndexOf(prompted, episodeTakes)),
+      takeIndex,
+      prevLand: isSceneTake(prompted.shot_data)
+        ? lastFramingOf(
+            episodeTakes
+              .filter((row) => isSceneTake(row.shot_data))
+              .filter((_, index) => index < takeIndex)
+              .map((row) => ({
+                script: row.shot_data.scene_script,
+                duration: row.shot_data.duration_seconds ?? row.shot_data.duration_hint_seconds ?? 15,
+                blocking: row.shot_data.blocking,
+              })),
+          )
+        : null,
+      context: isSceneTake(prompted.shot_data)
+        ? videoContextBlock({
+            title: bible?.title ?? series.title,
+            logline: bible?.logline ?? series.description,
+            visualStyle: typeof bible?.visual_style?.lighting === "string" ? bible.visual_style.lighting : null,
+            episodeNumber: episode.episode_number,
+            episodeTitle: episode.title,
+            hook: structure?.hook ?? episode.episode_outline?.blocks[0]?.hook,
+            conflict: structure?.conflict ?? episode.episode_outline?.blocks[0]?.friction,
+            cliffhanger: structure?.cliffhanger,
+            genreMotifs: genre ? humanMotifs(playbookFor(genre).visualMotifs) : null,
+            characters: bible?.characters,
+            priorTakes: episodeTakes
+              .filter((row) => isSceneTake(row.shot_data))
+              .filter((_, index) => index < takeIndex)
+              .map((row) => ({
+                scene_script: row.shot_data.scene_script,
+                blocking: row.shot_data.blocking,
+                blocking_note: row.shot_data.continuity?.blocking_note,
+              })),
+            priorEpisode: priorEpisode
+              ? {
+                  number: priorEpisode.episode_number,
+                  cliffhanger: bible?.episode_structure?.find((row) => row.episode_number === priorEpisode.episode_number)
+                    ?.cliffhanger,
+                  last_script: priorEpisodeTakes.at(-1)?.shot_data.scene_script,
+                }
+              : null,
+            thisTake: {
+              index: takeIndex,
+              scene_script: prompted.shot_data.scene_script,
+              present: prompted.shot_data.blocking?.present ?? takeSpeakers,
+              prop: prompted.shot_data.blocking?.prop,
+            },
+          })
+        : null,
     });
     await moderate(
       `${prompt}\n${live.shot_data.dialogue ?? ""}`,
@@ -2013,12 +2102,15 @@ export function createEngine(deps: EngineDeps = {}) {
           },
           reason: "forced model",
         }
-      : ai.router.selectVideoRoute(current, privacy, quality);
+      : ai.router.selectVideoRoute(current, privacy, quality, videoTier);
     const duration = current.shot_data.duration_seconds ?? padded;
 
     const estimated = ai.pricing.estimateVideo(decision.route.model, duration);
     const active = [...store.jobs.values()].find(
-      (row) => row.shot_id === current.id && row.job_type === "video" && isActive(row.status),
+      (row) =>
+        row.shot_id === current.id &&
+        row.job_type === "video" &&
+        (isBusyVideoJob(row.status) || !isTerminal(row.status)),
     );
     store.shots.set(current.id, { ...store.shots.get(current.id)!, status: "generating" });
     if (active) {
@@ -2388,12 +2480,33 @@ export function createEngine(deps: EngineDeps = {}) {
   }
 
   /** Transcript with word timings for speech onset; absent when no STT is configured. */
-  function speechTranscriber(): ((mp3: Uint8Array) => Promise<{ text: string; speech_onset_seconds: number | null } | null>) | undefined {
+  function speechTranscriber():
+    | ((mp3: Uint8Array) => Promise<{
+        text: string;
+        speech_onset_seconds: number | null;
+        words?: Array<{ word: string; start: number; end: number }>;
+      } | null>)
+    | undefined {
     const stt = ai.stt;
     if (!stt) return undefined;
     return async (mp3) => {
       const spoken = await stt.transcribe({ bytes: mp3, format: "mp3" });
-      return { text: spoken.text, speech_onset_seconds: spoken.speech_onset_seconds ?? null };
+      return {
+        text: spoken.text,
+        speech_onset_seconds: spoken.speech_onset_seconds ?? null,
+        words: spoken.words ?? [],
+      };
+    };
+  }
+
+  /** Native-take word timings as an alignment track, so captions sit on the spoken word. */
+  function alignmentFromTranscript(analysis: TakeAnalysis | null | undefined): AlignmentTrack | null {
+    const words = analysis?.transcript_words;
+    if (!words?.length) return null;
+    return {
+      text: analysis?.transcript ?? words.map((row) => row.word).join(" "),
+      characters: [],
+      words: words.filter((row) => row.word.trim() && Number.isFinite(row.start) && Number.isFinite(row.end)),
     };
   }
 
@@ -2533,7 +2646,7 @@ export function createEngine(deps: EngineDeps = {}) {
     return out;
   }
 
-  /** A prop still for whatever the planner locked, generated once per distinct wording. */
+  /** A prop still for whatever the planner locked, generated once per identity+state. */
   async function ensurePropStillFromText(seriesId: string, propText: string | null | undefined): Promise<{ url: string; id: string; name: string } | null> {
     const prop = propFromLockText(propText);
     if (!prop) return null;
@@ -2545,7 +2658,17 @@ export function createEngine(deps: EngineDeps = {}) {
       }
       const series = store.series.get(seriesId);
       if (!series) return null;
-      const image = await ai.image.generateReference({ characterName: prop.name, description: prop.prompt, kind: "object_insert" });
+      const seedId = prop.seedKey ? await findAssetByMeta(seriesId, PROP_KIND, (meta) => meta.key === prop.seedKey) : null;
+      const seed = seedId ? await assets.get(seedId).catch(() => null) : null;
+      const image = seed
+        ? await ai.image.generateReferenceFromSeed({
+            characterName: prop.name,
+            description: `${prop.prompt}. Same object as the attached still, only the state changes.`,
+            kind: "object_insert",
+            seed_bytes: seed.body,
+            seed_mime_type: seed.asset.mime_type,
+          })
+        : await ai.image.generateReference({ characterName: prop.name, description: prop.prompt, kind: "object_insert" });
       const asset = await putAsset({
         owner_id: series.owner_id,
         series_id: series.id,
@@ -2553,7 +2676,7 @@ export function createEngine(deps: EngineDeps = {}) {
         bucket: "private-character",
         mime_type: image.mime_type,
         body: image.bytes,
-        metadata: { kind: PROP_KIND, prop: prop.name, key: prop.key },
+        metadata: { kind: PROP_KIND, prop: prop.name, key: prop.key, state: prop.state },
       });
       const url = await signedOrSkip(asset.id);
       return url ? { url, id: asset.id, name: prop.name } : null;
@@ -2791,9 +2914,8 @@ export function createEngine(deps: EngineDeps = {}) {
         null;
       const prop = locationOnly
         ? null
-        : propKind
-          ? await ensurePropStill(seriesId, propKind)
-          : await ensurePropStillFromText(seriesId, shot.shot_data.blocking?.prop);
+        : (await ensurePropStillFromText(seriesId, shot.shot_data.blocking?.prop)) ??
+          (propKind ? await ensurePropStill(seriesId, propKind) : null);
       const angles = locId && !locationOnly ? await ensureRoomAngles(seriesId, scene.location, locId) : [];
       const pack = buildSceneTakeRefs({
         characters: people,
@@ -3862,11 +3984,20 @@ export function createEngine(deps: EngineDeps = {}) {
     // Let ranking pick the best clean take (or none) with the new verdicts.
     const chosen = await resolveTakeAssetId(store.shots.get(shot.id)!, series.id);
     const current = store.shots.get(shot.id)!;
+    // The shot must carry the analysis of the take that will actually be cut.
+    // Leaving the old one behind means the mixer reads pre-fix measurements —
+    // including the word timings captions are placed on.
+    const reranked = await rankedTakesForShot(current, series.id);
+    const chosenAnalysis = chosen ? reranked.find((row) => row.assetId === chosen)?.analysis : null;
     store.shots.set(current.id, {
       ...current,
       status: chosen ? "complete" : "needs_review",
       selected_generation_id: chosen,
-      shot_data: { ...current.shot_data, identity_reject: !chosen },
+      shot_data: {
+        ...current.shot_data,
+        identity_reject: !chosen,
+        ...(chosenAnalysis ? { take_analysis: chosenAnalysis } : {}),
+      },
     });
     // The side costs of re-judging are real spend on this series.
     const metered = ai.meter.take();
@@ -4425,7 +4556,10 @@ export function createEngine(deps: EngineDeps = {}) {
         if (!row) throw new Error(`Missing caption asset ${captionId}`);
         alignments.push(decodeJson<AlignmentTrack>(row.body));
       } else {
-        alignments.push(null);
+        // Scene takes speak native Seedance audio, so there is no TTS alignment.
+        // The ingest transcript's word timings are the only real clock the cut
+        // has; without them captions are guessed from word count and drift.
+        alignments.push(alignmentFromTranscript(shot.shot_data.take_analysis));
       }
       if (shot.shot_data.dialogue_audio_asset_id) {
         const audio = await assets.get(shot.shot_data.dialogue_audio_asset_id);
@@ -4691,6 +4825,89 @@ export function createEngine(deps: EngineDeps = {}) {
     };
   }
 
+  /**
+   * Keeps the buyer's original script. Only the asset id lands on the series, so
+   * every advance tick does not drag 80k of text through the store.
+   */
+  async function attachSourceScript(input: { owner_id: string; series_id: string; text: string }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const text = input.text.trim();
+    if (!text) return series;
+    const asset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: series.id,
+      kind: "script",
+      bucket: "private-source",
+      mime_type: "text/plain",
+      body: new TextEncoder().encode(text),
+      metadata: { series_id: series.id, characters: text.length },
+    });
+    store.series.set(series.id, {
+      ...series,
+      style_profile: { ...series.style_profile, source_script_asset_id: asset.id },
+    });
+    return store.series.get(series.id)!;
+  }
+
+  /** Characters of uploaded script sent to the segmenter in one pass. */
+  const SEGMENT_SCRIPT_MAX_CHARS = 120_000;
+
+  /**
+   * Cuts the buyer's uploaded script into one entry per ordered episode so
+   * `planEpisode` adapts their scenes instead of inventing a season from a logline.
+   */
+  async function segmentSourceScript(input: { owner_id: string; series_id: string; episode_count?: number }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    const bible = series.story_bible;
+    if (!bible) throw new Error("Segment the script after the story bible exists");
+    if (bible.source === "script") return series;
+
+    const assetId = series.style_profile?.source_script_asset_id;
+    if (typeof assetId !== "string" || !assetId) return series;
+    if (!ai.llm.segmentScript) return series;
+
+    const stored = await assets.get(assetId);
+    if (!stored) throw new Error("The uploaded script is no longer in storage");
+    const script = new TextDecoder().decode(stored.body).slice(0, SEGMENT_SCRIPT_MAX_CHARS);
+
+    const episodeCount = Math.max(1, input.episode_count || series.target_episode_count || 30);
+    const episode_structure = await ai.llm.segmentScript({ bible, script, episodeCount });
+
+    const segmented: StoryBible = { ...bible, episode_structure, source: "script" };
+    // Rebuild the season log so it follows the author, not the genre spine.
+    const next: StoryBible = {
+      ...segmented,
+      season: assertSeasonBible(buildSeasonBible({ ...segmented, season: undefined })),
+    };
+    store.series.set(series.id, { ...series, story_bible: next });
+    return store.series.get(series.id)!;
+  }
+
+  /**
+   * Stores a cover the buyer uploaded at commission time. Runs before any cast
+   * work, so `generateSeriesCover` sees `cover_asset_id` already set and skips.
+   */
+  async function attachSeriesCover(input: {
+    owner_id: string;
+    series_id: string;
+    bytes: Uint8Array;
+    mime_type?: string;
+  }) {
+    const series = requireSeries(input.series_id, input.owner_id);
+    if (!input.bytes.length) return series;
+    const asset = await putAsset({
+      owner_id: input.owner_id,
+      series_id: series.id,
+      kind: "series_cover",
+      bucket: "private-generation",
+      mime_type: input.mime_type || "image/jpeg",
+      body: input.bytes,
+      metadata: { series_id: series.id, title: series.title, source: "upload" },
+    });
+    store.series.set(series.id, { ...series, cover_asset_id: asset.id });
+    return store.series.get(series.id)!;
+  }
+
   async function generateSeriesCover(input: { owner_id: string; series_id: string }) {
     const series = requireSeries(input.series_id, input.owner_id);
     if (series.cover_asset_id) return series;
@@ -4839,8 +5056,13 @@ export function createEngine(deps: EngineDeps = {}) {
     return next;
   }
 
-  async function regenerateShot(input: { owner_id: string; shot_id: string }) {
+  async function regenerateShot(input: {
+    owner_id: string;
+    shot_id: string;
+    video_tier?: import("./domain.ts").VideoTier;
+  }) {
     const { shot } = requireShot(input.shot_id, input.owner_id);
+    const videoTier = input.video_tier ?? "pro";
     // Attempts made on a previous version of the line do not count against this one.
     const since = shot.shot_data.line_revised_at ?? "";
     const prior = [...store.jobs.values()]
@@ -4854,7 +5076,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const lastReasons = ((last?.result_metadata.qc as { reasons?: string[] } | undefined)?.reasons ?? []) as string[];
     const failover =
       lastModel && shouldFailoverModel(lastModel, lastReasons)
-        ? failoverRoute(shot, { ...VIDEO_ROUTES.dialogue_default, model: lastModel })
+        ? failoverRoute(shot, { ...VIDEO_ROUTES.dialogue_default, model: lastModel }, videoTier)
         : lastModel
           ? { model: lastModel }
           : null;
@@ -4862,7 +5084,7 @@ export function createEngine(deps: EngineDeps = {}) {
       ...shot,
       status: shot.shot_data.dialogue_audio_asset_id ? "audio_ready" : "planned",
     });
-    return generateVideo({ ...input, forceModel: failover?.model });
+    return generateVideo({ ...input, forceModel: failover?.model, video_tier: videoTier });
   }
 
   async function gc() {
@@ -4883,10 +5105,19 @@ export function createEngine(deps: EngineDeps = {}) {
     return actions;
   }
 
-  function estimateEpisode(episodeId: string, quality: QualityProfile = "auto") {
+  function estimateEpisode(
+    episodeId: string,
+    quality: QualityProfile = "auto",
+    videoTier: import("./domain.ts").VideoTier = "pro",
+  ) {
     const shots = store.shotsForEpisode(episodeId);
     const costs = shots.map((shot) => {
-      const decision = ai.router.selectVideoRoute(shot, "standard", quality);
+      const decision = ai.router.selectVideoRoute(
+        shot,
+        "standard",
+        videoTier === "catalog" ? "economy" : quality,
+        videoTier,
+      );
       const duration =
         shot.shot_data.duration_seconds ??
         Math.max(decision.route.min_duration_seconds, shot.shot_data.duration_hint_seconds);
@@ -4916,6 +5147,9 @@ export function createEngine(deps: EngineDeps = {}) {
     designVoice,
     lockCharacter,
     lockLocations,
+    attachSeriesCover,
+    attachSourceScript,
+    segmentSourceScript,
     generateSeriesCover,
     createEpisode,
     planEpisode,

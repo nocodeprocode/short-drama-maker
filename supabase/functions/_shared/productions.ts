@@ -7,11 +7,13 @@ import {
   isEpisodeLength,
   isPriority,
   isSeasonSku,
+  isVideoTier,
   nextEpisodeRange,
   posterTone,
   type BlockSku,
   type EpisodeLength,
   type ProductionPriority,
+  type VideoTier,
 } from "./skus.ts";
 
 /** Must match src/engine/config/models.ts PRICE_SNAPSHOT_VERSION and a row in price_snapshots. */
@@ -38,6 +40,7 @@ export type ProductionRow = {
   stripe_checkout_id: string | null;
   paid_amount: number;
   paused: boolean;
+  video_tier?: VideoTier;
   created_at: string;
   updated_at: string;
 };
@@ -49,7 +52,7 @@ export async function ownedSeries(
   isAdmin: boolean,
 ) {
   if (!seriesId) return null;
-  let query = supabase.from("series").select("*").eq("id", seriesId);
+  let query = supabase.from("series").select("*").eq("id", seriesId).is("deleted_at", null);
   if (!isAdmin) query = query.eq("owner_id", userId);
   const { data } = await query.maybeSingle();
   return data;
@@ -66,13 +69,8 @@ export async function seriesSpent(supabase: Service, seriesId: string): Promise<
   return (data ?? []).reduce((sum, row) => sum + Number(row.amount), 0);
 }
 
-export async function seriesBalance(supabase: Service, seriesId: string): Promise<number> {
-  const { data, error } = await supabase
-    .from("project_ledger")
-    .select("entry_type, amount")
-    .eq("series_id", seriesId);
-  if (error) throw new Error(error.message);
-  return (data ?? []).reduce((sum, row) => {
+function ledgerBalance(rows: Array<{ entry_type: string; amount: number | string }>): number {
+  return rows.reduce((sum, row) => {
     const amount = Number(row.amount);
     if (row.entry_type === "purchase" || row.entry_type === "release" || row.entry_type === "adjustment") {
       return sum + amount;
@@ -80,6 +78,57 @@ export async function seriesBalance(supabase: Service, seriesId: string): Promis
     if (row.entry_type === "reserve" || row.entry_type === "settle") return sum - amount;
     return sum;
   }, 0);
+}
+
+export async function seriesBalance(supabase: Service, seriesId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from("project_ledger")
+    .select("entry_type, amount")
+    .eq("series_id", seriesId);
+  if (error) throw new Error(error.message);
+  return ledgerBalance(data ?? []);
+}
+
+/** Unused studio credit that is not tied to a show. Series leftover stays on that show. */
+export async function walletBalance(supabase: Service, ownerId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from("project_ledger")
+    .select("entry_type, amount")
+    .eq("owner_id", ownerId)
+    .is("series_id", null);
+  if (error) throw new Error(error.message);
+  return ledgerBalance(data ?? []);
+}
+
+export async function allocateWalletToSeries(
+  supabase: Service,
+  input: {
+    ownerId: string;
+    seriesId: string;
+    productionId: string;
+    amount: number;
+  },
+): Promise<{ ok: true } | { error: string }> {
+  const eventId = `wallet_alloc_${input.productionId}`;
+  const debit = await supabase.from("project_ledger").insert({
+    owner_id: input.ownerId,
+    series_id: null,
+    entry_type: "adjustment",
+    amount: -input.amount,
+    stripe_event_id: `${eventId}:wallet`,
+    price_snapshot_version: PRICE_SNAPSHOT_VERSION,
+  });
+  if (debit.error && debit.error.code !== "23505") return { error: debit.error.message };
+  const credit = await supabase.from("project_ledger").insert({
+    owner_id: input.ownerId,
+    series_id: input.seriesId,
+    entry_type: "purchase",
+    amount: input.amount,
+    stripe_event_id: eventId,
+    price_snapshot_version: PRICE_SNAPSHOT_VERSION,
+  });
+  if (credit.error && credit.error.code !== "23505") return { error: credit.error.message };
+  return { ok: true };
 }
 
 export async function enqueue(
@@ -146,11 +195,13 @@ export function publicCharacter(row: Record<string, unknown>) {
 
 export function publicProduction(row: ProductionRow, extras: Record<string, unknown> = {}) {
   const sku = Number(row.sku);
+  const videoTier = isVideoTier(row.video_tier) ? row.video_tier : "pro";
   const estimate = isSeasonSku(sku)
     ? estimateBlock({
         sku,
         priority: row.priority as ProductionPriority,
         length: row.episode_length as EpisodeLength,
+        video_tier: videoTier,
       })
     : null;
   return {
@@ -158,6 +209,7 @@ export function publicProduction(row: ProductionRow, extras: Record<string, unkn
     series_id: row.series_id,
     mode: row.mode,
     sku: row.sku,
+    video_tier: videoTier,
     priority: row.priority,
     episode_length: row.episode_length,
     notify: row.notify,
@@ -191,21 +243,27 @@ export async function createProductionRecord(
     priority: ProductionPriority;
     length: EpisodeLength;
     notify: string;
+    video_tier?: VideoTier;
   },
 ) {
-  if (!input.series.pilot_approved_at && input.sku !== 2) {
-    return { error: "New series start with a 2-episode pilot.", status: 400 as const };
-  }
   const { count } = await supabase
     .from("episodes")
     .select("id", { count: "exact", head: true })
     .eq("series_id", input.series.id);
   const range = nextEpisodeRange(count ?? 0, input.sku);
+  const videoTier = input.video_tier ?? "pro";
   const estimate = estimateBlock({
     sku: input.sku,
     priority: input.priority,
     length: input.length,
+    video_tier: videoTier,
   });
+  if (input.sku !== 2 && !input.series.pilot_approved_at) {
+    await supabase
+      .from("series")
+      .update({ pilot_approved_at: new Date().toISOString() })
+      .eq("id", input.series.id);
+  }
   const { data, error } = await supabase
     .from("productions")
     .insert({
@@ -215,6 +273,7 @@ export async function createProductionRecord(
       sku: String(input.sku),
       priority: input.priority,
       episode_length: input.length,
+      video_tier: videoTier,
       notify: input.notify,
       episode_start: range.start,
       episode_end: range.end,
@@ -232,23 +291,36 @@ export function parseProductionBody(body: Record<string, unknown>) {
   const priority = body.priority ?? "balanced";
   const length = body.episode_length ?? body.length ?? "60_90";
   const mode = body.mode === "studio" ? "studio" : "autopilot";
-  if (!isBlockSku(sku) && sku !== "topup") {
-    return { error: "sku must be 2|12|24|45|60|topup" };
+  const videoTier = body.video_tier ?? "pro";
+  if (!isBlockSku(sku) && sku !== "topup" && sku !== "credit") {
+    return { error: "sku must be 2|12|15|24|30|45|50|60|90|topup|credit" };
   }
-  if (sku !== "topup" && !isPriority(priority)) return { error: "priority must be fast|balanced|quality" };
-  if (sku !== "topup" && !isEpisodeLength(length)) {
-    return { error: "episode_length must be 30_45|60_90|120_180|900_1080" };
+  if (sku !== "topup" && sku !== "credit" && !isPriority(priority)) {
+    return { error: "priority must be fast|balanced|quality" };
+  }
+  if (sku !== "topup" && sku !== "credit" && !isEpisodeLength(length)) {
+    return { error: "episode_length must be 30_45|45_60|60_90|120_180|900_1080" };
+  }
+  if (sku !== "topup" && sku !== "credit" && !isVideoTier(videoTier)) {
+    return { error: "video_tier must be pro|catalog" };
   }
   return {
-    sku: sku as BlockSku | "topup",
+    sku: sku as BlockSku | "topup" | "credit",
     priority: priority as ProductionPriority,
     length: length as EpisodeLength,
+    video_tier: (isVideoTier(videoTier) ? videoTier : "pro") as VideoTier,
     mode: mode as "autopilot" | "studio",
     notify: String(body.notify ?? "in_app_email"),
     title: typeof body.title === "string" ? body.title : undefined,
     description: typeof body.description === "string" ? body.description : "",
     series_id: typeof body.series_id === "string" ? body.series_id : undefined,
     email: typeof body.email === "string" ? body.email : undefined,
+    amount: typeof body.amount === "number" ? body.amount : undefined,
+    // Uploaded at commission time. Bytes travel as base64 in the task payload,
+    // the same way actor seed images do, because only the runner can write R2.
+    cover_base64: typeof body.cover_base64 === "string" && body.cover_base64 ? body.cover_base64 : undefined,
+    cover_mime_type: typeof body.cover_mime_type === "string" ? body.cover_mime_type : undefined,
+    script_text: typeof body.script_text === "string" && body.script_text.trim() ? body.script_text : undefined,
   };
 }
 

@@ -1,8 +1,18 @@
+import { LENGTH_BUDGETS } from "../../drama-engine/types/pacing.ts";
 import { roundMoney } from "../ai/pricing.ts";
-import { estimateSeries, LENGTH_FACTOR, SEASON_PRICES_USD, type CatalogSku, type EpisodeLength } from "./skus.ts";
+import {
+  estimateSeries,
+  LENGTH_FACTOR,
+  PICTURE_FACTOR,
+  SEASON_PRICES_USD,
+  isVideoTier,
+  type CatalogSku,
+  type EpisodeLength,
+  type VideoTier,
+} from "./skus.ts";
 import type { SeasonSku } from "../domain.ts";
 
-export const BLOCK_SKUS = [2, 12, 24, 45, 60] as const;
+export const BLOCK_SKUS = [2, 12, 15, 24, 30, 45, 50, 60, 90] as const;
 export type BlockSku = (typeof BLOCK_SKUS)[number];
 export type ProductionPriority = "fast" | "balanced" | "quality";
 export type { EpisodeLength };
@@ -16,28 +26,26 @@ export const PRIORITY_RATES_USD: Record<ProductionPriority, number> = {
 
 export const LENGTH_LABEL: Record<EpisodeLength, string> = {
   "30_45": "30 to 45 sec",
-  "60_90": "60 to 90 sec",
-  "120_180": "2 to 3 min",
+  "45_60": "60 sec",
+  "60_90": "90 sec",
+  "120_180": "120 sec",
   "900_1080": "15 min",
 };
 
+/**
+ * Runtime we quote the buyer. Derived from what the planner actually shoots so the
+ * minutes on the order summary are the minutes that get delivered.
+ */
 export const SECONDS_PER_EPISODE: Record<EpisodeLength, number> = {
-  "30_45": 38,
-  "60_90": 75,
-  "120_180": 150,
-  "900_1080": 900,
-};
-
-/** Planner craft target (not the retail runtime estimate). */
-export const PLANNER_SECONDS: Record<EpisodeLength, number> = {
-  "30_45": 38,
-  "60_90": 60,
-  "120_180": 120,
-  "900_1080": 900,
+  "30_45": LENGTH_BUDGETS["30_45"].target_episode_seconds,
+  "45_60": LENGTH_BUDGETS["45_60"].target_episode_seconds,
+  "60_90": LENGTH_BUDGETS["60_90"].target_episode_seconds,
+  "120_180": LENGTH_BUDGETS["120_180"].target_episode_seconds,
+  "900_1080": LENGTH_BUDGETS["900_1080"].target_episode_seconds,
 };
 
 export function isEpisodeLength(value: unknown): value is EpisodeLength {
-  return value === "30_45" || value === "60_90" || value === "120_180" || value === "900_1080";
+  return value === "30_45" || value === "45_60" || value === "60_90" || value === "120_180" || value === "900_1080";
 }
 
 export function isLongFormLength(length: EpisodeLength | null | undefined): boolean {
@@ -65,19 +73,27 @@ export function retailForBlock(
   sku: BlockSku,
   priority: ProductionPriority = "balanced",
   length: EpisodeLength = "60_90",
+  videoTier: VideoTier = "pro",
 ): number {
-  const raw = PRIORITY_RATES_USD[priority] * LENGTH_FACTOR[length] * sku * volumeDiscount(sku);
+  const raw =
+    PRIORITY_RATES_USD[priority] *
+    LENGTH_FACTOR[length] *
+    PICTURE_FACTOR[videoTier] *
+    sku *
+    volumeDiscount(sku);
   return Math.round(raw);
 }
 
 export function estimateBlock(input: {
-  sku: BlockSku | "topup";
+  sku: BlockSku | "topup" | "credit";
   priority?: ProductionPriority;
   length?: EpisodeLength;
+  video_tier?: VideoTier;
+  amount?: number;
 }) {
-  if (input.sku === "topup") {
+  if (input.sku === "topup" || input.sku === "credit") {
     return {
-      sku: "topup" as const,
+      sku: input.sku,
       episode_count: 0,
       priority: input.priority ?? "balanced",
       length: input.length ?? "60_90",
@@ -85,14 +101,16 @@ export function estimateBlock(input: {
       run_minutes: 0,
       estimated_min: 0,
       estimated_max: 0,
-      retail: SEASON_PRICES_USD.topup,
+      retail: input.amount && input.amount > 0 ? Math.round(input.amount) : SEASON_PRICES_USD.topup,
+      video_tier: input.video_tier ?? "pro",
     };
   }
   const sku = input.sku;
   const priority = input.priority ?? "balanced";
   const length = input.length ?? "60_90";
-  const cogs = estimateSeries({ episode_count: sku, length });
-  const retail = retailForBlock(sku, priority, length);
+  const videoTier = input.video_tier ?? "pro";
+  const cogs = estimateSeries({ episode_count: sku, length, video_tier: videoTier });
+  const retail = retailForBlock(sku, priority, length, videoTier);
   const finished = sku * SECONDS_PER_EPISODE[length];
   const runMinutes = Math.round((sku * 18) / Math.min(sku, 8));
   return {
@@ -108,6 +126,7 @@ export function estimateBlock(input: {
     estimated_min: cogs.estimated_min,
     estimated_max: roundMoney(cogs.estimated_max),
     retail,
+    video_tier: videoTier,
     is_pilot: sku === 2,
   };
 }
@@ -134,4 +153,5 @@ export function uiPhaseForStatus(status: string): string {
   return "preparing";
 }
 
-export type { CatalogSku, SeasonSku };
+export type { CatalogSku, SeasonSku, VideoTier };
+export { PICTURE_FACTOR, isVideoTier };

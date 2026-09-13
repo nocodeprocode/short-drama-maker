@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePageContext } from "vike-react/usePageContext";
-import { FilmStrip, House, Plus, Users } from "@phosphor-icons/react";
+import { FilmStrip, House, Plus, Queue, Users, WarningCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { AttentionBell, AttentionPanel } from "@/components/drama/attention-panel.tsx";
+import { BrandMark } from "@/components/drama/brand-mark.tsx";
 import { Skeleton } from "@/components/drama/skeleton.tsx";
+import { LEGAL_ENTITY } from "@/legal/entity.ts";
 import { studio, type Account, type AttentionActivity, type AttentionItem } from "@/lib/api.ts";
 import { readCache, writeCache } from "@/lib/cache.ts";
 import { currentSession, signOut } from "@/lib/session.ts";
@@ -13,6 +15,8 @@ import { cx } from "@/utils/cx";
 const NAV = [
   { href: "/", label: "Home", icon: House },
   { href: "/series", label: "Shows", icon: FilmStrip },
+  { href: "/productions", label: "Jobs", icon: Queue },
+  { href: "/needs", label: "Needs you", icon: WarningCircle },
   { href: "/actors", label: "Actors", icon: Users },
 ];
 
@@ -77,13 +81,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const showSlots = (me?.slots_used ?? 0) >= 2;
 
   return (
-    <div className="min-h-dvh bg-secondary_alt lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
+    <div className="app-shell flex h-dvh min-h-dvh flex-col bg-secondary lg:grid lg:h-auto lg:min-h-dvh lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="hidden border-r border-secondary bg-primary lg:sticky lg:top-0 lg:flex lg:h-dvh lg:flex-col lg:p-4">
         <div className="mb-5 flex items-center gap-2.5 px-2">
-          <div className="grid size-8 place-items-center rounded-lg bg-linear-to-b from-brand-500 to-brand-700 text-sm font-extrabold text-white shadow-xs">
-            DS
-          </div>
-          <b className="text-md tracking-tight">Drama Space</b>
+          <BrandMark size="sm" />
           <div className="ml-auto">
             <AttentionBell
               count={attention.length}
@@ -95,7 +96,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <Button href="/new" color="primary" size="lg" className="w-full" iconLeading={Plus}>
-          New show
+          New run
         </Button>
         <nav className="mt-5 flex flex-col gap-0.5" aria-label="Primary">
           {NAV.map((item) => (
@@ -126,14 +127,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
           ) : null}
           <a href="/account" className="flex items-center gap-2.5 rounded-lg p-2 hover:bg-primary_hover">
-            <span className="grid size-9 place-items-center rounded-full bg-brand-50 text-sm font-semibold text-brand-700">
-              {(me?.display_name || "DS").slice(0, 2).toUpperCase()}
+            <span className="grid size-9 place-items-center rounded-full bg-brand-solid text-sm font-semibold text-white">
+              {(me?.display_name || "TH").slice(0, 2).toUpperCase()}
             </span>
             <span className="min-w-0 grow">
               {me ? (
                 <>
                   <span className="block text-sm font-semibold">{me.display_name || "Account"}</span>
-                  <span className="block text-xs text-tertiary">Drama Space</span>
+                  <span className="block text-xs text-tertiary">
+                    {typeof me.credit_balance === "number" ? `Wallet $${Math.round(me.credit_balance)}` : LEGAL_ENTITY.product_name}
+                  </span>
                 </>
               ) : (
                 <>
@@ -145,41 +148,58 @@ export function AppShell({ children }: { children: ReactNode }) {
           </a>
         </div>
       </aside>
-      <div className="flex min-w-0 min-h-0 flex-col">
-        <div className="relative flex min-w-0 flex-1 flex-col">
-          {children}
-          <div className="fixed right-4 bottom-20 z-30 lg:hidden">
+      <div className="app-column flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="app-topbar lg:hidden">
+          <BrandMark size="sm" />
+          <div className="ml-auto flex items-center gap-0.5">
+            <a
+              href="/new"
+              aria-label="New run"
+              className="grid size-10 place-items-center rounded-full text-brand-secondary"
+            >
+              <Plus size={22} weight="bold" />
+            </a>
             <AttentionBell
+              plain
               count={attention.length}
               onToggle={() => {
                 setDismissed(false);
                 setDeskOpen((value) => !value);
               }}
             />
+            <a href="/account" aria-label="Account" className="grid size-10 place-items-center">
+              <span className="grid size-8 place-items-center rounded-full bg-brand-solid text-[11px] font-semibold text-white">
+                {(me?.display_name || "TH").slice(0, 2).toUpperCase()}
+              </span>
+            </a>
           </div>
-          <nav className="sticky bottom-0 grid grid-cols-5 border-t border-secondary bg-primary px-1 pt-2 pb-3 lg:hidden" aria-label="Mobile">
-            {[
-              { href: "/", label: "Home" },
-              { href: "/series", label: "Shows" },
-              { href: "/actors", label: "Actors" },
-              { href: "/new", label: "New" },
-              { href: "/account", label: "Account" },
-            ].map((item) => (
+        </header>
+        <div className="app-stage relative flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+        <nav className="app-tabbar lg:hidden" aria-label="Primary">
+          {NAV.map((item) => {
+            const current = item.href === "/" ? path === "/" : path.startsWith(item.href);
+            const Icon = item.icon;
+            const badge = item.href === "/needs" ? attention.length : 0;
+            return (
               <a
                 key={item.href}
                 href={item.href}
-                className={cx(
-                  "py-1.5 text-center text-[11px] font-medium",
-                  (item.href === "/" ? path === "/" : path.startsWith(item.href))
-                    ? "font-semibold text-brand-700"
-                    : "text-tertiary",
-                )}
+                aria-current={current ? "page" : undefined}
+                className={cx("app-tab", current ? "text-brand-secondary" : "text-tertiary")}
               >
-                {item.label}
+                <span className="relative">
+                  <Icon size={22} weight={current ? "fill" : "regular"} />
+                  {badge > 0 ? (
+                    <span className="absolute -top-1.5 -right-2 grid min-w-[16px] place-items-center rounded-full bg-warning-500 px-1 text-[9px] font-bold text-white">
+                      {badge}
+                    </span>
+                  ) : null}
+                </span>
+                <span>{item.href === "/needs" ? "Needs" : item.label}</span>
               </a>
-            ))}
-          </nav>
-        </div>
+            );
+          })}
+        </nav>
       </div>
       <AttentionPanel
         items={attention}
@@ -218,10 +238,10 @@ function NavItem({
       aria-current={current ? "page" : undefined}
       className={cx(
         "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm font-medium",
-        current ? "bg-brand-50 font-semibold text-brand-800" : "text-secondary hover:bg-primary_hover",
+        current ? "bg-secondary font-semibold text-primary" : "text-secondary hover:bg-primary_hover",
       )}
     >
-      <Icon size={18} weight={current ? "fill" : "regular"} className={current ? "text-brand-600" : "text-quaternary"} />
+      <Icon size={18} weight={current ? "fill" : "regular"} className={current ? "text-brand-secondary" : "text-quaternary"} />
       <span className="grow">{label}</span>
     </a>
   );
@@ -239,21 +259,25 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="overflow-visible border-b border-secondary bg-primary px-4 py-6 sm:px-8">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-[220px] grow">
-          {eyebrow ? <div className="text-sm font-semibold text-tertiary">{eyebrow}</div> : null}
-          <h1 className="pt-1 text-display-sm leading-tight font-semibold tracking-tight">{title}</h1>
-          {subtitle ? <div className="mt-1 text-md text-tertiary">{subtitle}</div> : null}
+    <header className="overflow-visible border-b border-secondary bg-primary px-4 py-4 lg:px-8 lg:py-6">
+      <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-start">
+        <div className="min-w-0 grow lg:min-w-[220px]">
+          {eyebrow ? <div className="text-xs font-semibold text-tertiary lg:text-sm">{eyebrow}</div> : null}
+          <h1 className="pt-0.5 font-display text-2xl leading-tight font-semibold tracking-tight lg:text-display-sm">{title}</h1>
+          {subtitle ? <div className="mt-1 text-sm text-tertiary lg:text-md">{subtitle}</div> : null}
         </div>
-        {actions}
+        {actions ? (
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center [&>*]:w-full sm:[&>*]:w-auto">
+            {actions}
+          </div>
+        ) : null}
       </div>
     </header>
   );
 }
 
 export function PageBody({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("mx-auto w-full max-w-[1320px] px-4 py-8 sm:px-8", className)}>{children}</div>;
+  return <div className={cx("mx-auto w-full max-w-[1320px] px-4 py-5 lg:px-8 lg:py-8", className)}>{children}</div>;
 }
 
 export async function logout() {

@@ -10,7 +10,9 @@ import {
   captionForceStyle,
   captionOverlayFilter,
   clipFadeFilters,
+  clipJoinFor,
   encodePortraitSlate,
+  xfadeTransitionFor,
   heardBodyForShot,
   shouldKeepTakeAudio,
   silentWav,
@@ -92,6 +94,19 @@ describe("ffmpeg mix", () => {
         16,
       ),
     ).toEqual([14000]);
+  });
+
+  it("never uses a white flash on joins", () => {
+    expect(xfadeTransitionFor("fadewhite")).toBe("fadeblack");
+    expect(xfadeTransitionFor("fadeblack")).toBe("fadeblack");
+    expect(xfadeTransitionFor("cut")).toBe("fade");
+    expect(xfadeTransitionFor("dissolve")).toBe("fade");
+    expect(clipJoinFor({ transition_in: "fade", transition_style: "fadewhite", transition_seconds: 0.22 })).toEqual({
+      style: "fadeblack",
+      seconds: 0.12,
+    });
+    expect(clipJoinFor({ transition_in: "fade", transition_style: "cut" }).style).toBe("cut");
+    expect(String(xfadeTransitionFor)).not.toMatch(/return ["']fadewhite["']/);
   });
 
   it("fades scene-take joins instead of a hard cut", () => {

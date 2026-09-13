@@ -17,8 +17,14 @@ export type LegalEntity = {
 
 const UNSET = "";
 
+/**
+ * Fill every required field before a public launch. Draft banners on /legal/*
+ * drop when `isLegalIdentityComplete()` is true. Live Stripe stays 503 until
+ * those fields are filled AND the API secret `LEGAL_ENTITY_COMPLETE=1` is set.
+ * Do not invent a company name, address, or emails here.
+ */
 export const LEGAL_ENTITY: LegalEntity = {
-  product_name: "Drama Space",
+  product_name: "Takehaus",
   legal_entity_name: UNSET,
   legal_form: UNSET,
   registered_address: UNSET,

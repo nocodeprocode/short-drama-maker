@@ -9,7 +9,7 @@ import { pinLocationToBible } from "../pipeline/location-ref.ts";
 import { alignVoicePrompt } from "./voice-sex.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 import { validateBibleShape, validateBlockScenesShape, validateOutlineShape, validatePlanShape } from "./plan-schema.ts";
-import { dramaHooks, ledgerForEpisode } from "../../drama-engine/index.ts";
+import { DROP_IN_RULES, dramaHooks, ledgerForEpisode } from "../../drama-engine/index.ts";
 
 type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
@@ -122,10 +122,16 @@ function pinPlanLocations(plan: EpisodePlan, locations: string[] | undefined): E
 export function createOpenRouterLlm(): LLMEngine {
   return {
     async analyzeStory(input) {
+      const cast = (input.required_cast ?? []).filter((row) => row.name.trim());
+      const castLine = cast.length
+        ? `\nAlready cast — use these names verbatim as named speaking roles, and write the rest around them:\n${cast
+            .map((row) => `- ${row.name}${row.note?.trim() ? ` — ${row.note.trim()}` : ""}`)
+            .join("\n")}\n`
+        : "";
       const base = `Build a story bible for a short vertical drama.
 Title: ${input.title}
 Idea: ${input.idea}
-
+${castLine}
 JSON shape:
 {
   "title": string,
@@ -135,7 +141,7 @@ JSON shape:
     "description": string,
     "appearance": {
       "age_look": string,
-      "ethnicity_notes": "unspecified fictional",
+      "ethnicity_notes": "locked look: olive / pale-gold / cool brown / warm bronze — never unspecified or fictional-generic",
       "hair": string,
       "face": "specific phone-close beauty: eyes, bone, mouth, skin — a face the viewer wants to stay with",
       "body": string,
@@ -150,6 +156,56 @@ JSON shape:
   "visual_style": { "format": "9:16", "lighting": string, "camera": string }
 }`;
       return assertBible(validateBibleShape(await completeJson<unknown>(dramaHooks.enrichBiblePrompt(base, input))));
+    },
+
+    async segmentScript(input) {
+      const prompt = `Split an uploaded screenplay into exactly ${input.episodeCount} vertical episodes.
+
+This writer's script is the story. You are cutting it into episodes, not rewriting it.
+
+Rules:
+- Exactly ${input.episodeCount} entries, episode_number 1 to ${input.episodeCount}, in the script's own order.
+- Cover the whole script. Episode ${input.episodeCount} contains the script's ending.
+- Every episode ends on the strongest unresolved moment available at that cut point. Choose the cut, do not invent a new twist.
+- source_beats: 3 to 6 short beats for that episode, taken from the script's actual events, in order.
+- source_dialogue: up to 4 lines worth preserving close to the writer's wording. Translate to natural English if the script is not English. Omit if the episode has no standout line.
+- hook: one sentence naming what opens the episode. conflict: one sentence naming what is fought over.
+- cliffhanger: the unresolved moment this episode ends on.
+- Use only these character names: ${input.bible.characters.map((row) => row.name).join(", ")}. Map the script's characters onto them.
+- Every character is a fictional adult. No real people, no minors, no sexual content.
+
+JSON shape:
+{ "episode_structure": [{ "episode_number": number, "title": string, "hook": string, "conflict": string, "cliffhanger": string, "source_beats": string[], "source_dialogue": string[] }] }
+
+SCRIPT:
+${input.script}`;
+      const body = await completeJson<{ episode_structure?: unknown }>(prompt);
+      const rows = Array.isArray(body.episode_structure) ? body.episode_structure : [];
+      const structure = rows
+        .map((row, index) => {
+          const value = (row ?? {}) as Record<string, unknown>;
+          const strings = (raw: unknown, cap: number) =>
+            Array.isArray(raw)
+              ? raw.map((item) => String(item ?? "").trim()).filter(Boolean).slice(0, cap)
+              : undefined;
+          return {
+            episode_number: Number(value.episode_number) || index + 1,
+            title: String(value.title ?? `Episode ${index + 1}`).slice(0, 80),
+            hook: String(value.hook ?? "").slice(0, 400),
+            conflict: String(value.conflict ?? "").slice(0, 400),
+            cliffhanger: String(value.cliffhanger ?? "").slice(0, 400) || undefined,
+            source_beats: strings(value.source_beats, 6),
+            source_dialogue: strings(value.source_dialogue, 4),
+          };
+        })
+        .filter((row) => row.hook || row.conflict || row.source_beats?.length)
+        .sort((left, right) => left.episode_number - right.episode_number)
+        .slice(0, input.episodeCount)
+        .map((row, index) => ({ ...row, episode_number: index + 1 }));
+      if (structure.length < Math.min(2, input.episodeCount)) {
+        throw new Error("Script segmentation returned no usable episodes");
+      }
+      return structure;
     },
 
     async writeEpisode(input) {
@@ -192,23 +248,36 @@ Return the same JSON shape with edit_mode, audio_role, function, eyeline, blocki
 
     async polishSceneDialogue(input) {
       const out = await completeJson<{ takes?: Array<{ index?: number; scene_script?: string }> }>(
-        `You are the dialogue writer on a vertical short drama. Rewrite so it sounds like people talking on a phone show — casual, short, implied. Not a Hollywood script. Not a lawyer.
+        `You are the dialogue writer on a vertical short drama. Rewrite so it sounds like two people in a room who already know the fight — casual, short, implied, charged. Not a Hollywood script. Not a lawyer. Not an article. Not a closing statement.
 
 KILL these on sight:
 - Formal talk: "It is not something that I can do." "There are reasons why I cannot go." "Do not bring me to the hospital."
 - Refusal loops: Don't take me. / I have to take you. / No, don't. / There are reasons.
+- Article voice: "This is the envelope." "This is pack law." "This constitutes." "I am informing you." "The aforementioned." "I hereby." "Please be advised."
+- Lecture lore: "That was never a letter." "A claim." "Signed by my hand." "The black one, red wax." "You broke a seal that wasn't yours." "Under pack law."
+- Document English: "Then this document constitutes a payment toward the outstanding balance."
 - Saying the other person's name every line. "Name, you don't get this."
 - Anyone saying "says" or reading a label.
 
 WRITE like this:
 - Contractions. I can't go there. You're burning up. Not that place. If they see me I'm done.
-- Imply the reason once. The viewer fills it in.
+- Concrete spoken accusation: "Are you trying to bribe me?" not a definition of the object.
+- Imply the reason and the mechanism once. The viewer fills it in. Do not lecture pack law / writ / claim nouns.
+  BAD: That was never a letter. / A claim. / Signed by my hand.
+  GOOD: You opened it. / So what is it? / Don't play dumb.
+  BAD: This is pack law. / You broke a seal that wasn't yours.
+  GOOD: You knew I'd open it. / Then why pay my sister?
 - One sentence, under 12 words, easy English, no slang, no idiom.
+- Same mouth does not wait. Merge two thoughts from one person into one breath. Never two isolated lines with a pause.
 - Every line gives or takes something. Answer by deflecting, lying, or flipping status.
 - Name someone at most once per take.
+- Never name-drop an off-screen person the viewer has not met on camera this episode. Prefer "your sister" / "the woman in the doorway" / "the one who sent the envelope" over a new proper name. If they must exist, put them in the doorway.
+${DROP_IN_RULES}
 - Hidden identity: one line that means one thing to her and another to us.
+- One private tell per episode, under a second. Never write flashing eyes, gold-eye ECU, fangs, or a transform as a look. The rest is a real room.
 - Take 1 first cue is the hook. Last cue of the last take is an unpaid question or a consequence starting.
 - Keep the SAME speakers in the SAME order, including a third person. Keep 5–8 cues; do not drop below 5 if the take already had 5. Keep parentheticals, especially enters / leaves / tells.
+- Do not open a take by repeating the previous take's last spoken line.
 - Keep the story mechanism. Make the talk clearer, not different.
 - Format each scene_script as lines "NAME: text" joined by \\n. That format is for the engine only. The video model never sees those labels.
 Bible: ${JSON.stringify({ title: input.bible.title, logline: input.bible.logline, characters: input.bible.characters.map((row) => ({ name: row.name, description: row.description })) })}

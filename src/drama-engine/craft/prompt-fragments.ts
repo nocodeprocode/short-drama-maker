@@ -4,21 +4,25 @@ import type { GenrePlaybook } from "../types/genre.ts";
 import { blockingPrompt, peopleInTake, sceneBlockingOf, type LooseBlocking } from "../types/continuity.ts";
 import { placeKind, placeLockClause, placeNoun } from "./place.ts";
 import { COVERAGE_CLAUSE, JOIN_CUT_CLAUSE } from "./coverage.ts";
-import { seedanceSpeechBlock, SHORT_DRAMA_SCORE } from "./seedance-speech.ts";
+import { CUT_RULES, type CutFraming } from "../types/cut.ts";
+import { SEEDANCE_SPEECH_RULES, SHORT_DRAMA_SCORE } from "./seedance-speech.ts";
 import { sceneTakeShotList, shotListPrompt } from "./shot-list.ts";
+import { DROP_IN_RULES } from "../types/drop-in.ts";
+import { PHYSICS_RULES } from "../types/physics.ts";
 import { TALK_RULES } from "../types/talk.ts";
+import { stripIrisPhrases, stripPowerLanguage, wherePromptClause, WHERE_RULES } from "../types/where.ts";
 
 export const LOCKED_TAKE_CLAUSE =
   "single continuous take, no cuts, no smash cuts, no shot changes, locked-off or one simple move";
 
 export const NO_LENS_CLAUSE =
-  "never look into the lens except one private tell: a half-second glance past the camera, then eyes back to the partner. No selfie, no vlog, no fourth-wall grin";
+  "Never look into the lens except one half-second private glance past the camera. No selfie, no vlog, no fourth-wall grin.";
 
 export const MODEST_SHOT_CLAUSE =
   "Clothes stay on. Opaque contemporary wardrobe — a dress, a suit, a blouse, trousers. No extra people, no crowd, no unnamed body.";
 
 export const UAE_MEDIA_CLAUSE =
-  "DECENCY. Clothes stay on. No drugs. Adults only. A normal short drama is fine: close faces, a charged almost-kiss, a glass on the table, a fight in words. Do not take clothes off. No weapons and no crime in progress. Animals only inside a closed carrier or heard off-screen. No harm to animals.";
+  "DECENCY. Clothes stay on. No drugs. Adults only. No weapons, no crime in progress. Close faces and a fight in words are fine.";
 
 export const SCENE_TAKE_BODY_CLAUSE = COVERAGE_CLAUSE;
 
@@ -27,43 +31,58 @@ export function sceneTakeBodyClause(_coverage?: string | null): string {
 }
 
 export const SCENE_TAKE_HANDOFF_CLAUSE =
-  "HANDOFF. Hard cuts only between numbered shots. Each cut CHANGES the camera: closer, slightly behind one person, then slightly behind the other, or both faces stacked near the lens. No dissolves, no morphs. Shot 1 may open on both upper bodies. Every later take JOINS closer — never reopen on a wide master. A close-up HOLDS for the whole line — two seconds minimum — never a one-frame flash back to the master. A motivated slow push-in on heat is legal. Same place, same key light, same ground. NO DEAD AIR: the next line starts the moment the last one lands. Never speak a character name unless it is inside the braces. Never speak a label.";
+  "HANDOFF. Hard cuts only, no dissolves. NO DEAD AIR: the next line starts the moment the last one lands. Each {brace} is spoken exactly once, in its numbered shot. Never replay a finished line, never speak a name that is not inside the braces, never speak a label.";
 
 export const SCENE_TAKE_PHYSICS_CLAUSE =
-  "PHYSICS. Bodies obey gravity and the ground. Everyone is exactly where STAGING puts them — on the ground, kneeling, seated, leaning against a wall, or standing — and stays there in every shot. A person on the ground is low in frame with the ground visibly under them; a standing person has feet on the ground. No torso merges with a wall or a fixture; nothing floats; nobody sits on a surface that is not a seat. Walls, ground, and fixtures keep their size and place; a surface never stretches, shrinks, or becomes a different object. The prop rests where STAGING says with its base flat.";
+  "PHYSICS. The room does not move: same walls, ground, fixtures and key light in every shot, each keeping its size and place. Everyone stays exactly where STAGING puts them. Feet on the ground, nothing floats, no torso merges with furniture. The prop rests where STAGING says, in its locked state.";
 
 export const SCENE_TAKE_PROXIMITY_CLAUSE =
-  "PROXIMITY. Short-drama staging is close. The two leads are within arm's reach, faces a forearm apart, eyes locked; the space between them is charged, not polite. A third person keeps one step back. Posture carries status: the one with power is still and square; the one cornered grips, leans, or lifts the chin.";
+  "PROXIMITY. Both people are in the room, within arm's reach when they argue, but only one relevant face fills the frame. A third person keeps one step back. Never four faces. Posture carries status: the one with power is still and square; the one cornered grips or leans.";
 
 export const CAST_LOOK_CLAUSE =
-  "CAST LOOK. Short drama is sold on faces. Every named adult is strikingly beautiful in a phone-close way: clear skin, defined features, eyes you want to stay with. The viewer should think she is beautiful, he is beautiful. Write specific beauty — eyes, bone, mouth, hair — never average, plain, or tired. Fictional adults only. Do not copy a public figure. Beauty is the face and the presence. Clothes stay modest and on.";
+  "CAST LOOK. Every named adult is strikingly beautiful: clear skin, defined features. FACE LOCK: same skin, hair and bone as the still — do not recast for beauty, do not change race or hair. Fictional adults, no public figure. Clothes modest and on.";
 
 export const FACE_DISTANCE_CLAUSE =
-  "FACE DISTANCE. You are never too far from the scene. Faces stay large enough to feel personal — FaceTime or closer. Most shots are faces. A step back still keeps both upper bodies filling the frame. If you cannot read the eyes, you are too far. The audience is here to be close to beautiful people.";
+  "FACE DISTANCE. Default talking coverage is chest-up MCU — head and a portion of the chest. Close-ups are for drama and tension, not the majority. Standing or walking is cowboy (head-to-hips) so we see the walk. FORBIDDEN as the default: half a face shoved into the lens, extreme profile ECU pairs, stacked two-face frames, a split 9:16 page, a huge foreground cheek. Faces stay readable. If we cannot see who is speaking, the take fails.";
+
+export const LIGHT_READ_CLAUSE =
+  "LIGHT. Moody is legal, but every speaking face keeps a key light and readable skin. Never a face lost in shadow while a doorway glows, never a backlit silhouette.";
+
+export const NO_SPLIT_CLAUSE =
+  "ONE FRAME. One relevant person fills the frame. FORBIDDEN: stacking two faces; splitting the 9:16 page into two simultaneous shots; a huge foreground cheek framing someone in a doorway; two profiles jammed into the lens.";
 
 export const MICRO_DRAMA_REGISTER_CLAUSE =
-  "REGISTER. Asian-style vertical short drama for a For You page. About a one-million-dollar show — not prestige film, not a billion-dollar Hollywood look, not an orchestra. " +
-  `${FACE_DISTANCE_CLAUSE} ` +
-  "Many face shots. Dirty singles, held close-ups, stacked faces, OTS on a beautiful face. Emotions land in a beat: a freeze, a swallow, one eye, a breath — then cut. Do not hold a long expression. Cycle: both upper bodies FaceTime-close, over-the-shoulder, dirty single, held close-up, one-second ECU, reverse, stacked faces, a half-step that still keeps the faces large, punch in on a doorway. Camp is one funny face plus a whoosh, under a second, then back to the fight. Cheap thriller light, not a cinematic grade. Faces stay flattering: catchlight in the eyes, skin that reads clean on a phone.";
+  "REGISTER. Vertical short drama for a For You page — a one-million-dollar show, not prestige film. " +
+  "Emotions land in a beat: a freeze, a swallow, a breath, then back to the talk. Do not hold a long expression. " +
+  "Cheap thriller light with a readable key on faces, not a cinematic grade.";
 
-/** Official Seedance speech. Never dump NAME: lines — the model will speak the label. */
+/**
+ * Speech rules only. The SHOT LIST is the sole source of {braces}.
+ * Dumping the full script here AND again per shot makes Seedance say each line twice.
+ */
 export function speechLockClause(
-  script: string,
-  sides?: { camera_left?: string | null; camera_right?: string | null } | null,
+  _script?: string,
+  _sides?: { camera_left?: string | null; camera_right?: string | null } | null,
 ): string {
-  return seedanceSpeechBlock(script, sides);
+  return (
+    `SPEECH. Native speech. ${SEEDANCE_SPEECH_RULES} ` +
+    `SHOT LIST owns the words. Each {brace} is spoken exactly once, only during its numbered shot. ` +
+    `Never replay a line from an earlier shot. Never read this section aloud. ` +
+    `SAME BREATH: two thoughts from one mouth are one brace — no wait, no avatar pause. Cut closer on the second thought while they are still talking.`
+  );
 }
 
-export function roomGeometryClause(input: { location?: string | null; description?: string | null; geometry?: string | null }): string | null {
+export function roomGeometryClause(input: { location?: string | null; description?: string | null; geometry?: string | null; doorSide?: string | null }): string | null {
   const parts = [input.geometry?.trim(), input.description?.trim()].filter((row): row is string => Boolean(row));
-  if (!parts.length) return null;
+  if (!parts.length && !input.doorSide) return null;
   const name = (input.location ?? "this place").split(" — ")[0];
   const noun = placeNoun(input.location);
   const outdoor = placeKind(input.location) === "outdoor";
   const extras = outdoor
     ? "Do not add a wall, curtain, or piece of furniture that is not in the plates."
     : "The camera never shows a wall or object that is not in the plates.";
-  return `SET LOCK for ${name}: ${parts.join(". ")}. The attached plates are the geography of this ${noun}: every wall, opening, ground plane, and fixture keeps its place and size in every shot and every cut. ${extras} Nothing new is built between shots; nothing changes into something else.`;
+  const door = input.doorSide ? ` The door stays ${input.doorSide} in every shot.` : "";
+  return `SET LOCK for ${name}: ${parts.join(". ")}${door}. The attached plates are the geography of this ${noun}: every wall, opening, ground plane, and fixture keeps its place and size in every shot and every cut. ${extras} Nothing new is built between shots; nothing changes into something else.`;
 }
 
 export function speakersFromSceneScript(script?: string | null): string[] {
@@ -123,9 +142,33 @@ export function peopleOnSceneTake(input: {
   });
 }
 
+export type IdentityAppearance = {
+  ethnicity_notes?: string | null;
+  hair?: string | null;
+  face?: string | null;
+  age_look?: string | null;
+};
+
+/** True when the bible failed to lock a real look. */
+export function isGenericEthnicity(notes: string | null | undefined): boolean {
+  const text = (notes ?? "").trim();
+  if (!text) return true;
+  return /\b(unspecified|fictional-generic|not specified|any race|race.?neutral)\b/i.test(text) || /^fictional$/i.test(text);
+}
+
 /** Face lock for Seedance. Never `NAME:` — that colon pattern makes the model say the name. */
-export function identityLockLine(name: string): string {
-  return `Keep ${name}'s locked adult face and age from their frontal still. Do not make them older or greyer.`;
+export function identityLockLine(name: string, appearance?: IdentityAppearance | null): string {
+  const bits: string[] = [];
+  const skin = appearance?.ethnicity_notes?.trim();
+  if (skin && !isGenericEthnicity(skin)) bits.push(skin);
+  const hair = appearance?.hair?.trim();
+  if (hair) bits.push(`${hair} hair`);
+  // Eye colour is carried by the still. Naming it here makes the model paint it.
+  const face = stripIrisPhrases(stripPowerLanguage(appearance?.face ?? "")).trim();
+  if (face && !/\b(average|plain|ordinary|tired)\b/i.test(face)) bits.push(face);
+  const age = appearance?.age_look?.trim();
+  const look = bits.length ? ` Locked look: ${bits.join(", ")}${age ? `; age ${age}` : ""}.` : "";
+  return `Keep ${name}'s locked adult face and age from their frontal still.${look} Do not change race, skin tone, or hair. The still is the only legal face. Do not make them older or greyer.`;
 }
 
 export const EMPTY_ROOM_CLAUSE =
@@ -249,20 +292,21 @@ Rules you must follow:
 Rules you must follow:
 - Every character is fictional and 18+ looking. Never use a real person's name or likeness.
 - Episode is ${budget.duration_sum_min}–${budget.duration_sum_max}s (~${budget.target_episode_seconds}s). ${budget.min_shots}–${budget.max_shots} CONTINUOUS SCENE TAKES, ${budget.min_shot_s}–${budget.max_shot_s}s each — use the model's full length. One locked room for the whole episode.
-- edit_mode=scene_take. scene_script is a REAL conversation: people answer each other, name the mechanism, interrupt, press. 5–8 cues per take. Native speech. Each take must fit ${budget.max_shot_s}s (~${Math.floor((budget.max_shot_s - 0.6) * 2.8)} spoken words). Overflow goes to the next take — never let a line get cut off. FAIL a take with fewer than 5 cues. This is not a trailer.
+- edit_mode=scene_take. scene_script is a REAL conversation: people answer each other, imply the mechanism (do not lecture it), interrupt, press. 5–8 cues per take. Native speech. Each take must fit ${budget.max_shot_s}s (~${Math.floor((budget.max_shot_s - 0.6) * 2.8)} spoken words). Overflow goes to the next take — never let a line get cut off. FAIL a take with fewer than 5 cues. This is not a trailer.
 - ${TALK_RULES}
 - Every cue is one sentence, under 12 words. Every line gives something or takes something. Concrete numbers once, never demanded. The signature line is the put-down that reverses status.
 - Vertical opposition: name who holds the upper frame in blocking.upper_frame (the one with power stands; the other sits lower or leans in). Power reads top to bottom in 9:16.
-- Same location, same camera-left and camera-right, same table, same key light. People do not swap sides. Name the locked prop and keep its shape.
+- Same location, same camera-left and camera-right, same table, same key light. People do not swap sides. Lock the door to one screen side (default camera-right) and repeat it. Name the locked prop and its STATE (sealed / broken / open). When the line says the seal is broken, the still is the broken one.
 - Spoken hook in the first 3 seconds. Image and line must clash. Cut exposition. No recap, no goodbye, no walking to a door, no establishing wide.
 - 4–6 beats (a change in power, knowledge, or presence). Nothing resolves except the season finale.
 - End on a CPI moment: a consequence starting, a gut punch, or an unanswerable question. Never end on someone leaving. Last line ≠ first line.
-- Each take is generated as 3–4 numbered shots inside one clip, and those shots MUST change camera: a FaceTime-close 3/4 of both faces, over-the-shoulder behind one person, a dirty single, a held close-up, the reverse, or both faces stacked close to the lens. Never write four shots from the same side-profile. Never write a frame so wide the faces shrink. Write the sharpest line mid-take, not first. Put one reaction beat in parentheses inside a cue, e.g. "NAME: (freezes, eyes wet) Say it again."
-- Register: vertical micro drama. Heightened, sincere, a little campy. Many face shots. Never too far from the people — FaceTime-close or closer, so the viewer stays with a beautiful face. Emotions land big on the face. Status is visible: who owns the space, who is cornered, who has to look up. The leads stand close — arm's reach, faces a forearm apart, tension in the gap.
+- Each take is generated as 3–4 numbered shots inside one clip, and those shots MUST change size or subject. ${CUT_RULES} DEFAULT talking size is chest-up MCU. Close-ups are for heat only. Standing or walking is cowboy (head-to-hips). An entrance is a full-page shot of the person coming through the door — never stay on a seated cheek looking at the door. Prefer two faces in the room; a third stays one step back; never four faces. FORBIDDEN: the same size on the same person twice in a row; stacked two-face frames, a split 9:16 page, half-face ECU pairs, a huge foreground cheek. Write the sharpest line mid-take, not first. Put one reaction beat in parentheses inside a cue, e.g. "NAME: (freezes, eyes wet) Say it again."
+- Register: vertical micro drama. Heightened, sincere, a little campy. Real film coverage mixed in. Faces stay readable under a key light — no silhouette in a glowing doorway. Status is visible: boss and assistant must look different (wardrobe, hair, body). The leads stand close — arm's reach when they fight — but the camera shows one relevant person at a time.
 - ${CAST_LOOK_CLAUSE}
 - ${FACE_DISTANCE_CLAUSE}
-- Who is in the room is a ledger. A new character must ENTER on a cue of their own ("FELIX: (enters from the back door, rain on his shoulders) Boss—"). A character leaves only on a cue with an exit beat ("COLE: (turns and leaves) Late."). Nobody appears or vanishes between takes. Never move people any other way.
-- One private TELL per episode: after the other person looks away, a face changes for one beat — a small smile, a glance to the side past the lens, a swallowed word — written as a parenthetical. The audience learns something the other character does not.
+- Who is in the room is a ledger. A new character must ENTER on a cue of their own ("FELIX: (enters from the back door, rain on his shoulders) Boss—"). They are not already inside. A character leaves only on a cue with an exit beat ("COLE: (turns and leaves) Late."). Nobody appears or vanishes between takes. Never move people any other way.
+${PHYSICS_RULES}
+- One private TELL per episode: after the other person looks away, a face changes for one beat — a small smile, a glance past the lens, a swallowed word — written as a parenthetical. The audience learns something the other character does not. A werewolf / vampire / power is that one beat, under a second, then human eyes. Never gold-eye ECU, flashing irises, fangs, or fur as a look. ${WHERE_RULES}
 - Dramatic irony is the engine: when the bible says one lead hides who they are, the audience must know it by the end of episode 1 and the other lead must not.
 - STAGING is where you reason like a director. Read the script and put bodies where the story puts them: a man who collapsed is on the ground against a wall, not at a table; the person who saved him kneels over him; rain means soaked hair and clothes. An outdoor location stays outdoor: wet brick, pavement, street lamp — never curtains, blinds, or kitchen furniture in the street. Write blocking.staging for every take. Staging changes only when a cue says someone moves (stands, sits, steps back), and then the next take's staging shows the new position. Write blocking.anchor: the one physical thing the bodies are anchored to.
 - Physics: nobody sits on or merges with furniture; a person on the ground stays on the ground until a cue lifts them. Never invent an extra person. Never write weekday-name filler ("same as every Tuesday").
@@ -294,12 +338,12 @@ JSON shape:
   }]
 }
 Write 12–18 scene-blocks. Each block is a full 50–75s Beat Engine. Mid-reprice one block near index 6–8. Each block closes a hook and opens a higher one. Final button is an unpaid question into the next episode. Carry one through-line: the story's own prop, name, or secret. Do not copy the same argument 15 times. Chinese short-drama writing: punchy, public humiliation, mute-readable spike, humor sting on "I didn't know."
-CAST LOOK and FACE DISTANCE apply: strikingly beautiful phone-close faces; if you cannot read the eyes you are too far.`;
+CAST LOOK and FACE DISTANCE apply: locked beauty, chest-up MCU default, readable key light on faces.`;
 }
 
 export function writeBlockBatchShape(): string {
   return `Plan shots for the given scene-blocks only (a batch of 3–4). Each block: 8–12 locked takes, 4–8s, hook → friction → spike → block_button. Coverage: one establishing/wide of the locked location, one silent two-shot/group when 2+ people, singles for dialogue, one insert, one comic/stun cutaway + SFX. Last block of the episode uses function=button_cu. Dialogue ≤12 words. No Cut to.
-CAST LOOK: named faces are specific phone-close beauty, never average. FACE DISTANCE: FaceTime or closer; if you cannot read the eyes you are too far.
+CAST LOOK: named faces are specific beauty with a locked look (olive / pale-gold / cool brown), never unspecified fictional. FACE DISTANCE: chest-up MCU default; close-ups on heat only.
 DIALOGUE-FIRST: at least 6 of every block's takes carry a spoken line (dialogue non-null, speaker from the locked cast, audio_role onscreen or offscreen). The block_button is always a spoken line. Silent takes are only the establishing, the insert, the two-shot and at most two priced reactions. Two or more different speakers per block.
 JSON shape:
 {
@@ -372,7 +416,8 @@ export function writeEpisodeShape(length: EpisodeLength = "60_90"): string {
       "blocking": {
         "camera_left": "NAME",
         "camera_right": "NAME",
-        "prop": "the same closed object on the surface between them",
+        "prop": "the same object, STATE sealed|broken|open|closed: matching that state still",
+        "door_side": "camera-right",
         "left_gesture": "stands at the locked table facing the other, hands visible",
         "right_gesture": "stands at the locked table facing the other, hands visible",
         "coverage": "two_shot" | "single" | "room" | "cu",
@@ -388,11 +433,16 @@ export function writeEpisodeShape(length: EpisodeLength = "60_90"): string {
   }]
 }
 Write ${budget.min_shots}–${budget.max_shots} CONTINUOUS SCENE TAKES. duration_hint_seconds ${budget.min_shot_s}–${budget.max_shot_s} — use the full window so the last spoken word is heard. Sum ${budget.duration_sum_min}–${budget.duration_sum_max}s.
-Each scene_script is a conversation of 5–8 cues that fits the ${budget.max_shot_s}s window. The sharpest line sits mid-take. One cue carries a reaction beat in parentheses before the words. One location for the episode. Same camera-left / camera-right and the same prop. People do not swap sides.
+Each scene_script is a conversation of 5–8 cues that fits the ${budget.max_shot_s}s window. The sharpest line sits mid-take. One cue carries a reaction beat in parentheses before the words. One location for the episode. Same camera-left / camera-right. Same door_side. The same prop identity with a STATE that matches the spoken line. People do not swap sides.
+Prefer two people on camera. A third stands one step back. Never four faces in one take. An entrance is a full-page shot of the person coming through the door. Do not open take N on the previous take's last spoken line.
 edit_mode=scene_take. First take function=hook_cu and already in motion. Last take function=button_cu on a CPI moment (consequence starting / gut punch / unpaid question).
 No singles. No establishing wide. No recap. No goodbye. No walking. Clothes stay on. No drugs.
 Bible has 4–5 named roles including a Witness and 3–5 reused locations. Scene characters list who is in that room. Speakers match locked-cast names.
-Name someone at most once per take, and only when it lands. Numbers concrete. No Cut to / Shot N: / Hold for.`;
+Name someone at most once per take, and only when it lands. Do not name anyone the viewer has not met on camera this episode. Prefer role + relationship ("your sister", "the woman in the doorway", "the one who sent the envelope") over a new proper name. If a fourth person must exist, put them in the doorway with a full-page entrance and one identifying line. Numbers concrete. No Cut to / Shot N: / Hold for.
+${DROP_IN_RULES}
+${PHYSICS_RULES}
+${CUT_RULES}
+Talk is spoken, not a closing statement. Imply the mechanism. Never "this is the envelope" / "this constitutes" / "I am informing you" / "the aforementioned" / "this is pack law" / "signed by my hand" / "A claim." / "The black one, red wax."`;
 }
 
 export function playbookPrompt(playbook: GenrePlaybook, skuPolicy: string): string {
@@ -433,26 +483,26 @@ export function sceneTakeImageLocks(
       image += 1;
       const tag = `@Image${image}`;
       if (row.role === "profile") {
-        return `${tag} is ${row.name}'s locked side face. Same person as their frontal still. Same hairline, nose, and age. Face and clothes only. Do not copy a high studio angle.`;
+        return `${tag} is ${row.name}'s locked side face — same person, hairline, nose and age as their frontal still.`;
       }
       if (row.role === "wardrobe") {
-        return `${tag} is ${row.name}'s locked clothes for this scene. This exact outfit on ${row.name} in every shot. Do not change outfit, do not change colour, do not add a jacket or remove one.`;
+        return `${tag} is ${row.name}'s locked clothes: this exact outfit in every shot, no colour change, no added or removed jacket.`;
       }
       if (row.role === "room") {
         return row.name === "room" || row.name === "room-wide"
-          ? `${tag} is the locked empty place plate, main angle. Walls, ground, fixtures, and key light only. Nobody is in that still. Keep this exact layout and scale in every shot. It is geography, not a new face. Do not add dressing that is not in the plate.`
-          : `${tag} is the same empty place from another angle (${row.name.replace(/^room-/, "")}). Same walls, same ground, same light. Use it when a shot faces that way. Nobody is in it; it is geography, not a new face.`;
+          ? `${tag} is the locked empty place plate. Walls, ground, fixtures and key light only — keep this exact layout and scale. It is geography, not a face, and nothing is added to it.`
+          : `${tag} is the same empty place from the ${row.name.replace(/^room-/, "")} angle. Use it when a shot faces that way. Geography, not a face.`;
       }
       if (row.role === "prop") {
-        return `${tag} is the locked ${row.name}. Same object, same shape, same place. Do not redesign it. It is not a face.`;
+        return `${tag} is the locked ${row.name}. Same object, same shape, same place. Do not redesign it.`;
       }
       if (row.role === "weld") {
-        return `${tag} is the locked end picture of this same room and the same two people. Keep the same furniture, the same sides, the same prop. Do not invent a new face from it. Do not replay that picture as a new scene.`;
+        return `${tag} is the locked end picture of this same room and these people. Same furniture, sides and prop. Do not build a new face from it.`;
       }
       const side = cameraSideOf(row.name, sides);
       const slot = side ?? "their locked side";
       faces.push(`${tag} is ${row.name}, ${slot}. Only this mouth moves on the brace lines for ${slot}.`);
-      return `${tag} is ${row.name}'s locked frontal face, ${slot}. Keep this exact adult face, age, hair, and skin. Only this mouth moves on the brace lines for ${slot}. Do not morph them into a different person. Face and clothes only. If the still is a high-angle studio portrait, do not copy that angle or treat the studio floor as a counter.`;
+      return `${tag} is ${row.name}'s locked frontal face, ${slot}. Keep this exact adult face, age, hair and skin. Do not morph them into a different person. If the still is a high studio angle, do not copy that angle.`;
     })
     .join(" ");
   if (!faces.length) return body;
@@ -474,6 +524,10 @@ export function sceneTakePrompt(input: {
   /** Bible line for this room plus any vision geometry note; keeps the floor plan fixed. */
   roomDescription?: string | null;
   roomGeometry?: string | null;
+  /** Series / episode / last-clip pack. Applicable context only — not a bible dump. */
+  context?: string | null;
+  /** Last framing of the previous generation. Shot 1 must not reprint it. */
+  prevLand?: CutFraming | null;
 }): string {
   const lighting = identitySafeLocation(input.location, input.locationNote);
   const who = peopleOnSceneTake({
@@ -496,39 +550,43 @@ export function sceneTakePrompt(input: {
     blocking,
     location: input.location,
     takeIndex: input.takeIndex,
+    prevLand: input.prevLand,
   });
   const shotCount = shots.length;
   const noun = placeNoun(input.location);
+  // ORDER MATTERS. A 22k-character prompt buried the SHOT LIST two-thirds of the
+  // way down and Seedance improvised its own dialogue on every take — the words
+  // are what the model drops first when the instruction budget is spent. The
+  // lines now come before the rules, and every clause below earns its length.
   return [
-    `ONE CONTINUOUS SCENE, ${shotCount === 1 ? "one locked shot" : `cut as ${shotCount} numbered shots`}, ${Math.round(input.durationSeconds ?? 15)} seconds total, 9:16. Photoreal live-action, a finished location, not a set. No replay of a previous generation.`,
-    `ONLY ${count} in this ${noun}: ${names}. Nobody else. No extra body. No extra hand. No background watcher. Do not add a person from a previous take. Nobody appears or disappears except the scripted entrance or exit.`,
-    "IDENTITY LOCK. Reference-to-video from the attached frontal stills only. Those stills are the only legal faces, in every shot. A place plate is empty geography, not a new person. If any extra still shows a different face, ignore that face. Do not attach or remake a previous take.",
+    `ONE CONTINUOUS SCENE, ${shotCount === 1 ? "one locked shot" : `cut as ${shotCount} numbered shots`}, ${Math.round(input.durationSeconds ?? 15)} seconds total, 9:16. Photoreal live-action, a finished location.`,
+    `ONLY ${count} in this ${noun}: ${names}. Nobody else, no extra body, no background watcher.`,
+    `SHOT LIST — this is the scene. Perform exactly these lines, in this order, and no others. ${shotListPrompt(shots)}`,
+    speechLockClause(input.sceneScript, blocking),
+    input.context?.trim() || null,
+    "IDENTITY LOCK. Reference-to-video from the attached frontal stills only. Those stills are the only legal faces, in every shot. Do not recast for beauty. Same skin, same hair, same bone as the still. A place plate is empty geography, not a new person. Do not attach or remake a previous take.",
     locks.length ? `Locked faces: ${locks.join(" ")}` : null,
     images || null,
-    speechLockClause(input.sceneScript, blocking),
-    SHORT_DRAMA_SCORE,
     sceneTakeBodyClause(input.blocking?.coverage),
     (input.takeIndex ?? 0) > 0 ? JOIN_CUT_CLAUSE : null,
     camera ? `Shot 1 framing: ${camera}` : null,
     blockingPrompt(blocking, input.location),
     SCENE_TAKE_PHYSICS_CLAUSE,
+    wherePromptClause(input.sceneScript),
     SCENE_TAKE_PROXIMITY_CLAUSE,
     placeLockClause(input.location),
-    roomGeometryClause({ location: input.location, description: input.roomDescription, geometry: input.roomGeometry }),
-    `Lighting lock: ${lighting}. Same ground and walls at the same size, same key light, same geography in every shot.${
-      (input.takeIndex ?? 0) > 0
-        ? " Do not invent a new lamp color. If the last frame's lighting cannot match, Shot 1 is closer so the room is not compared."
-        : ""
+    roomGeometryClause({ location: input.location, description: input.roomDescription, geometry: input.roomGeometry, doorSide: blocking.door_side }),
+    `Lighting lock: ${lighting}.${
+      (input.takeIndex ?? 0) > 0 ? " Do not invent a new lamp colour." : ""
     }`,
+    LIGHT_READ_CLAUSE,
     CAST_LOOK_CLAUSE,
     MICRO_DRAMA_REGISTER_CLAUSE,
-    `SHOT LIST. ${shotListPrompt(shots)}`,
+    SHORT_DRAMA_SCORE,
     SCENE_TAKE_HANDOFF_CLAUSE,
     NO_LENS_CLAUSE,
     input.emotion ? stripCopyrightBait(input.emotion) : null,
     UAE_MEDIA_CLAUSE,
-    MODEST_SHOT_CLAUSE,
-    "Do not invent a person who is not named in this take. Do not change wardrobe or faces between shots.",
     NO_TEXT_CLAUSE,
   ]
     .filter(Boolean)

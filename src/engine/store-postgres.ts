@@ -58,7 +58,8 @@ type ModerationRow = ModerationDecision;
 type AssetRow = Asset & { bytes: number };
 
 function asSku(value: number | null): SeasonSku | null {
-  return value === 2 || value === 12 || value === 24 || value === 45 || value === 60
+  return value === 2 || value === 12 || value === 15 || value === 24 || value === 30 || value === 45 ||
+      value === 50 || value === 60 || value === 90
     ? value
     : null;
 }

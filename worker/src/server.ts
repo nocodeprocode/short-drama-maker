@@ -4,6 +4,7 @@ import { mechanicalQc } from "../../src/engine/media/qc.ts";
 import { probeVideoBytes } from "../../src/engine/media/probe.ts";
 import { RenderFailedError, renderEpisodeBytes } from "../../src/engine/media/render.ts";
 import type { AlignmentTrack, RenderManifest } from "../../src/engine/domain.ts";
+import { runOnce } from "../../src/engine/jobs/runner.ts";
 
 const port = Number(process.env.PORT ?? 8080);
 /** Shared secret; every non-health request must carry it as a bearer token. */
@@ -32,7 +33,12 @@ createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 
   if (req.method === "GET" && url.pathname === "/health") {
-    reply(res, 200, { ok: true, role: "media-worker", auth_configured: Boolean(token) });
+    reply(res, 200, {
+      ok: true,
+      role: "media-worker",
+      auth_configured: Boolean(token),
+      runner_role: process.env.RUNNER_ROLE?.trim() || "media",
+    });
     return;
   }
 
@@ -57,6 +63,13 @@ createServer(async (req, res) => {
   }
 
   try {
+    if (url.pathname === "/jobs") {
+      process.env.RUNNER_ROLE = process.env.RUNNER_ROLE?.trim() || "media";
+      const completed = await runOnce(undefined, 1);
+      reply(res, 200, { ok: true, completed, runner_role: process.env.RUNNER_ROLE });
+      return;
+    }
+
     if (url.pathname === "/qc") {
       const bytes = b64(body.video_b64);
       if (!bytes) {

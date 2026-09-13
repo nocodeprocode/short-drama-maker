@@ -1,3 +1,3 @@
 export default {
-  title: "Privacy request — Short Drama Maker",
+  title: "Privacy request — Takehaus",
 };
