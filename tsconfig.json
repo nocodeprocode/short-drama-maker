@@ -28,6 +28,9 @@
   },
   "exclude": [
     "dist",
+    "scripts",
+    "**/*.test.ts",
+    "src/engine/jobs/runner.ts",
     "supabase",
     "worker",
     "workers"

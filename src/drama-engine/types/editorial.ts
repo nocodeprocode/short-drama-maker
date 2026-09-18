@@ -130,19 +130,20 @@ export function cameraIsObjectPlate(camera?: string | null): boolean {
 }
 
 export function isObjectInsert(input: {
-  function?: ShotFunction | null;
+  function?: ShotFunction | string | null;
   type?: string | null;
   dialogue?: string | null;
   camera?: string | null;
   audio_role?: string | null;
 }): boolean {
-  if (input.function === "name_plant") return false;
+  const fn = input.function as ShotFunction | null | undefined;
+  if (fn === "name_plant") return false;
   // A line spoken on camera is a face, whatever the camera text says.
-  if (input.dialogue && input.audio_role !== "offscreen" && input.audio_role !== "silent" && !(input.function && OBJECT_INSERT_FUNCTIONS.has(input.function))) {
+  if (input.dialogue && input.audio_role !== "offscreen" && input.audio_role !== "silent" && !(fn && OBJECT_INSERT_FUNCTIONS.has(fn))) {
     return false;
   }
-  if (input.function && OBJECT_INSERT_FUNCTIONS.has(input.function)) return true;
-  if (input.function === "hook_cu" && !input.dialogue) return true;
+  if (fn && OBJECT_INSERT_FUNCTIONS.has(fn)) return true;
+  if (fn === "hook_cu" && !input.dialogue) return true;
   if (input.type === "broll" && !input.dialogue) return true;
   return cameraIsObjectPlate(input.camera);
 }
