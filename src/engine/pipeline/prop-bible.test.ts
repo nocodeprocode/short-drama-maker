@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { objectLettering, objectViewLabel, objectViews } from "./prop-bible.ts";
+import {
+  documentPrompt,
+  fallbackDocument,
+  isReadableDocument,
+  normalizeWrittenDocument,
+  objectLettering,
+  objectViewLabel,
+  objectViews,
+  propFromLockText,
+} from "./prop-bible.ts";
 
 describe("object lettering", () => {
   it("leaves a ring box blank instead of inventing a jeweller", () => {
@@ -8,10 +17,29 @@ describe("object lettering", () => {
     expect(objectLettering("ring box")).not.toMatch(/ESTHERY|Yandex|SAMPLE|LOCATION/);
   });
 
-  it("allows one real heading on a document and otherwise prefers none", () => {
-    expect(objectLettering("leaked NDA")).toMatch(/one short real heading/);
+  it("typesets exact document words and otherwise prefers none", () => {
+    expect(isReadableDocument("leaked NDA")).toBe(true);
+    expect(objectLettering("leaked NDA")).toMatch(/exact words given in the description/);
     expect(objectLettering("leaked NDA")).toMatch(/date reads 10/);
     expect(objectLettering("brass lamp")).toMatch(/No printed lettering/);
+    expect(propFromLockText("leaked NDA")?.prompt).toMatch(/letter-perfect/);
+    expect(propFromLockText("leaked NDA")?.prompt).not.toMatch(/no readable text/);
+  });
+
+  it("writes a real sample contract instead of dummy copy", () => {
+    const doc = fallbackDocument({
+      name: "leaked NDA",
+      parties: ["Elena Voss", "Marcus Hale"],
+      title: "Claws in the Contract",
+    });
+    expect(doc.heading).toBe("NON-DISCLOSURE AGREEMENT");
+    expect(doc.date).toBe("10");
+    expect(doc.body).toMatch(/Elena Voss/);
+    expect(doc.body).toMatch(/Marcus Hale/);
+    expect(doc.body).not.toMatch(/lorem|NDAEM|Sleaked/i);
+    expect(documentPrompt("leaked NDA", doc)).toMatch(/Typeset this exact document/);
+    expect(documentPrompt("leaked NDA", doc)).toMatch(/NON-DISCLOSURE AGREEMENT/);
+    expect(normalizeWrittenDocument({ heading: "x", body: "too short" }, doc)).toEqual(doc);
   });
 });
 

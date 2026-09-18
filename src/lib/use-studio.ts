@@ -60,6 +60,17 @@ export function useStudio<T>(key: string, loader: () => Promise<T>, deps: unknow
         setError(caught instanceof Error ? caught.message : "Could not load");
       });
 
+  /** Update the visible value immediately while the server request finishes. */
+  const mutate = (next: T | ((current: T | null) => T | null)) => {
+    setData((current) => {
+      const value = typeof next === "function"
+        ? (next as (current: T | null) => T | null)(current)
+        : next;
+      if (value !== null) writeCache(keyRef.current, value);
+      return value;
+    });
+  };
+
   useEffect(() => {
     if (!ready) return;
     let cancelled = false;
@@ -88,6 +99,7 @@ export function useStudio<T>(key: string, loader: () => Promise<T>, deps: unknow
     ready,
     loading: ready && data == null && !error,
     reload,
+    mutate,
   };
 }
 

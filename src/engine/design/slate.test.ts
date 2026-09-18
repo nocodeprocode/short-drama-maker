@@ -82,12 +82,13 @@ describe("buildDesignSlate", () => {
 
   it("turns a story element the cast sheet refused into a prop", () => {
     expect(propsFromArchetype("hidden heir / leaked NDA")).toEqual(["leaked NDA"]);
-    expect(propsFromArchetype("the clause / the deed")).toEqual(["the clause", "the deed"]);
+    expect(propsFromArchetype("the clause / the deed")).toEqual(["contract clause", "the deed"]);
+    expect(propsFromArchetype("she’s the owner / she wrote the clause")).toEqual(["ownership contract"]);
     // A person nuke stays out of the prop list.
     expect(propsFromArchetype("true-mate mark / kidnapped Luna")).toEqual(["true-mate mark"]);
 
     const slate = buildDesignSlate({ genre: "legal_medical", deviceArchetypes: ["the clause / the deed"] });
-    expect(slate.props.map((row) => row.name)).toContain("the clause");
+    expect(slate.props.map((row) => row.name)).toContain("contract clause");
   });
 
   it("lists one object when the brief and the plot name it at two lengths", () => {

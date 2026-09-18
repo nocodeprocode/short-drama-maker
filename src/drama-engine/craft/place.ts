@@ -10,6 +10,9 @@
 
 export type PlaceKind = "outdoor" | "indoor" | "threshold" | "vehicle";
 
+/** The only legal number on a fixture. Floor 10. A date on a document is 10. */
+export const PLACE_FLOOR = "10";
+
 const OUTDOOR =
   /\b(alley|lane|street|pavement|sidewalk|kerb|curb|rain|rooftop|roof|courtyard|plaza|dock|pier|bridge|lot|park|exterior|outside|outdoor|underpass|loading bay|fire escape|scooter|wet brick)\b/i;
 
@@ -29,6 +32,56 @@ const VEHICLE_CABIN = /\b(back seat|backseat|car interior|inside (the )?car)\b/i
 
 export function isVehicleCabin(location?: string | null): boolean {
   return VEHICLE_CABIN.test((location ?? "").trim());
+}
+
+export function isElevator(location?: string | null): boolean {
+  return /\b(elevator|lift)\b/i.test((location ?? "").trim());
+}
+
+/**
+ * Catalog folders. An elevator is its own folder so a cab is not lost
+ * among hotel rooms. Everything else follows the place kind.
+ */
+export const PLACE_FOLDERS = ["elevator", "indoor", "threshold", "outdoor", "vehicle"] as const;
+export type PlaceFolderId = (typeof PLACE_FOLDERS)[number];
+
+const PLACE_FOLDER_LABEL: Record<PlaceFolderId, string> = {
+  elevator: "Elevators",
+  indoor: "Rooms",
+  threshold: "Passages",
+  outdoor: "Outdoors",
+  vehicle: "Vehicles",
+};
+
+export function placeFolder(location?: string | null): PlaceFolderId {
+  if (isElevator(location)) return "elevator";
+  return placeKind(location);
+}
+
+export function placeFolderLabel(id: PlaceFolderId): string {
+  return PLACE_FOLDER_LABEL[id];
+}
+
+export function groupByPlaceFolder<T>(items: readonly T[], nameOf: (item: T) => string): Array<{
+  id: PlaceFolderId;
+  label: string;
+  items: T[];
+}> {
+  const buckets = new Map<PlaceFolderId, T[]>(PLACE_FOLDERS.map((id) => [id, []]));
+  for (const item of items) {
+    buckets.get(placeFolder(nameOf(item)))!.push(item);
+  }
+  return PLACE_FOLDERS.map((id) => ({ id, label: PLACE_FOLDER_LABEL[id], items: buckets.get(id)! })).filter(
+    (row) => row.items.length,
+  );
+}
+
+/** Name, folder, or extra fields (tags, shows, notes). */
+export function placeMatchesQuery(name: string, query: string, extra: readonly string[] = []): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [name, placeFolderLabel(placeFolder(name)), ...extra].join("\0").toLowerCase();
+  return hay.includes(needle);
 }
 
 export function placeKind(location?: string | null): PlaceKind {
@@ -100,6 +153,15 @@ export function placeLockClause(location?: string | null): string {
       `a studio backdrop, a photograph from the ceiling.`
     );
   }
+  if (isElevator(location)) {
+    return (
+      `THIS PLACE. This is the inside of a real passenger elevator cab. ` +
+      `Closed metal doors, laminate or steel panel walls, a handrail, a ceiling light. ` +
+      `The floor indicator shows ${PLACE_FLOOR}. ` +
+      `FORBIDDEN: a window, an outdoor view, sky, a city, rain on glass, a hotel corridor posing as a cab, ` +
+      `a room with a picture window, daylight through a wall opening.`
+    );
+  }
   if (kind === "threshold") {
     return (
       `THIS PLACE. This is a ${name}: a long empty passage, not a square room. ` +
@@ -118,6 +180,9 @@ export function placeLockClause(location?: string | null): string {
 
 /** Empty-plate lead line. Indoor plates say room; outdoor plates say exterior. */
 export function placePlateLead(location?: string | null): string {
+  if (isElevator(location)) {
+    return "Photorealistic vertical 9:16 still from INSIDE a real passenger elevator cab, UNOCCUPIED. Closed doors. No window. No outdoor view.";
+  }
   const kind = placeKind(location);
   if (kind === "outdoor") {
     return "Photorealistic vertical 9:16 cinematic EXTERIOR still: an UNOCCUPIED real place, shot in the street, not a soundstage.";
@@ -143,8 +208,6 @@ export function placePlateLead(location?: string | null): string {
  * normally shows a number, that number is 10. Floor 10. Symbolic, but one
  * value, never sample copy.
  */
-export const PLACE_FLOOR = "10";
-
 export function placeLettering(location?: string | null): string {
   // Do not name dummy words here. Listing LOCATION is how LOCATION ends up
   // on the lintel. Vision rejects those words after the still lands.
@@ -185,39 +248,49 @@ export function placePlateDressing(location?: string | null): string {
   // Do not name padlock or key here. "PLACE LOCK" / "locked key light"
   // already became a padlock on the floor. Vision rejects those objects.
   const emptyFloor = "The floor is empty except for furniture that belongs in this place. No extra objects.";
+  const noGear =
+    "STORY WORLD ONLY. Camera and lighting equipment stay outside the frame. NO studio lamp, LED panel, softbox, light stand, tripod, C-stand, reflector, boom microphone, camera, cable, monitor, backdrop, sandbag, dolly, or crew gear.";
   if (kind === "outdoor") {
     return (
       "Architecture, weather, ground, and light only. " +
       "NO curtains, NO blinds, NO drapes, NO indoor furniture, NO ceiling, NO studio backdrop. " +
       "NO people, NO faces, NO bodies, NO silhouettes, NO mannequins, NO portraits. " +
-      emptyFloor
+      `${emptyFloor} ${noGear}`
     );
   }
   if (kind === "vehicle") {
     if (isVehicleCabin(location)) {
       return (
         "Seats, windows, and the street through the glass only. " +
-        "NO house, NO sofa, NO rug, NO room ceiling, NO people, NO driver, NO passengers."
+        `NO house, NO sofa, NO rug, NO room ceiling, NO people, NO driver, NO passengers. ${noGear}`
       );
     }
     return (
       "The car sits on real outdoor ground at night. Street or driveway. " +
       "Camera at street height, three-quarter or side, not from the ceiling. " +
       "NO living room, NO rug, NO sofa, NO indoor floor, NO ceiling, NO studio stand. " +
-      "NO people, NO driver, NO passengers."
+      `NO people, NO driver, NO passengers. ${noGear}`
+    );
+  }
+  if (isElevator(location)) {
+    return (
+      "Metal or laminate cab walls, closed elevator doors, a handrail, a ceiling light, a carpet or stone floor. " +
+      "NO window, NO outdoor view, NO sky, NO city, NO rain on glass, NO hotel suite. " +
+      "NO people, NO faces, NO bodies, NO silhouettes. " +
+      `${emptyFloor} ${noGear}`
     );
   }
   if (kind === "threshold") {
     return (
       "Architecture and light only. A long empty passage, ceiling lights in a row, nothing on the floor. " +
       "NO furniture in the aisle, NO objects on the ground, NO people, NO faces, NO bodies, NO silhouettes. " +
-      emptyFloor
+      `${emptyFloor} ${noGear}`
     );
   }
   return (
     "Furniture, architecture and light only. A finished room with a ceiling. " +
     "NOBODY is in the room: no people, no faces, no bodies, no silhouettes, no figures with their back to camera, no reflections of people, no mannequins, no portraits or photographs of people on the walls. " +
-    emptyFloor
+    `${emptyFloor} ${noGear}`
   );
 }
 
@@ -241,6 +314,12 @@ export function placePlateRetry(location?: string | null, physical?: string | nu
       `Parked on pavement, shot from the street. Empty. No living room, no rug, no ceiling.`
     );
   }
+  if (isElevator(location)) {
+    return (
+      `Unoccupied elevator cab: ${facts}. Closed metal doors, panel walls, a handrail, a ceiling light. ` +
+      `No window. No outdoor view. Vacant, nobody present.`
+    );
+  }
   if (kind === "threshold") {
     return (
       `Unoccupied passage: ${facts}. Long empty corridor, nothing on the floor. ` +
@@ -255,6 +334,12 @@ export function placePlateRetry(location?: string | null, physical?: string | nu
 
 /** Vision geometry: ask for the real anchors of this place, not a kitchen island. */
 export function placeGeometryRubric(location?: string | null): string {
+  if (isElevator(location)) {
+    return (
+      "geometry names the closed elevator doors, the panel walls, the handrail, the ceiling light, " +
+      "and that this is a closed cab with no window and no outdoor view"
+    );
+  }
   const kind = placeKind(location);
   if (kind === "outdoor") {
     return (
@@ -299,7 +384,13 @@ export function placeExit(location?: string | null): string {
  */
 export type RoomAngle = { angle: string; prompt: string };
 
+/** Bump whenever old room-angle assets no longer satisfy the continuity contract. */
+export const ROOM_PACK_VERSION = 2;
+
 const ROOM_PACK_HOLD =
+  "GEOMETRY LOCK: furniture and fixtures keep one immutable floor-plan position and orientation. " +
+  "The camera may turn; the table, chairs, doors, windows, cabinets and wall art must not rotate, move, mirror, or swap sides. " +
+  "STORY WORLD ONLY: no studio lamp, LED panel, softbox, light stand, tripod, C-stand, reflector, boom microphone, camera, cable, monitor, backdrop, sandbag, dolly, or crew gear. " +
   "Same walls, same furniture at the same size, same wall art, same key light and colour. " +
   "Same kind of place as the plate — do not turn an exterior into a room or a room into a street. " +
   "EMPTY: no people, no faces, no silhouettes, no reflections of people. Cinematic 9:16 still.";
@@ -316,7 +407,17 @@ const ROOM_ANGLE_LABELS: Record<string, string> = {
   front: "Front",
 };
 
-export function roomAngleLabel(angle: string): string {
+export function roomAngleLabel(angle: string, location?: string | null): string {
+  if (isElevator(location)) {
+    const cab: Record<string, string> = {
+      facing: "Doors",
+      opposite: "Back wall",
+      left: "Left wall",
+      right: "Right wall",
+      overhead: "Ceiling",
+    };
+    if (cab[angle]) return cab[angle];
+  }
   return ROOM_ANGLE_LABELS[angle] ?? angle.replaceAll("_", " ");
 }
 
@@ -325,13 +426,38 @@ function overheadPrompt(kind: PlaceKind): string {
     return `the same empty place from directly above, a straight-down plan. Ground and objects stay in the same positions. ${ROOM_PACK_HOLD}`;
   }
   return (
-    `the same empty place from directly above, a straight-down plan. ` +
-    `Furniture stays in the same positions. Wall art readable as edge strips along the walls. ${ROOM_PACK_HOLD}`
+    `the same empty place from directly above, a true straight-down architectural plan. ` +
+    `Infer the master view's exact table axis, chair spacing, window wall, doors and cabinets, then freeze that layout. ` +
+    `Furniture stays in those exact positions and orientations. Wall art appears as edge strips along the walls. ${ROOM_PACK_HOLD}`
   );
 }
 
 /** The five (or fewer) views that lock a place after the master plate. */
 export function roomAnglesFor(location?: string | null): RoomAngle[] {
+  if (isElevator(location)) {
+    return [
+      {
+        angle: "facing",
+        prompt: `the same empty elevator cab, looking straight at the closed metal doors. No window. Floor indicator ${PLACE_FLOOR}. ${ROOM_PACK_HOLD}`,
+      },
+      {
+        angle: "opposite",
+        prompt: `the same empty elevator cab, looking straight at the back wall. Panel walls, a handrail. No window. ${ROOM_PACK_HOLD}`,
+      },
+      {
+        angle: "left",
+        prompt: `the same empty elevator cab, looking straight at the left panel wall. Same handrail, same closed doors at the edge. No window. ${ROOM_PACK_HOLD}`,
+      },
+      {
+        angle: "right",
+        prompt: `the same empty elevator cab, looking straight at the right panel wall. Same handrail, same closed doors at the edge. No window. ${ROOM_PACK_HOLD}`,
+      },
+      {
+        angle: "overhead",
+        prompt: `the same empty elevator cab from the ceiling, looking down. Ceiling light and floor indicator ${PLACE_FLOOR}. Closed doors. No window. ${ROOM_PACK_HOLD}`,
+      },
+    ];
+  }
   const kind = placeKind(location);
   if (kind === "vehicle" && isVehicleCabin(location)) {
     return [
@@ -379,11 +505,11 @@ export function roomAnglesFor(location?: string | null): RoomAngle[] {
   return [
     {
       angle: "facing",
-      prompt: `the same empty room, looking straight at the wall that faced the first camera. Not a three-quarter. ${ROOM_PACK_HOLD}`,
+      prompt: `camera stays at the master camera station and keeps its forward direction, now level and straight-on rather than three-quarter. ${ROOM_PACK_HOLD}`,
     },
-    { angle: "opposite", prompt: `the same empty room, looking straight at the opposite wall. ${ROOM_PACK_HOLD}` },
-    { angle: "left", prompt: `the same empty room, looking straight at the left wall. ${ROOM_PACK_HOLD}` },
-    { angle: "right", prompt: `the same empty room, looking straight at the right wall. ${ROOM_PACK_HOLD}` },
+    { angle: "opposite", prompt: `camera stays at the exact master camera station and rotates 180 degrees in place to look behind it. No dolly move. ${ROOM_PACK_HOLD}` },
+    { angle: "left", prompt: `camera stays at the exact master camera station and pans 90 degrees left in place. No dolly move. ${ROOM_PACK_HOLD}` },
+    { angle: "right", prompt: `camera stays at the exact master camera station and pans 90 degrees right in place. No dolly move. ${ROOM_PACK_HOLD}` },
     { angle: "overhead", prompt: overheadPrompt(kind) },
   ];
 }

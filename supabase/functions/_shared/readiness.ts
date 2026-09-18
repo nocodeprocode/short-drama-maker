@@ -77,13 +77,15 @@ export async function seriesReadiness(
   const lockedCharacters = new Set(
     (characterRows ?? []).filter((row) => row.locked).map((row) => String(row.id)),
   );
+  const existingCharacters = new Set((characterRows ?? []).map((row) => String(row.id)));
 
   let castDone = 0;
   let unnamed = 0;
   const castMissing: string[] = [];
   for (const slot of slots) {
-    const shot = slot.character_id && lockedCharacters.has(String(slot.character_id));
-    if (shot || (slot.actor_id && faced.has(String(slot.actor_id)))) {
+    const hasCharacter = Boolean(slot.character_id && existingCharacters.has(String(slot.character_id)));
+    const shot = hasCharacter && lockedCharacters.has(String(slot.character_id));
+    if (shot || (hasCharacter && slot.actor_id && faced.has(String(slot.actor_id)))) {
       castDone += 1;
       continue;
     }
@@ -98,6 +100,8 @@ export async function seriesReadiness(
   const objectMissing = objects.filter((row) => !row.still_asset_id).map((row) => row.name);
 
   const blocking: string[] = [];
+  if (slots.length === 0) blocking.push("Cast has not been created yet");
+  if (places.length === 0) blocking.push("No places have been prepared yet");
   if (castMissing.length) blocking.push(sentence(castMissing.length, "part has no face", "parts have no face", castMissing));
   if (placeMissing.length) blocking.push(sentence(placeMissing.length, "place", "places", placeMissing));
   if (objectMissing.length) blocking.push(sentence(objectMissing.length, "object", "objects", objectMissing));

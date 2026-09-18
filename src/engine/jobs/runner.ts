@@ -15,9 +15,10 @@ import { configuredRender } from "../media/remote-render.ts";
 import { publicLog } from "../logging.ts";
 import { voiceSexRepair } from "../ai/voice-sex.ts";
 import { isSceneTake } from "../../drama-engine/types/editorial.ts";
-import { BUSY_VIDEO_STATUSES, shotNeedsVideo } from "./queue-policy.ts";
+import { BUSY_VIDEO_STATUSES, productionTaskMayRun, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 import { isEpisodeLength } from "../config/catalog.ts";
+import { seriesReadiness } from "../../../supabase/functions/_shared/readiness.ts";
 import { DRAFT_TTL_DAYS } from "../drafts.ts";
 
 /** Takes kept in flight per series; the provider renders them concurrently. */
@@ -417,18 +418,17 @@ async function dispatch(task: TaskRow, client: SupabaseClient): Promise<unknown>
         });
         const lighting = typeof plate.notes.lighting_lock === "string" ? plate.notes.lighting_lock : null;
         // The plate asset is written by the commit below, so the row points at
-        // it only once that asset actually exists.
+        // it only once that asset actually exists. Pack-only reuse returns empty
+        // notes — do not wipe a lighting lock the first build already wrote.
         afterCommit.push(async () => {
-          await client
-            .from("series_locations")
-            .update({
-              plate_asset_id: plate.asset_id,
-              lighting_lock: lighting,
-              status: "ready",
-              error: null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", row.id);
+          const patch: Record<string, unknown> = {
+            plate_asset_id: plate.asset_id,
+            status: "ready",
+            error: null,
+            updated_at: new Date().toISOString(),
+          };
+          if (lighting) patch.lighting_lock = lighting;
+          await client.from("series_locations").update(patch).eq("id", row.id);
           await catalogueLocation(client, {
             ownerId: owner_id,
             rowId: String(row.id),
@@ -883,6 +883,24 @@ export async function runOnce(client = serviceClient(), limit = VIDEO_CONCURRENC
 
   async function runTask(task: TaskRow): Promise<void> {
     {
+      if (task.production_id) {
+        const { data: production } = await client
+          .from("productions")
+          .select("status, paid_amount, paused")
+          .eq("id", task.production_id)
+          .maybeSingle();
+        if (!productionTaskMayRun(production)) {
+          const message = "Production work was cancelled because payment and final start were not confirmed.";
+          await writeTaskOutcome(client, task, { status: "cancelled", message });
+          await recordEvent(client, task, {
+            kind: "task_cancelled",
+            status: "cancelled",
+            detail: { reason: "production_not_started" },
+          });
+          completed += 1;
+          return;
+        }
+      }
       const isVideo = task.action === "generate_video" || task.action === "regenerate_shot";
       if (isVideo) {
         while (videoSlots.active >= VIDEO_CONCURRENCY) {
@@ -1097,6 +1115,25 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
   }
 
   const { data: series } = await client.from("series").select("*").eq("id", production.series_id).single();
+  const readiness = await seriesReadiness(client, production.series_id);
+  const blocking = series?.story_bible ? readiness.blocking : ["The story has not been written yet", ...readiness.blocking];
+  if (!series?.story_bible || !readiness.can_start) {
+    const message = `Production paused because required material is missing. ${blocking.join(". ")}.`;
+    await client
+      .from("productions")
+      .update({
+        status: "needs_user",
+        paused: true,
+        ui_phase: "preparing",
+        intervention_type: "missing_dependencies",
+        intervention: { readiness: { ...readiness, can_start: false, blocking } },
+        agent_decision: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", productionId);
+    return { skipped: true, reason: "missing_dependencies", readiness: { ...readiness, can_start: false, blocking } };
+  }
+
   const { data: characters } = await client.from("characters").select("*").eq("series_id", production.series_id);
   const { data: episodes } = await client
     .from("episodes")
@@ -1111,13 +1148,6 @@ async function advanceProduction(client: SupabaseClient, task: TaskRow): Promise
   const queued: string[] = [];
   await restoreStillRefs(client, series_id, characters ?? []);
   await restoreVoicePreviews(client, series_id, characters ?? []);
-
-  if (!series?.story_bible) {
-    queued.push("analyze");
-    await queueTask(client, { owner_id, series_id, production_id: productionId, action: "analyze" });
-    await markProduction(client, productionId, "running", "preparing", "Writing the story bible and locking the fictional cast.");
-    return { queued };
-  }
 
   // An uploaded script is cut into episodes before any episode row exists, so
   // plan_episode adapts the writer's scenes instead of inventing a season.

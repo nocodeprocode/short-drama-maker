@@ -1,6 +1,7 @@
 import { json, serviceClient } from "../_shared/auth.ts";
 import { wakeJobs } from "../_shared/jobs.ts";
 import { PRICE_SNAPSHOT_VERSION } from "../_shared/productions.ts";
+import { seriesReadiness } from "../_shared/readiness.ts";
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -118,13 +119,47 @@ Deno.serve(async (req) => {
     price_snapshot_version: PRICE_SNAPSHOT_VERSION,
   });
 
-  if (error?.code === "23505") {
-    return json({ ok: true, duplicate: true });
-  }
-  if (error) return json({ error: error.message }, 400);
+  const duplicate = error?.code === "23505";
+  if (error && !duplicate) return json({ error: error.message }, 400);
+  if (wallet && duplicate) return json({ ok: true, duplicate: true });
 
-  if (!wallet && productionId) {
-    await supabase
+  if (!wallet && seriesId && productionId) {
+    const { data: production } = await supabase
+      .from("productions")
+      .select("id, owner_id, series_id, status")
+      .eq("id", productionId)
+      .eq("owner_id", ownerId)
+      .eq("series_id", seriesId)
+      .eq("status", "awaiting_payment")
+      .maybeSingle();
+    if (!production) {
+      return json({ ok: true, event_id: event.id, production_id: null, started: false, duplicate, reason: "production_not_found" });
+    }
+
+    const [{ data: series }, readiness] = await Promise.all([
+      supabase.from("series").select("story_bible").eq("id", seriesId).maybeSingle(),
+      seriesReadiness(supabase, seriesId),
+    ]);
+    const blocking = series?.story_bible ? readiness.blocking : ["The story has not been written yet", ...readiness.blocking];
+    if (!series?.story_bible || !readiness.can_start) {
+      await supabase
+        .from("productions")
+        .update({
+          status: "needs_user",
+          ui_phase: "preparing",
+          paid_amount: amount,
+          stripe_checkout_id: session.id ?? null,
+          paused: true,
+          intervention_type: "missing_dependencies",
+          intervention: { readiness: { ...readiness, can_start: false, blocking } },
+          agent_decision: `Payment is safe as show credit. Restore required material before production starts. ${blocking.join(". ")}.`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", production.id);
+      return json({ ok: true, event_id: event.id, production_id: production.id, started: false, duplicate, reason: "not_ready" });
+    }
+
+    const { data: activated } = await supabase
       .from("productions")
       .update({
         status: "queued",
@@ -133,20 +168,25 @@ Deno.serve(async (req) => {
         stripe_checkout_id: session.id ?? null,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", productionId)
-      .eq("status", "awaiting_payment");
+      .eq("id", production.id)
+      .eq("status", "awaiting_payment")
+      .select("id")
+      .maybeSingle();
+    if (!activated) {
+      return json({ ok: true, event_id: event.id, production_id: production.id, started: false, duplicate, reason: "not_activated" });
+    }
     await supabase.from("engine_tasks").insert({
       owner_id: ownerId,
       series_id: seriesId,
-      production_id: productionId,
+      production_id: production.id,
       action: "advance_production",
-      payload: { production_id: productionId },
+      payload: { production_id: production.id },
       status: "queued",
     });
     await wakeJobs();
   }
 
-  return json({ ok: true, event_id: event.id, production_id: productionId ?? null });
+  return json({ ok: true, event_id: event.id, production_id: productionId ?? null, started: Boolean(!wallet && seriesId && productionId), duplicate });
 });
 
 function ledgerBalance(rows: Array<{ entry_type: string; amount: number | string }>): number {

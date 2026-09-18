@@ -145,7 +145,16 @@ export function propsFromArchetype(archetype: string): string[] {
   const out: string[] = [];
   for (const fragment of fragmentsOf(archetype)) {
     const hit = classifyDesignPhrase(fragment);
-    if (hit?.kind === "prop") out.push(hit.name);
+    if (hit?.kind !== "prop") continue;
+    const whole = archetype.toLowerCase();
+    const name = hit.name.toLowerCase();
+    if (name.includes("clause")) {
+      out.push(/\b(owner|wrote|ownership)\b/.test(whole) ? "ownership contract" : "contract clause");
+    } else if (name === "test" && /\bdna\b/.test(whole)) {
+      out.push("DNA test results");
+    } else {
+      out.push(hit.name);
+    }
   }
   return out;
 }

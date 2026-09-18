@@ -188,6 +188,43 @@ export function mergeCharacterCommit(
   };
 }
 
+/**
+ * A photo replace writes the new seed on the actors table first. A job that
+ * loaded the previous face must not upsert that stale seed (or its stills)
+ * back over the replacement.
+ */
+export function mergeActorCommit<T extends {
+  seed_asset_id?: string | null;
+  visual_reference_asset_ids?: Partial<Record<string, string>>;
+  source?: string;
+  judge_notes?: string | null;
+  updated_at: string;
+}>(
+  incoming: T,
+  existing: {
+    seed_asset_id?: string | null;
+    visual_reference_asset_ids?: Record<string, unknown> | null;
+    source?: string | null;
+    judge_notes?: string | null;
+    updated_at?: string;
+  } | null,
+): T {
+  if (!existing) return incoming;
+  const existingSeed = existing.seed_asset_id ?? null;
+  const incomingSeed = incoming.seed_asset_id ?? null;
+  if (existingSeed && existingSeed !== incomingSeed) {
+    return {
+      ...incoming,
+      seed_asset_id: existingSeed,
+      source: existing.source ?? incoming.source,
+      visual_reference_asset_ids: (existing.visual_reference_asset_ids ?? {}) as T["visual_reference_asset_ids"],
+      judge_notes: existing.judge_notes === undefined ? incoming.judge_notes : existing.judge_notes,
+      updated_at: existing.updated_at && existing.updated_at > incoming.updated_at ? existing.updated_at : incoming.updated_at,
+    };
+  }
+  return incoming;
+}
+
 export async function loadSeriesStore(
   client: SupabaseClient,
   seriesId: string,
@@ -352,7 +389,14 @@ export async function commitSeriesStore(
   // Actors before characters: characters.actor_id references actors.
   const actors = [...store.actors.values()].filter((actor) => actor.owner_id === series.owner_id);
   if (actors.length > 0) {
-    const { error } = await client.from("actors").upsert(actors);
+    const { data: existingActors, error: existingActorsError } = await client
+      .from("actors")
+      .select("id, seed_asset_id, visual_reference_asset_ids, source, judge_notes, updated_at")
+      .in("id", actors.map((row) => row.id));
+    if (existingActorsError) throw new Error(existingActorsError.message);
+    const existingById = new Map((existingActors ?? []).map((row) => [String(row.id), row]));
+    const merged = actors.map((row) => mergeActorCommit(row, existingById.get(row.id) ?? null));
+    const { error } = await client.from("actors").upsert(merged);
     if (error) throw new Error(error.message);
   }
 

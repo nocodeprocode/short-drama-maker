@@ -83,6 +83,32 @@ export async function putSeedAsset(
   return { id, storage_path: storagePath };
 }
 
+/** Newest uploaded face photo for this actor, if any. */
+export function pickLatestSeedId(
+  rows: Array<{ id: string; metadata?: unknown; created_at: string }>,
+): string | null {
+  const seeds = rows
+    .filter((row) => (row.metadata as { kind?: string } | null)?.kind === "seed")
+    .sort((left, right) => (left.created_at < right.created_at ? 1 : left.created_at > right.created_at ? -1 : 0));
+  return seeds[0]?.id ?? null;
+}
+
+export async function latestSeedAssetId(
+  supabase: Service,
+  input: { ownerId: string; actorId: string },
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("assets")
+    .select("id, metadata, created_at")
+    .eq("owner_id", input.ownerId)
+    .eq("actor_id", input.actorId)
+    .eq("kind", "character_reference")
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  return pickLatestSeedId((data ?? []) as Array<{ id: string; metadata?: unknown; created_at: string }>);
+}
+
 /**
  * Older generate_actor tasks stored the photo in the payload. Pull it out
  * once so regenerate can run the likeness path without asking for a re-upload.

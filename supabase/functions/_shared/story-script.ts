@@ -57,7 +57,7 @@ async function completeAdapt(script: string): Promise<AdaptedScript> {
     body: JSON.stringify({
       model: MODEL,
       temperature: 0.4,
-      max_tokens: 900,
+      max_tokens: 1800,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM },
@@ -83,7 +83,7 @@ async function completeAdapt(script: string): Promise<AdaptedScript> {
     }
     return {
       title: title.slice(0, 80),
-      brief: brief.slice(0, 2400),
+      brief,
       source_language: String(parsed.source_language ?? "und").trim().slice(0, 12) || "und",
       source_language_name: String(parsed.source_language_name ?? "Unknown").trim().slice(0, 40) || "Unknown",
     };

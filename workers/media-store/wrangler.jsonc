@@ -11,6 +11,9 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "images": {
+    "binding": "IMAGES"
+  },
   "r2_buckets": [
     {
       "binding": "MEDIA",

@@ -1,24 +1,33 @@
 import { useState } from "react";
 import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
+import { Input } from "@/components/base/input/input";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
+import { CatalogPagination, pageItems } from "@/components/drama/catalog-pagination.tsx";
 import { NewActorForm } from "@/components/drama/actor-form.tsx";
 import { CastCardSkeleton } from "@/components/drama/cast-card.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { LoadError } from "@/components/drama/skeleton.tsx";
 import { studio, type Actor } from "@/lib/api.ts";
+import { fuzzySearch } from "@/lib/fuzzy-search.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
+
+const PAGE_SIZE = 12;
 
 export default function Page() {
   const { data, error, reload } = useStudio("actors", () => studio.actors());
   const [open, setOpen] = useState(false);
   /** A tag, or "" for everyone. */
   const [tag, setTag] = useState("");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
   if (error && !data) return <LoadError message={error} onRetry={() => void reload()} />;
 
-  const shown = data ? (tag ? data.items.filter((actor) => actor.tags.includes(tag)) : data.items) : [];
+  const tagged = data ? (tag ? data.items.filter((actor) => actor.tags.includes(tag)) : data.items) : [];
+  const shown = fuzzySearch(tagged, query, (actor) => [...actor.tags, ...actor.shows, actor.source]);
+  const paged = pageItems(shown, page, PAGE_SIZE);
 
   return (
     <>
@@ -42,12 +51,31 @@ export default function Page() {
           />
         ) : null}
 
-        {data && data.tags.length ? (
-          <div className="mb-5 flex flex-wrap items-center gap-1.5">
-            <TagChip label="Everyone" isOn={!tag} onClick={() => setTag("")} />
+        {data ? (
+          <div className="mb-5 space-y-3">
+            <div className="max-w-md">
+              <Input
+                aria-label="Find an actor"
+                placeholder="Find by name, tag, or show"
+                value={query}
+                onChange={(value) => {
+                  setQuery(value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            {data.tags.length ? <div className="flex flex-wrap items-center gap-1.5">
+            <TagChip label="Everyone" isOn={!tag} onClick={() => {
+              setTag("");
+              setPage(1);
+            }} />
             {data.tags.map((item) => (
-              <TagChip key={item} label={item} isOn={tag === item} onClick={() => setTag(tag === item ? "" : item)} />
+              <TagChip key={item} label={item} isOn={tag === item} onClick={() => {
+                setTag(tag === item ? "" : item);
+                setPage(1);
+              }} />
             ))}
+            </div> : null}
           </div>
         ) : null}
 
@@ -61,11 +89,12 @@ export default function Page() {
 
         {shown.length ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {shown.map((actor) => (
+            {paged.map((actor) => (
               <ActorCard key={actor.id} actor={actor} onChanged={() => void reload()} />
             ))}
           </div>
         ) : null}
+        <CatalogPagination page={page} pageSize={PAGE_SIZE} totalItems={shown.length} noun="actors" onPageChange={setPage} />
 
         {data && data.items.length === 0 ? (
           <p className="text-sm text-tertiary">
@@ -74,7 +103,9 @@ export default function Page() {
           </p>
         ) : null}
         {data && data.items.length > 0 && shown.length === 0 ? (
-          <p className="text-sm text-tertiary">Nobody is tagged “{tag}”.</p>
+          <p className="text-sm text-tertiary">
+            {query ? `No actors match “${query}”.` : `Nobody is tagged “${tag}”.`}
+          </p>
         ) : null}
       </PageBody>
     </>
@@ -148,7 +179,9 @@ function ActorCard({ actor, onChanged }: { actor: Actor; onChanged: () => void }
           title={actor.still_url ? undefined : actor.name}
           chip={
             building
-              ? `Building · ${actor.progress?.done ?? 0}/${actor.progress?.total ?? 4}`
+              ? (actor.progress?.done ?? 0) === 0
+                ? "Creating first portrait…"
+                : `Building · ${actor.progress?.done ?? 0}/${actor.progress?.total ?? 4}`
               : actor.status === "failed"
                 ? "Needs attention"
                 : actor.still_url

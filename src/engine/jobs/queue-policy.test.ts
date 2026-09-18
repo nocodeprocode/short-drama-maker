@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { queueVisibleAt, shotNeedsVideo } from "./queue-policy.ts";
+import { productionTaskMayRun, queueVisibleAt, shotNeedsVideo } from "./queue-policy.ts";
 
 describe("queue policy", () => {
+  it("requires payment, an active state, and no pause before production work can run", () => {
+    expect(productionTaskMayRun({ status: "awaiting_payment", paid_amount: 0, paused: false })).toBe(false);
+    expect(productionTaskMayRun({ status: "queued", paid_amount: 25, paused: true })).toBe(false);
+    expect(productionTaskMayRun({ status: "cancelled", paid_amount: 25, paused: false })).toBe(false);
+    expect(productionTaskMayRun({ status: "queued", paid_amount: 25, paused: false })).toBe(true);
+    expect(productionTaskMayRun({ status: "running", paid_amount: "25", paused: false })).toBe(true);
+  });
+
   it("does not ask for another generate_video while a video job is already active", () => {
     const shot = { id: "shot-1", status: "generating" };
     expect(

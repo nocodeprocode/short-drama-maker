@@ -13,26 +13,14 @@ import { Poster } from "@/components/drama/poster.tsx";
 import { AccountSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
 import { parseTags } from "@/components/drama/actor-form.tsx";
 import { studio, type Actor, type ActorDetail } from "@/lib/api.ts";
+import { prepareImageUpload } from "@/lib/image-upload.ts";
 import { useStudio } from "@/lib/use-studio.ts";
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
 
 function statusChip(actor: Pick<Actor, "status" | "progress" | "ready">): string {
   if (actor.status === "running" || actor.status === "queued") {
     const done = actor.progress?.done ?? 0;
     const total = actor.progress?.total ?? 4;
-    return `Building your face · ${done}/${total}`;
+    return done === 0 ? "Creating first portrait…" : `Building face pack · ${done}/${total}`;
   }
   if (actor.status === "failed") return "Needs attention";
   if (actor.ready) return "Ready";
@@ -53,7 +41,7 @@ function packProgress(actor: Pick<Actor, "progress">): number | undefined {
 
 export default function Page() {
   const id = usePageContext().routeParams.id;
-  const { data: actor, error, reload } = useStudio(`actor:${id}`, () => studio.actor(id), [id]);
+  const { data: actor, error, reload, mutate } = useStudio(`actor:${id}`, () => studio.actor(id), [id]);
   const [name, setName] = useState("");
   const [tags, setTags] = useState("");
   const [notes, setNotes] = useState("");
@@ -124,18 +112,36 @@ export default function Page() {
 
   const replacePhoto = async () => {
     if (!file) return;
+    const previous = actor;
     setBusy(true);
     setSaveError(null);
+    // The selected file is already local. Show it as the active seed now,
+    // instead of making the buyer wait for upload, signing, and a reload.
+    if (preview) {
+      mutate({
+        ...actor,
+        seed_url: preview,
+        still_url: preview,
+        refs: [],
+        ready: false,
+        status: "queued",
+        progress: { done: 0, total: 4 },
+        judge_notes: null,
+      });
+    }
     try {
-      await studio.replaceActorPhoto(id, {
-        seed_base64: await fileToBase64(file),
-        seed_mime_type: file.type,
+      const upload = await prepareImageUpload(file);
+      const saved = await studio.replaceActorPhoto(id, {
+        seed_base64: upload.base64,
+        seed_mime_type: upload.mimeType,
         likeness_confirmed: likeness,
       });
+      mutate((current) => current ? { ...current, ...saved } : current);
       setFile(null);
       setLikeness(false);
-      await reload();
+      void reload();
     } catch (caught) {
+      mutate(previous);
       setSaveError(caught instanceof Error ? caught.message : "Could not replace the photo.");
     } finally {
       setBusy(false);

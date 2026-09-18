@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePageContext } from "vike-react/usePageContext";
 import { FilmSlate, Sparkle, UploadSimple } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
@@ -29,7 +29,7 @@ import {
   type VideoTier,
 } from "@/lib/catalog.ts";
 import { readScriptFile } from "@/lib/commission-files.ts";
-import { ApiError, studio } from "@/lib/api.ts";
+import { ApiError, StoryGenerationFailed, studio } from "@/lib/api.ts";
 import { useSessionReady, useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
 
@@ -62,6 +62,7 @@ const DIRECTIONS = [
 ];
 
 const SETTINGS = ["Private hospital", "Penthouse", "Family estate", "Hotel empire", "Law firm", "Tech campus"];
+const STORY_GENERATION_KEY = "takehaus.story-generation";
 
 function money(amount: number) {
   return `$${Math.round(amount).toLocaleString("en-US")}`;
@@ -85,6 +86,7 @@ export default function Page() {
   const [setting, setSetting] = useState("");
   const [category, setCategory] = useState("surprise");
   const [writing, setWriting] = useState(false);
+  const storyRequest = useRef<AbortController | null>(null);
 
   const [script, setScript] = useState<Script | null>(null);
   const [scriptBusy, setScriptBusy] = useState(false);
@@ -113,6 +115,14 @@ export default function Page() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionReady, draftId]);
 
+  useEffect(() => {
+    if (!sessionReady) return;
+    const generationId = window.localStorage.getItem(STORY_GENERATION_KEY);
+    if (generationId) void followIdea(generationId);
+    return () => storyRequest.current?.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionReady]);
+
   async function loadDraft(id: string) {
     setWriting(true);
     setError(null);
@@ -131,18 +141,51 @@ export default function Page() {
   }
 
   async function writeIdea() {
+    await followIdea();
+  }
+
+  async function followIdea(generationId?: string) {
+    storyRequest.current?.abort();
+    const controller = new AbortController();
+    storyRequest.current = controller;
     setWriting(true);
     setError(null);
     setPolicy(null);
+    if (!generationId) {
+      setTitle("");
+      setBrief("");
+    }
     try {
-      const idea = await studio.storyIdea({ hint, category, lead, opposite, setting });
+      const idea = await studio.streamStoryIdea(
+        generationId ? {} : { hint, category, lead, opposite, setting },
+        {
+          generationId,
+          signal: controller.signal,
+          onGenerationId: (id) => window.localStorage.setItem(STORY_GENERATION_KEY, id),
+          onProgress: (state) => {
+            if (state.partial_title) setTitle(state.partial_title);
+            if (state.partial_brief) setBrief(state.partial_brief);
+          },
+        },
+      );
       setTitle(idea.title);
       setBrief(idea.brief);
+      window.localStorage.removeItem(STORY_GENERATION_KEY);
     } catch (caught) {
+      if (controller.signal.aborted || (caught instanceof DOMException && caught.name === "AbortError")) return;
+      if (
+        caught instanceof StoryGenerationFailed ||
+        (caught instanceof ApiError && [400, 404, 409, 422].includes(caught.status))
+      ) {
+        window.localStorage.removeItem(STORY_GENERATION_KEY);
+      }
       if (caught instanceof ApiError && caught.status === 422) setPolicy(caught.message);
       else setError(caught instanceof Error ? caught.message : "Could not write a brief");
     } finally {
-      setWriting(false);
+      if (storyRequest.current === controller) {
+        storyRequest.current = null;
+        setWriting(false);
+      }
     }
   }
 

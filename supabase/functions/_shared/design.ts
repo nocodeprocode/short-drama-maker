@@ -1,6 +1,8 @@
 import type { Service } from "./productions.ts";
+import { ROOM_PACK_VERSION } from "../../../src/drama-engine/craft/place.ts";
 import { buildDesignSlate, expandPlaceName, propKindFor, propsFromArchetype, sameDesignThing } from "./design-slate.ts";
-import { signedGetUrl } from "./sign.ts";
+import { imagePreviewUrl, signedGetUrl } from "./sign.ts";
+import { buildCastSlate } from "./slate.ts";
 
 export type DesignStatus = "planned" | "building" | "ready" | "failed";
 
@@ -41,6 +43,17 @@ function asStatus(value: unknown): DesignStatus {
 /** Extra angles of the same empty set, derived from the current plate. */
 export type LocationAngle = { angle: string; url: string; plate_id?: string };
 
+function documentTextFromMeta(meta: Record<string, unknown> | null | undefined): string | null {
+  const raw = meta?.document;
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const heading = typeof value.heading === "string" ? value.heading.trim() : "";
+  const date = typeof value.date === "string" ? value.date.trim() : "";
+  const body = typeof value.body === "string" ? value.body.trim() : "";
+  if (!heading && !body) return null;
+  return [heading, date ? `Date ${date}` : "", body].filter(Boolean).join("\n");
+}
+
 export function presentLocation(
   row: LocationRow,
   extras: { plate_url?: string | null; angles?: LocationAngle[] } = {},
@@ -62,7 +75,10 @@ export function presentLocation(
   };
 }
 
-export function presentProp(row: PropRow, extras: { still_url?: string | null; angles?: LocationAngle[] } = {}) {
+export function presentProp(
+  row: PropRow,
+  extras: { still_url?: string | null; angles?: LocationAngle[]; document_text?: string | null } = {},
+) {
   return {
     id: row.id,
     series_id: row.series_id,
@@ -76,6 +92,8 @@ export function presentProp(row: PropRow, extras: { still_url?: string | null; a
     state: row.state ?? null,
     /** Extra faces of the same object when it has a back or an open state. */
     angles: extras.angles ?? [],
+    /** The written sample this still typesets, so the card can show the words. */
+    document_text: extras.document_text ?? null,
     status: asStatus(row.status),
     locked: Boolean(row.locked),
     error: row.error ?? null,
@@ -95,7 +113,7 @@ async function signOne(path: string | null | undefined): Promise<string | null> 
   const secret = Deno.env.get("MEDIA_SIGNING_SECRET")?.trim();
   if (!base || !secret || !path) return null;
   try {
-    return await signedGetUrl(base, secret, path, 60 * 30);
+    return imagePreviewUrl(await signedGetUrl(base, secret, path, 60 * 30));
   } catch {
     return null;
   }
@@ -113,16 +131,18 @@ export async function signDesignAssets(
   byId: Map<string, string>;
   anglesByLocation: Map<string, LocationAngle[]>;
   anglesByStill: Map<string, LocationAngle[]>;
+  documentById: Map<string, string>;
 }> {
   const byId = new Map<string, string>();
   const anglesByLocation = new Map<string, LocationAngle[]>();
   const anglesByStill = new Map<string, LocationAngle[]>();
+  const documentById = new Map<string, string>();
   const wanted = assetIds.filter(Boolean);
 
   const [{ data: plates }, { data: roomAngles }, { data: objectAngles }] = await Promise.all([
     wanted.length
-      ? supabase.from("assets").select("id, storage_path").in("id", wanted)
-      : Promise.resolve({ data: [] as Array<{ id: string; storage_path: string }> }),
+      ? supabase.from("assets").select("id, storage_path, metadata").in("id", wanted)
+      : Promise.resolve({ data: [] as Array<{ id: string; storage_path: string; metadata?: Record<string, unknown> | null }> }),
     supabase
       .from("assets")
       .select("id, storage_path, metadata")
@@ -140,13 +160,15 @@ export async function signDesignAssets(
   for (const row of plates ?? []) {
     const url = await signOne(row.storage_path);
     if (url) byId.set(String(row.id), url);
+    const text = documentTextFromMeta((row as { metadata?: Record<string, unknown> | null }).metadata);
+    if (text) documentById.set(String(row.id), text);
   }
   for (const row of roomAngles ?? []) {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const location = String(meta.location ?? "").trim();
     const angle = String(meta.angle ?? "").trim();
     const plateId = String(meta.plate_id ?? "").trim();
-    if (!location || !angle) continue;
+    if (!location || !angle || meta.room_pack_version !== ROOM_PACK_VERSION) continue;
     const url = await signOne(row.storage_path);
     if (!url) continue;
     const list = anglesByLocation.get(location) ?? [];
@@ -164,7 +186,7 @@ export async function signDesignAssets(
     list.push({ angle, url });
     anglesByStill.set(stillId, list);
   }
-  return { byId, anglesByLocation, anglesByStill };
+  return { byId, anglesByLocation, anglesByStill, documentById };
 }
 
 /**
@@ -209,10 +231,31 @@ export async function ensureDesignSlate(
   }
 
   const deviceSlots = (castRows ?? []).filter((row) => row.castable === false && row.archetype);
+
+  // Older drafts stored a sentence fragment such as "she wrote the clause" as
+  // the object's display name. Convert an untouched linked row into the actual
+  // physical prop before it reaches the Objects UI or image prompt.
+  for (const slot of deviceSlots) {
+    const concrete = propsFromArchetype(String(slot.archetype))[0];
+    const linked = props.find((row) => row.cast_slot_id === String(slot.id));
+    if (!concrete || !linked || linked.locked || linked.still_asset_id || linked.name === concrete) continue;
+    await supabase
+      .from("series_props")
+      .update({ name: concrete, kind: propKindFor(concrete), updated_at: now })
+      .eq("id", linked.id);
+    linked.name = concrete;
+    linked.kind = propKindFor(concrete);
+  }
+
   const slate = buildDesignSlate({
     title: series.title ?? "",
     idea: series.description ?? "",
-    deviceArchetypes: deviceSlots.map((row) => String(row.archetype)),
+    deviceArchetypes: [
+      ...deviceSlots.map((row) => String(row.archetype)),
+      ...buildCastSlate({ title: series.title ?? "", idea: series.description ?? "" })
+        .filter((row) => !row.castable)
+        .map((row) => row.archetype),
+    ],
   });
 
   const takenLocations = new Set(locations.map((row) => row.name.trim().toLowerCase()));
@@ -280,6 +323,16 @@ export async function ensureDesignSlate(
   }
 
   await dropDuplicateProps(supabase, series.id);
+
+  // The device has now been promoted into the design slate (or identified as
+  // a non-physical reveal). Remove the legacy cast marker so persisted data,
+  // not only the UI, keeps people and objects in separate categories.
+  if (deviceSlots.length) {
+    await supabase
+      .from("series_cast")
+      .delete()
+      .in("id", deviceSlots.map((row) => String(row.id)));
+  }
 }
 
 /**

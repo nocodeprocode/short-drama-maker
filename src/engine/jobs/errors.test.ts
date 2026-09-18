@@ -34,6 +34,7 @@ describe("task failure classification", () => {
   it("keeps policy and quality distinct", () => {
     expect(classifyTaskFailure("This is not allowed for a real person likeness")).toBe("policy");
     expect(classifyTaskFailure("below the quality bar")).toBe("quality");
+    expect(classifyTaskFailure("CAST_LOOK: production_gear")).toBe("quality");
   });
 
   it("treats provider input-image privacy rejects as technical, not policy", () => {

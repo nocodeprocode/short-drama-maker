@@ -3,26 +3,19 @@ import { Badge } from "@/components/base/badges/badges";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
+import { CatalogPagination, pageItems } from "@/components/drama/catalog-pagination.tsx";
 import { CastCardSkeleton } from "@/components/drama/cast-card.tsx";
+import { ConfirmDialog } from "@/components/drama/confirm-dialog.tsx";
+import { PlaceSearch } from "@/components/drama/place-folders.tsx";
 import { LoadError } from "@/components/drama/skeleton.tsx";
 import { studio, type ObjectEntry } from "@/lib/api.ts";
+import { prepareImageUpload } from "@/lib/image-upload.ts";
+import { fuzzySearch } from "@/lib/fuzzy-search.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
 
 const IMAGE_TYPES = "image/png,image/jpeg,image/webp";
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+const PAGE_SIZE = 16;
 
 function statusChip(entry: ObjectEntry): string | undefined {
   if (entry.status === "building") return "Building…";
@@ -37,7 +30,7 @@ function statusChip(entry: ObjectEntry): string | undefined {
  */
 function Plate({ src, chip, working }: { src?: string | null; chip?: string; working?: boolean }) {
   return (
-    <div className={cx("poster g1 ratio-34", working && "is-working")}>
+    <div className={cx("poster no-shade ratio-34", working && "is-working")}>
       {src ? <img src={src} alt="" className="poster-photo" /> : null}
       {chip ? <span className={cx("pchip", working && "is-working")}>{chip}</span> : null}
       {working ? (
@@ -53,10 +46,20 @@ export default function Page() {
   const { data, error, reload } = useStudio("objects", () => studio.objects());
   /** A tag, or "" for every object. */
   const [tag, setTag] = useState("");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
   if (error && !data) return <LoadError message={error} onRetry={() => void reload()} />;
 
-  const shown = data ? (tag ? data.items.filter((entry) => entry.tags.includes(tag)) : data.items) : [];
+  const tagged = data ? (tag ? data.items.filter((entry) => entry.tags.includes(tag)) : data.items) : [];
+  const shown = fuzzySearch(tagged, query, (entry) => [
+    ...entry.tags,
+    ...entry.shows,
+    entry.notes,
+    entry.kind ?? "",
+    entry.state ?? "",
+  ]);
+  const paged = pageItems(shown, page, PAGE_SIZE);
 
   return (
     <>
@@ -65,12 +68,29 @@ export default function Page() {
         subtitle="Your catalog of props. An object is shot alone, so the same contract or letter stays the same object every time it appears. Use it on any show."
       />
       <PageBody>
-        {data && data.tags.length ? (
-          <div className="mb-5 flex flex-wrap items-center gap-1.5">
-            <TagChip label="All objects" isOn={!tag} onClick={() => setTag("")} />
+        {data ? (
+          <div className="mb-5 space-y-3">
+            <PlaceSearch
+              value={query}
+              placeholder="Find by name, tag, kind, or show"
+              ariaLabel="Find an object"
+              onChange={(value) => {
+                setQuery(value);
+                setPage(1);
+              }}
+            />
+            {data.tags.length ? <div className="flex flex-wrap items-center gap-1.5">
+            <TagChip label="All objects" isOn={!tag} onClick={() => {
+              setTag("");
+              setPage(1);
+            }} />
             {data.tags.map((item) => (
-              <TagChip key={item} label={item} isOn={tag === item} onClick={() => setTag(tag === item ? "" : item)} />
+              <TagChip key={item} label={item} isOn={tag === item} onClick={() => {
+                setTag(tag === item ? "" : item);
+                setPage(1);
+              }} />
             ))}
+            </div> : null}
           </div>
         ) : null}
 
@@ -84,11 +104,12 @@ export default function Page() {
 
         {shown.length ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {shown.map((entry) => (
+            {paged.map((entry) => (
               <ObjectCard key={entry.id} entry={entry} onChanged={() => void reload()} />
             ))}
           </div>
         ) : null}
+        <CatalogPagination page={page} pageSize={PAGE_SIZE} totalItems={shown.length} noun="objects" onPageChange={setPage} />
 
         {data && data.items.length === 0 ? (
           <div className="ds-empty">
@@ -100,7 +121,9 @@ export default function Page() {
           </div>
         ) : null}
         {data && data.items.length > 0 && shown.length === 0 ? (
-          <p className="text-sm text-tertiary">No object is tagged “{tag}”.</p>
+          <p className="text-sm text-tertiary">
+            {query ? `No objects match “${query}”.` : `No object is tagged “${tag}”.`}
+          </p>
         ) : null}
 
         {data ? <AddObject onAdded={() => void reload()} /> : null}
@@ -131,6 +154,7 @@ function ObjectCard({ entry, onChanged }: { entry: ObjectEntry; onChanged: () =>
   const [name, setName] = useState(entry.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const pickerRef = useRef<HTMLInputElement>(null);
   const building = entry.status === "building";
   const blocked = busy || building;
@@ -161,10 +185,8 @@ function ObjectCard({ entry, onChanged }: { entry: ObjectEntry; onChanged: () =>
     // An object already on screen stays in those shows: the shoot keeps its own
     // copy, so the buyer has to be told what removing it here does and does not do.
     if (entry.shows.length) {
-      const ok = window.confirm(
-        `${entry.name} is used in ${entry.shows.join(", ")}. Those shows keep their own copy of it. Remove it from your catalog?`,
-      );
-      if (!ok) return;
+      setConfirmRemove(true);
+      return;
     }
     void run(() => studio.deleteObject(entry.id), "Could not remove this object.");
   }
@@ -249,9 +271,10 @@ function ObjectCard({ entry, onChanged }: { entry: ObjectEntry; onChanged: () =>
                 event.target.value = "";
                 if (!file) return;
                 void run(async () => {
+                  const upload = await prepareImageUpload(file);
                   await studio.uploadObjectImage(entry.id, {
-                    image_base64: await fileToBase64(file),
-                    image_mime_type: file.type,
+                    image_base64: upload.base64,
+                    image_mime_type: upload.mimeType,
                   });
                 }, "Could not use that picture.");
               }}
@@ -261,6 +284,18 @@ function ObjectCard({ entry, onChanged }: { entry: ObjectEntry; onChanged: () =>
 
         {error ? <p className="mt-2 text-sm text-error-primary">{error}</p> : null}
       </div>
+      <ConfirmDialog
+        open={confirmRemove}
+        title={`Remove ${entry.name}?`}
+        description={`${entry.name} is used in ${entry.shows.join(", ")}. Those shows keep their own copy, but it will be removed from your catalog.`}
+        confirmLabel="Remove object"
+        pending={busy}
+        onOpenChange={setConfirmRemove}
+        onConfirm={() => {
+          setConfirmRemove(false);
+          void run(() => studio.deleteObject(entry.id), "Could not remove this object.");
+        }}
+      />
     </div>
   );
 }
@@ -322,10 +357,11 @@ function AddObject({ onAdded }: { onAdded: () => void }) {
             event.target.value = "";
             if (!file) return;
             void run(async (value) => {
+              const upload = await prepareImageUpload(file);
               await studio.createObject({
                 name: value,
-                image_base64: await fileToBase64(file),
-                image_mime_type: file.type,
+                image_base64: upload.base64,
+                image_mime_type: upload.mimeType,
               });
             });
           }}

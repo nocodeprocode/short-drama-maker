@@ -122,9 +122,12 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
     }
   };
 
-  const leads = data.items.filter((slot) => slot.importance === "lead");
-  const supporting = data.items.filter((slot) => slot.importance === "supporting");
-  const background = data.items.filter((slot) => slot.importance === "background");
+  // The cast sheet contains people only. Older API responses can still include
+  // internal story-device rows, so keep this boundary on both client and server.
+  const people = data.items.filter((slot) => slot.castable);
+  const leads = people.filter((slot) => slot.importance === "lead");
+  const supporting = people.filter((slot) => slot.importance === "supporting");
+  const background = people.filter((slot) => slot.importance === "background");
   const nameTaken = data.items.some(
     (slot) => String(slot.role_name ?? slot.display_name).trim().toLowerCase() === addRole.trim().toLowerCase(),
   );
@@ -136,7 +139,7 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <p className="max-w-2xl text-sm text-secondary">
           {naming
-            ? "We’re naming each speaking part and locking their gender before any face is generated. Story elements like a leaked NDA stay objects — they are not people."
+            ? "We’re naming each speaking part and locking their gender before any face is generated."
             : data.story_written
               ? "Every part in this show. Use your own face, pick from the catalog, or generate a face with AI."
               : "These parts come from the brief. Each speaking part has a name and gender before we generate a face."}
@@ -329,48 +332,28 @@ function SlotSection({
     <section>
       <h3 className="text-sm font-semibold text-tertiary">{title}</h3>
       <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {slots.map((slot) =>
-          slot.castable ? (
-            <SlotCard
-              key={slot.id}
-              slot={slot}
+        {slots.map((slot) => (
+          <SlotCard
+            key={slot.id}
+            slot={slot}
+            busy={busy}
+            isOpen={open === slot.id}
+            onOpen={() => onOpen(open === slot.id ? null : slot.id)}
+            onRemove={() => onRemove(slot)}
+            onGenerate={() => onGenerate(slot)}
+          >
+            <ActorPicker
+              seriesId={seriesId}
+              roster={roster}
+              selected={slot.actor_id}
               busy={busy}
-              isOpen={open === slot.id}
-              onOpen={() => onOpen(open === slot.id ? null : slot.id)}
-              onRemove={() => onRemove(slot)}
-              onGenerate={() => onGenerate(slot)}
-            >
-              <ActorPicker
-                seriesId={seriesId}
-                roster={roster}
-                selected={slot.actor_id}
-                busy={busy}
-                onPick={(actorId) => onCast(slot, actorId)}
-                onCreated={(actor) => onCast(slot, actor.id)}
-              />
-            </SlotCard>
-          ) : (
-            <DeviceCard key={slot.id} slot={slot} />
-          ),
-        )}
+              onPick={(actorId) => onCast(slot, actorId)}
+              onCreated={(actor) => onCast(slot, actor.id)}
+            />
+          </SlotCard>
+        ))}
       </div>
     </section>
-  );
-}
-
-function DeviceCard({ slot }: { slot: CastSlot }) {
-  return (
-    <div className="overflow-hidden rounded-xl border border-secondary bg-primary">
-      <Poster title={slot.archetype || slot.display_name} chip="Story element" ratio="34" />
-      <div className="p-4">
-        <div className="text-xs font-semibold text-tertiary">{slot.job_label ?? "Disruptor"}</div>
-        <div className="mt-1 text-lg font-semibold">{slot.display_name}</div>
-        <p className="mt-2 text-sm text-tertiary">
-          This is a planted object or reveal, not a person. The story uses it. We will not generate a face for a
-          contract, NDA, or other prop.
-        </p>
-      </div>
-    </div>
   );
 }
 

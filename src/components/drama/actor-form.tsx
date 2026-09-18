@@ -6,6 +6,7 @@ import { FileDrop } from "@/components/base/file-drop/file-drop";
 import { Input } from "@/components/base/input/input";
 import { TextArea } from "@/components/base/input/textarea";
 import { studio, type Actor } from "@/lib/api.ts";
+import { prepareImageUpload } from "@/lib/image-upload.ts";
 
 export function parseTags(value: string): string[] {
   return value
@@ -13,19 +14,6 @@ export function parseTags(value: string): string[] {
     .map((tag) => tag.replace(/\s+/g, " ").trim())
     .filter(Boolean)
     .slice(0, 12);
-}
-
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
 }
 
 /**
@@ -68,14 +56,15 @@ export function NewActorForm({
     setBusy(true);
     setError(null);
     try {
+      const upload = file ? await prepareImageUpload(file) : null;
       const actor = await studio.createActor({
         name,
         description,
         tags: parseTags(tags),
         series_id: seriesId,
         likeness_confirmed: file ? likeness : undefined,
-        seed_base64: file ? await fileToBase64(file) : undefined,
-        seed_mime_type: file?.type,
+        seed_base64: upload?.base64,
+        seed_mime_type: upload?.mimeType,
       });
       onDone(actor);
     } catch (caught) {

@@ -1,6 +1,7 @@
 import type { Service } from "./productions.ts";
+import { ROOM_PACK_VERSION } from "../../../src/drama-engine/craft/place.ts";
 import { propAssetKey, propKindFor } from "./design-slate.ts";
-import { signedGetUrl } from "./sign.ts";
+import { imagePreviewUrl, signedGetUrl } from "./sign.ts";
 
 /**
  * The owner's catalog of places and objects, the half of design that used to be
@@ -62,7 +63,12 @@ export function normalizeLibraryName(value: unknown): string {
 
 export function presentLocationEntry(
   row: LocationEntry,
-  extras: { image_url?: string | null; seed_url?: string | null; shows?: string[] } = {},
+  extras: {
+    image_url?: string | null;
+    seed_url?: string | null;
+    shows?: string[];
+    angles?: LibraryLocationAngle[];
+  } = {},
 ) {
   return {
     id: row.id,
@@ -72,6 +78,7 @@ export function presentLocationEntry(
     tags: row.tags ?? [],
     image_url: extras.image_url ?? null,
     seed_url: extras.seed_url ?? null,
+    angles: extras.angles ?? [],
     lighting_lock: row.lighting_lock ?? null,
     status: asStatus(row.status),
     error: row.error ?? null,
@@ -109,7 +116,7 @@ async function signOne(path: string | null | undefined): Promise<string | null> 
   const secret = Deno.env.get("MEDIA_SIGNING_SECRET")?.trim();
   if (!base || !secret || !path) return null;
   try {
-    return await signedGetUrl(base, secret, path, 60 * 30);
+    return imagePreviewUrl(await signedGetUrl(base, secret, path, 60 * 30));
   } catch {
     return null;
   }
@@ -123,6 +130,42 @@ export async function signLibraryImages(supabase: Service, assetIds: string[]): 
   for (const row of data ?? []) {
     const url = await signOne(String(row.storage_path));
     if (url) out.set(String(row.id), url);
+  }
+  return out;
+}
+
+export type LibraryLocationAngle = { angle: string; url: string };
+
+/**
+ * The room pack is stored beside the master plate as assets whose metadata
+ * points back to that plate. Surface those assets in the owner catalog too;
+ * previously they existed but only the show Design response exposed them.
+ */
+export async function signLibraryLocationAngles(
+  supabase: Service,
+  ownerId: string,
+  plateAssetIds: string[],
+): Promise<Map<string, LibraryLocationAngle[]>> {
+  const wanted = new Set(plateAssetIds.filter(Boolean));
+  const out = new Map<string, LibraryLocationAngle[]>();
+  if (!wanted.size) return out;
+  const { data } = await supabase
+    .from("assets")
+    .select("id, storage_path, metadata")
+    .eq("owner_id", ownerId)
+    .eq("kind", "character_reference")
+    .contains("metadata", { kind: "room_angle" })
+    .is("deleted_at", null);
+  for (const row of data ?? []) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>;
+    const plateId = String(meta.plate_id ?? "");
+    const angle = String(meta.angle ?? "");
+    if (!wanted.has(plateId) || !angle || meta.room_pack_version !== ROOM_PACK_VERSION) continue;
+    const url = await signOne(String(row.storage_path ?? ""));
+    if (!url) continue;
+    const list = out.get(plateId) ?? [];
+    if (!list.some((item) => item.angle === angle)) list.push({ angle, url });
+    out.set(plateId, list);
   }
   return out;
 }

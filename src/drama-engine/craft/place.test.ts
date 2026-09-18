@@ -11,6 +11,10 @@ import {
   placePlateRetry,
   roomAngleLabel,
   roomAnglesFor,
+  groupByPlaceFolder,
+  placeFolder,
+  placeFolderLabel,
+  placeMatchesQuery,
 } from "./place.ts";
 
 describe("place", () => {
@@ -82,7 +86,9 @@ describe("place", () => {
   it("gives an indoor room five wall-and-plan views", () => {
     const angles = roomAnglesFor("glass office");
     expect(angles.map((row) => row.angle)).toEqual(["facing", "opposite", "left", "right", "overhead"]);
-    expect(angles.every((row) => /same empty room|straight-down plan/i.test(row.prompt))).toBe(true);
+    expect(angles.every((row) => /GEOMETRY LOCK/i.test(row.prompt))).toBe(true);
+    expect(angles.find((row) => row.angle === "overhead")?.prompt).toMatch(/straight-down architectural plan/i);
+    expect(angles.find((row) => row.angle === "opposite")?.prompt).toMatch(/camera station.*180 degrees/i);
     expect(roomAngleLabel("opposite")).toBe("Opposite");
     expect(roomAngleLabel("overhead")).toBe("Overhead");
   });
@@ -101,5 +107,42 @@ describe("place", () => {
     expect(cabin.map((row) => row.angle)).toEqual(["reverse", "left", "right"]);
     expect(cabin.some((row) => row.angle === "overhead")).toBe(false);
     expect(cabin.some((row) => /house-plan|empty room/i.test(row.prompt))).toBe(false);
+  });
+
+  it("builds an elevator as a closed cab with no window", () => {
+    expect(placePlateLead("elevator")).toMatch(/elevator cab/);
+    expect(placePlateLead("elevator")).toMatch(/No window/);
+    expect(placeLockClause("elevator")).toMatch(/FORBIDDEN: a window/);
+    expect(placePlateDressing("elevator")).toMatch(/NO window/);
+    expect(placePlateRetry("elevator", "passenger elevator")).toMatch(/No window/);
+    expect(placePlateLead("elevator")).not.toMatch(/picture window|hotel suite/i);
+
+    const angles = roomAnglesFor("elevator");
+    expect(angles.map((row) => row.angle)).toEqual(["facing", "opposite", "left", "right", "overhead"]);
+    expect(angles.every((row) => /No window/i.test(row.prompt))).toBe(true);
+    expect(angles.some((row) => /closed metal doors/i.test(row.prompt))).toBe(true);
+    expect(roomAngleLabel("facing", "elevator")).toBe("Doors");
+    expect(roomAngleLabel("overhead", "elevator")).toBe("Ceiling");
+  });
+
+  it("files places into catalog folders and finds them by name or folder", () => {
+    expect(placeFolder("glass office")).toBe("indoor");
+    expect(placeFolder("service alley")).toBe("outdoor");
+    expect(placeFolder("hospital corridor")).toBe("threshold");
+    expect(placeFolder("black car")).toBe("vehicle");
+    expect(placeFolder("elevator")).toBe("elevator");
+    expect(placeFolderLabel("indoor")).toBe("Rooms");
+
+    const folders = groupByPlaceFolder(
+      ["signing table", "elevator", "gala", "black car"],
+      (name) => name,
+    );
+    expect(folders.map((row) => row.id)).toEqual(["elevator", "indoor", "vehicle"]);
+    expect(folders.find((row) => row.id === "indoor")?.items).toEqual(["signing table", "gala"]);
+
+    expect(placeMatchesQuery("elevator", "elev")).toBe(true);
+    expect(placeMatchesQuery("glass office", "rooms")).toBe(true);
+    expect(placeMatchesQuery("black car", "office")).toBe(false);
+    expect(placeMatchesQuery("gala", "contract", ["Claws in the Contract"])).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import { alignVoicePrompt } from "./voice-sex.ts";
 import { openRouterJson, openRouterProvider } from "./openrouter.ts";
 import { validateBibleShape, validateBlockScenesShape, validateOutlineShape, validatePlanShape } from "./plan-schema.ts";
 import { DROP_IN_RULES, dramaHooks, ledgerForEpisode } from "../../drama-engine/index.ts";
+import { fallbackDocument, normalizeWrittenDocument } from "../pipeline/prop-bible.ts";
 
 type ChatResponse = {
   choices?: Array<{ message?: { content?: string } }>;
@@ -330,6 +331,24 @@ ${dramaHooks.writeEpisodeUserPrompt({ bible: input.bible, episodeNumber: input.e
           length,
         ),
       );
+    },
+
+    async writeDocument(input) {
+      const fallback = fallbackDocument(input);
+      const raw = await completeJson<unknown>(
+        `Write a short fictional sample of this paper for a vertical drama still.
+The paper is named: ${input.name}
+Story: ${input.title ?? ""}. ${input.logline ?? ""}
+Parties (use these names if they fit): ${input.parties.join(", ") || "two fictional adults"}
+Rules:
+- Real English legal-looking clauses. No lorem ipsum. No dummy brands. No garbled names.
+- Date is always 10. Never 2016 or any other year.
+- Heading is a real title such as NON-DISCLOSURE AGREEMENT or EMPLOYMENT AGREEMENT.
+- 4 to 6 numbered clauses. 40 to 90 words total.
+- Fictional adults only. No real companies.
+JSON: { "heading": string, "date": "10", "body": string }`,
+      );
+      return normalizeWrittenDocument(raw, fallback);
     },
   };
 }

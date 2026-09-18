@@ -54,5 +54,14 @@ describe("design presenters", () => {
     });
     expect(row.angles).toEqual([{ angle: "reverse", url: "https://mem/nda-back" }]);
     expect(row.still_url).toBe("https://mem/nda");
+    expect(row.document_text).toBeNull();
+  });
+
+  it("surfaces the written contract on a document row", () => {
+    const row = presentProp(prop, {
+      still_url: "https://mem/nda",
+      document_text: "NON-DISCLOSURE AGREEMENT\nDate 10\nThis agreement is made on 10.",
+    });
+    expect(row.document_text).toMatch(/NON-DISCLOSURE AGREEMENT/);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeCharacterCommit } from "./store-postgres.ts";
+import { mergeActorCommit, mergeCharacterCommit } from "./store-postgres.ts";
 
 describe("mergeCharacterCommit", () => {
   it("does not wipe stills when a later job commits a stale snapshot", () => {
@@ -132,5 +132,49 @@ describe("mergeCharacterCommit", () => {
       },
     );
     expect(merged.created_at).toBe("2026-08-30T00:00:00.000Z");
+  });
+});
+
+describe("mergeActorCommit", () => {
+  it("does not write an old seed over a photo that was just replaced", () => {
+    const merged = mergeActorCommit(
+      {
+        seed_asset_id: "seed-old",
+        visual_reference_asset_ids: { front: "still-old" },
+        source: "likeness",
+        judge_notes: "old pack",
+        updated_at: "2026-09-13T12:00:00.000Z",
+      },
+      {
+        seed_asset_id: "seed-new",
+        visual_reference_asset_ids: {},
+        source: "likeness",
+        judge_notes: null,
+        updated_at: "2026-09-13T12:05:00.000Z",
+      },
+    );
+    expect(merged.seed_asset_id).toBe("seed-new");
+    expect(merged.visual_reference_asset_ids).toEqual({});
+    expect(merged.judge_notes).toBeNull();
+  });
+
+  it("lets a first generate persist a new seed when the table has none", () => {
+    const merged = mergeActorCommit(
+      {
+        seed_asset_id: "seed-1",
+        visual_reference_asset_ids: { front: "still-1" },
+        source: "likeness",
+        judge_notes: null,
+        updated_at: "2026-09-13T12:00:00.000Z",
+      },
+      {
+        seed_asset_id: null,
+        visual_reference_asset_ids: {},
+        source: "generated",
+        updated_at: "2026-09-13T11:00:00.000Z",
+      },
+    );
+    expect(merged.seed_asset_id).toBe("seed-1");
+    expect(merged.visual_reference_asset_ids).toEqual({ front: "still-1" });
   });
 });

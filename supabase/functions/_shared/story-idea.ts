@@ -25,6 +25,8 @@ export type StoryIdeaInput = {
   setting?: string;
 };
 
+export type StoryIdeaProgress = Pick<StoryIdea, "title" | "brief">;
+
 /** Same writer family as the production bible. Sonnet is the fallback if Opus is dark. */
 const IDEA_MODELS = ["anthropic/claude-opus-5", "anthropic/claude-sonnet-4.6"] as const;
 
@@ -45,7 +47,7 @@ Hard rules:
 - No sexual content, no minors, no celebrities, no real brands as villains.
 - If the user locked a lead, opposite, setting, or idea, those are law. Escalate them. Do not replace them with a stock plot.
 - If they locked nothing, invent a commercially hot premise that feels current this week — a specific people-and-room version of a live trope (hidden identity, contract marriage, revenge, secret child, second chance, family secret). Do not recite a famous plot beat-for-beat.
-- The brief is 5 to 8 sentences. Include: who they are, the locked rooms, the core expectation, how episode 1 opens, how episode 1 ends, and why a stranger would tap the next episode.
+- The brief is a complete 8 to 12 sentence story treatment. Include: who they are, the locked rooms, the core expectation, the season engine, how episode 1 opens, its major turn, how episode 1 ends, and why a stranger would tap the next episode. Finish every sentence and every thought. Never stop mid-sentence.
 - Return JSON only: {"title":"...","brief":"...","category":"..."}`;
 
 const FALLBACKS: StoryIdea[] = [
@@ -73,7 +75,10 @@ export function directionLabel(id: string | undefined): string | undefined {
   return STORY_DIRECTIONS.find((item) => item.id === id)?.label;
 }
 
-export async function generateStoryIdea(input: StoryIdeaInput): Promise<StoryIdea> {
+export async function generateStoryIdea(
+  input: StoryIdeaInput,
+  onProgress?: (progress: StoryIdeaProgress) => void | Promise<void>,
+): Promise<StoryIdea> {
   const hint = String(input.hint ?? "").trim().slice(0, 400);
   const lead = String(input.lead ?? "").trim().slice(0, 200);
   const opposite = String(input.opposite ?? "").trim().slice(0, 200);
@@ -89,12 +94,15 @@ export async function generateStoryIdea(input: StoryIdeaInput): Promise<StoryIde
     }
   }
 
-  const idea = await completeIdea({ hint, category, lead, opposite, setting });
+  const idea = await completeIdea({ hint, category, lead, opposite, setting }, onProgress);
   const locked = applyLocks(idea, { lead, opposite, setting });
   const outgoing = moderateText(`${locked.title}\n${locked.brief}`, "story_idea");
   if (outgoing.verdict === "block") {
-    return applyLocks(pickFallback(category), { lead, opposite, setting });
+    const fallback = applyLocks(pickFallback(category), { lead, opposite, setting });
+    await onProgress?.({ title: fallback.title, brief: fallback.brief });
+    return fallback;
   }
+  await onProgress?.({ title: locked.title, brief: locked.brief });
   return locked;
 }
 
@@ -104,7 +112,7 @@ async function completeIdea(input: {
   lead: string;
   opposite: string;
   setting: string;
-}): Promise<StoryIdea> {
+}, onProgress?: (progress: StoryIdeaProgress) => void | Promise<void>): Promise<StoryIdea> {
   const key = Deno.env.get("OPENROUTER_API_KEY")?.trim();
   if (!key) {
     throw Object.assign(new Error("Story writing is not configured."), { name: "ConfigError" });
@@ -138,7 +146,8 @@ async function completeIdea(input: {
       body: JSON.stringify({
         model,
         temperature: 0.7,
-        max_tokens: 1200,
+        max_tokens: 2200,
+        stream: true,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: SYSTEM },
@@ -146,16 +155,20 @@ async function completeIdea(input: {
         ],
       }),
     });
-    const text = await response.text();
     lastStatus = response.status;
-    lastBody = text.slice(0, 240);
     if (!response.ok) {
+      lastBody = (await response.text()).slice(0, 240);
       console.error(`story-idea ${model} ${response.status}: ${lastBody}`);
       continue;
     }
     try {
-      const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> };
-      const content = body.choices?.[0]?.message?.content ?? "";
+      await onProgress?.({ title: "", brief: "" });
+      const content = await readStreamedContent(response, async (partial) => {
+        await onProgress?.({
+          title: partialJsonString(partial, "title"),
+          brief: partialJsonString(partial, "brief"),
+        });
+      });
       const parsed = JSON.parse(extractJson(content)) as Partial<StoryIdea>;
       const title = String(parsed.title ?? "").trim();
       const brief = String(parsed.brief ?? "").trim();
@@ -165,7 +178,7 @@ async function completeIdea(input: {
       }
       return {
         title: title.slice(0, 80),
-        brief: brief.slice(0, 1600),
+        brief,
         category: String(parsed.category ?? input.category),
       };
     } catch (error) {
@@ -176,7 +189,72 @@ async function completeIdea(input: {
   throw Object.assign(new Error("Could not write the story."), { name: "UpstreamError" });
 }
 
-function applyLocks(
+async function readStreamedContent(
+  response: Response,
+  onContent: (content: string) => void | Promise<void>,
+): Promise<string> {
+  const type = response.headers.get("content-type") ?? "";
+  if (!type.includes("text/event-stream") || !response.body) {
+    const body = JSON.parse(await response.text()) as { choices?: Array<{ message?: { content?: string } }> };
+    const content = body.choices?.[0]?.message?.content ?? "";
+    await onContent(content);
+    return content;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  let content = "";
+
+  const consume = async (line: string) => {
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+    const event = JSON.parse(data) as {
+      choices?: Array<{ delta?: { content?: string | null } }>;
+      error?: { message?: string };
+    };
+    if (event.error?.message) throw new Error(event.error.message);
+    const delta = event.choices?.[0]?.delta?.content;
+    if (!delta) return;
+    content += delta;
+    await onContent(content);
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    pending += decoder.decode(value, { stream: !done });
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop() ?? "";
+    for (const line of lines) await consume(line);
+    if (done) break;
+  }
+  if (pending) await consume(pending);
+  return content;
+}
+
+export function partialJsonString(source: string, key: string): string {
+  const match = new RegExp(`"${key.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}"\\s*:\\s*"`).exec(source);
+  if (!match) return "";
+  let value = "";
+  let escaped = false;
+  for (let index = (match.index ?? 0) + match[0].length; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (escaped) {
+      value += char === "n" ? "\n" : char === "r" ? "\r" : char === "t" ? "\t" : char;
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (char === "\"") {
+      break;
+    } else {
+      value += char;
+    }
+  }
+  return value;
+}
+
+export function applyLocks(
   idea: StoryIdea,
   locks: { lead: string; opposite: string; setting: string },
 ): StoryIdea {
@@ -185,7 +263,7 @@ function applyLocks(
   if (locks.opposite && !containsLock(idea.brief, locks.opposite)) extras.push(`Opposite lock: ${locks.opposite}`);
   if (locks.setting && !containsLock(idea.brief, locks.setting)) extras.push(`Setting lock: ${locks.setting}`);
   if (!extras.length) return idea;
-  return { ...idea, brief: `${idea.brief}\n\n${extras.join("\n")}`.slice(0, 1600) };
+  return { ...idea, brief: `${idea.brief}\n\n${extras.join("\n")}` };
 }
 
 function containsLock(brief: string, lock: string): boolean {

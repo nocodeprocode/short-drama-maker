@@ -49,8 +49,17 @@ export type LocationNotes = {
   people_present: boolean;
   /** Dummy words on a fixture, or a leaked metaphor prop (padlock, key, slate). */
   placeholder_lettering: boolean;
+  /** Visible filmmaking equipment that does not belong inside the story world. */
+  production_gear_present: boolean;
   /** Floor plan in one sentence: main surface and its height, window wall, shelf wall, floor. */
   geometry?: string;
+  model: string;
+};
+
+export type PlaceContinuityJudgement = {
+  consistent: boolean;
+  camera_correct: boolean;
+  notes: string;
   model: string;
 };
 
@@ -60,6 +69,16 @@ export type FaceBox = { x: number; y: number; width: number; height: number; con
 export interface VisionEngine {
   judgeIdentity(input: IdentityJudgeInput): Promise<IdentityJudgement>;
   describeLocation?(input: { plate: Uint8Array; plateMime?: string; location: string }): Promise<LocationNotes>;
+  judgePlaceContinuity?(input: {
+    master: Uint8Array;
+    masterMime?: string;
+    layout?: Uint8Array | null;
+    layoutMime?: string;
+    candidate: Uint8Array;
+    candidateMime?: string;
+    location: string;
+    angle: string;
+  }): Promise<PlaceContinuityJudgement>;
   /** Where the (single) face is in a character still; null when none is visible. */
   locateFace?(input: { image: Uint8Array; imageMime?: string }): Promise<FaceBox | null>;
   /** Phone-close beauty / modest clothes on a NEW character still. */
@@ -72,15 +91,18 @@ export type CastLookJudgement = {
   beauty: boolean;
   close: boolean;
   modest: boolean;
+  production_gear_present?: boolean;
+  production_gear_evidence?: string;
   notes: string;
   model: string;
 };
 
 const CAST_LOOK_RUBRIC = `You judge a short-drama character still for phone-close beauty.
-Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "notes": "<one sentence>"}.
+Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "production_gear_present": true|false, "production_gear_evidence": "<visible object and its position, or empty>", "notes": "<one sentence>"}.
 beauty is true only if the face is strikingly beautiful and camera-ready — not tired, plain, average, or unremarkable.
 close is true only if the face is FaceTime-close or closer (eyes readable, head-and-shoulders or tighter), not a wide or full-body.
 modest is true if clothes are on and opaque.
+production_gear_present is true only if unmistakable filmmaking equipment is visibly inside the image pixels: a studio lamp, LED panel, softbox, light stand, tripod, reflector, camera, cable, backdrop edge, boom, or monitor. Do not infer equipment from professional lighting. A clean seamless backdrop is allowed. If uncertain, answer false. When true, production_gear_evidence must name the visible object and where it appears; otherwise it must be empty.
 Fictional adult. Never explain outside the JSON.`;
 
 export function parseCastLook(content: string, model: string): CastLookJudgement {
@@ -93,6 +115,9 @@ export function parseCastLook(content: string, model: string): CastLookJudgement
     beauty: flag("beauty"),
     close: flag("close"),
     modest: raw.modest === false || raw.modest === "false" ? false : true,
+    production_gear_present: raw.production_gear_present === true || raw.production_gear_present === "true",
+    production_gear_evidence:
+      typeof raw.production_gear_evidence === "string" ? raw.production_gear_evidence.slice(0, 160) : "",
     notes: typeof raw.notes === "string" ? raw.notes.slice(0, 240) : "",
     model,
   };
@@ -122,13 +147,38 @@ export function parseFaceBox(content: string): FaceBox | null {
 }
 
 const LOCATION_RUBRIC = `You are a cinematographer writing a lighting continuity note from one establishing still.
-Answer only with JSON: {"people_present": true|false, "placeholder_lettering": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact place and light>", "geometry": "<one sentence of real geography>"}.
+Answer only with JSON: {"people_present": true|false, "placeholder_lettering": true|false, "production_gear_present": true|false, "palette": "<3-5 words>", "key_light": "<direction, colour temperature, hardness in one phrase>", "dressing": ["<anchor>", "<anchor>"], "lighting_lock": "<one sentence a video model can follow to keep every close-up in this exact place and light>", "geometry": "<one sentence of real geography>"}.
 people_present is true if ANY human figure is visible in any form: a face, a body, a silhouette, someone with their back to camera, a reflection, a mannequin, or a person in a painting or photograph on the wall. Be strict.
 placeholder_lettering is true if any fixture shows dummy or leaked copy: LOCATION, SAMPLE, LOREM, TEST, INSERT, PLATE, 9:16, garbled lettering, or the name of the place written as a title. A real floor number such as 10 is not dummy copy. Also true if a padlock, key, chain, clapperboard, or film slate is sitting in the place as a prop.
+production_gear_present is true if ANY filmmaking apparatus is visible: a studio lamp or LED panel, light stand, tripod, C-stand, softbox, reflector, boom microphone, camera, cable, green screen, backdrop support, sandbag, monitor, dolly, or crew gear. Ordinary in-world chandeliers, ceiling lights, desk lamps, street lamps, and architectural fixtures are allowed.
 If the still is OUTDOOR (alley, street, rain, pavement, a parked car): geometry names the wall or the car, the ground, the light (street lamp or window), the opening, and that there are no indoor curtains or furniture in the street. lighting_lock must not invent a room.
 If the location is a car and the still is a furnished room, placeholder_lettering is true — a car does not belong in a living room.
 If the still is INDOOR: geometry is the floor plan — the main surface, window side, shelves, floor material. lighting_lock must not invent open sky or rain inside.
+If the location is an elevator or lift: this is a closed passenger cab. placeholder_lettering is also true if the still shows a window, an outdoor view, sky, a city through glass, rain on glass, or a hotel corridor posing as a cab. geometry names the closed doors, panel walls, handrail, ceiling light, and that there is no window.
 Rules: name real visible things only; no brands or readable text; keep lighting_lock under 40 words and geometry under 45 words.`;
+
+export const PLACE_CONTINUITY_RUBRIC = `You are a strict set-continuity supervisor.
+Image 1 is the master set. Image 2, when present, is its authoritative overhead layout. The final image is a requested new camera angle.
+Answer only with JSON: {"consistent": true|false, "camera_correct": true|false, "notes": "<one sentence>"}.
+consistent is true only when the final image can be the same physical room with the camera moved or panned as requested.
+Reject if a table, chair group, door, window, cabinet, wall feature, or fixture moved, rotated within the floor plan, mirrored, changed sides, changed count materially, or changed identity.
+Perspective may change apparent angles and sizes. A camera rotation is allowed; rotating or rearranging the furniture is not.
+camera_correct is true only when the final image actually performs the requested direction. Opposite must show the reverse 180-degree field, left and right must show their respective 90-degree fields, facing must retain the master direction, and overhead must be genuinely straight down. A duplicate or lightly reframed master is false for opposite, left, right, or overhead.
+For an overhead candidate, reject unless its layout plausibly preserves all visible anchors and their orientation from the master.
+Never explain outside the JSON.`;
+
+export function parsePlaceContinuity(content: string, model: string): PlaceContinuityJudgement {
+  const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  const raw = JSON.parse(start >= 0 && end > start ? trimmed.slice(start, end + 1) : trimmed) as Record<string, unknown>;
+  return {
+    consistent: raw.consistent === true || raw.consistent === "true",
+    camera_correct: raw.camera_correct === true || raw.camera_correct === "true",
+    notes: typeof raw.notes === "string" ? raw.notes.slice(0, 240) : "",
+    model,
+  };
+}
 
 export function parseLocationNotes(content: string, model: string): LocationNotes {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -145,6 +195,7 @@ export function parseLocationNotes(content: string, model: string): LocationNote
     dressing,
     people_present: raw.people_present === true || raw.people_present === "true",
     placeholder_lettering: raw.placeholder_lettering === true || raw.placeholder_lettering === "true",
+    production_gear_present: raw.production_gear_present === true || raw.production_gear_present === "true",
     geometry: typeof raw.geometry === "string" && raw.geometry.trim() ? raw.geometry.trim().slice(0, 320) : undefined,
     model,
   };
@@ -261,6 +312,35 @@ export function createOpenRouterVision(model = VISION_MODEL): VisionEngine {
       const content = body.choices?.[0]?.message?.content;
       if (!content) throw new Error("OpenRouter returned no text for the location note");
       return parseLocationNotes(content, model);
+    },
+
+    async judgePlaceContinuity(input) {
+      const images: Array<Record<string, unknown>> = [
+        { type: "text", text: `Location: ${input.location}. Requested angle: ${input.angle}.` },
+        { type: "image_url", image_url: { url: dataUrl(input.master, input.masterMime ?? "image/png") } },
+      ];
+      if (input.layout) {
+        images.push({ type: "image_url", image_url: { url: dataUrl(input.layout, input.layoutMime ?? "image/png") } });
+      }
+      images.push({ type: "image_url", image_url: { url: dataUrl(input.candidate, input.candidateMime ?? "image/png") } });
+      const body = await openRouterJson<ChatResponse>("/chat/completions", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          usage: { include: true },
+          provider: openRouterProvider("text"),
+          messages: [
+            { role: "system", content: PLACE_CONTINUITY_RUBRIC },
+            { role: "user", content: images },
+          ],
+        }),
+      }, { idempotent: true });
+      costMeter.record(openRouterUsageCost(body.usage, VISION_PRICE, "vision"));
+      const content = body.choices?.[0]?.message?.content;
+      if (!content) throw new Error("OpenRouter returned no place-continuity judgement");
+      return parsePlaceContinuity(content, model);
     },
 
     async describeBlocking(input) {

@@ -80,7 +80,7 @@ export function presentActor(
   if (done >= total) status = "ready";
   else if (task?.status === "running") status = "running";
   else if (task?.status === "queued") status = "queued";
-  else if (task?.status === "failed") status = "failed";
+  else if (task && ["failed", "dead_lettered", "cancelled"].includes(task.status)) status = "failed";
   else if (done > 0) status = "ready";
   return {
     id: row.id,

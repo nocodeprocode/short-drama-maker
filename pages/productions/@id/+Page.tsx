@@ -4,6 +4,7 @@ import { Pause, Play, XCircle } from "@phosphor-icons/react";
 import { Button } from "@/components/base/buttons/button";
 import { Badge } from "@/components/base/badges/badges";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
+import { ConfirmDialog } from "@/components/drama/confirm-dialog.tsx";
 import { EpisodeStrip } from "@/components/drama/episode-strip.tsx";
 import { ShotGrid } from "@/components/drama/shot-grid.tsx";
 import { StudioFeed } from "@/components/drama/studio-feed.tsx";
@@ -19,7 +20,7 @@ import {
   watchLinksForEpisodes,
 } from "@/engine/present.ts";
 import { LiveShowSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
-import { ApiError, studio, type ProductionDetail } from "@/lib/api.ts";
+import { studio, type ProductionDetail } from "@/lib/api.ts";
 import { readCache, writeCache } from "@/lib/cache.ts";
 import { useLiveReload, useSessionReady, useStudio } from "@/lib/use-studio.ts";
 
@@ -35,11 +36,11 @@ export default function Page() {
   const id = page.routeParams.id;
   const paid = String(page.urlParsed.search.checkout ?? "") === "success";
   const sessionReady = useSessionReady();
-  const { data: account } = useStudio("account", () => studio.account());
-  const [paying, setPaying] = useState(false);
   const cacheKey = `production:${id}`;
   const [run, setRun] = useState<ProductionDetail | null>(() => readCache<ProductionDetail>(cacheKey));
   const [error, setError] = useState<string | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const inFlight = useRef(false);
   const hasRun = useRef(Boolean(run));
 
@@ -98,22 +99,23 @@ export default function Page() {
   const canResume = run.paused && run.status !== "awaiting_payment" && run.status !== "cancelled";
   const canCancel = !ready && run.status !== "cancelled";
   const unpaidDraft = run.status === "awaiting_payment" && Number(run.paid_amount ?? 0) <= 0;
-  const cancel = () => {
-    if (unpaidDraft) {
-      if (!window.confirm("Discard this unpaid draft? The brief is deleted. Unpaid drafts are also removed after 14 days.")) return;
-      studio
-        .discardSeries(run.series_id)
-        .then(() => {
-          window.location.href = "/series";
-        })
-        .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not discard the draft"));
-      return;
+  const cancel = async () => {
+    setCancelling(true);
+    setError(null);
+    try {
+      if (unpaidDraft) {
+        await studio.discardSeries(run.series_id);
+        window.location.href = "/series";
+        return;
+      }
+      await studio.cancel(run.id);
+      setConfirmCancel(false);
+      reload();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : unpaidDraft ? "Could not discard the draft" : "Could not cancel");
+    } finally {
+      setCancelling(false);
     }
-    if (!window.confirm("Cancel this production? Finished takes stay on the show and unused credit stays on your balance.")) return;
-    studio
-      .cancel(run.id)
-      .then(reload)
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not cancel"));
   };
   const watch = watchLinksForEpisodes(run.episodes);
   const shots = run.shoots ?? [];
@@ -126,6 +128,55 @@ export default function Page() {
     : working?.title
       ? `${working.title}. You can leave.`
       : "The studio is working. You can leave.";
+
+  if (run.status === "awaiting_payment") {
+    return (
+      <>
+        <PageHeader
+          eyebrow={run.sku === "2" ? "Pilot draft" : `Episodes ${run.episode_start}–${run.episode_end}`}
+          title={run.series_title ?? "Show"}
+          subtitle="This production has not started. No episode generation is running."
+          actions={
+            <div className="flex flex-wrap gap-2">
+              <Badge type="pill-color" color="gray" size="sm">Not started</Badge>
+              <Button color="primary" href={`/series/${run.series_id}`}>Review show</Button>
+              <Button color="tertiary" iconLeading={XCircle} onClick={() => setConfirmCancel(true)}>
+                {unpaidDraft ? CTA.discardDraft : "Cancel"}
+              </Button>
+            </div>
+          }
+        />
+        <PageBody>
+          <div className="max-w-2xl rounded-xl border border-secondary bg-primary p-6">
+            <h2 className="font-display text-lg font-semibold">Complete the show before starting</h2>
+            <p className="mt-2 text-sm text-secondary">
+              Nothing is being generated or charged by this production. Return to the show to restore missing cast,
+              places, and objects. You will get a separate final Start button only when everything is ready.
+            </p>
+            {run.readiness?.blocking.length ? (
+              <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-secondary">
+                {run.readiness.blocking.map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            ) : null}
+            {error ? <p className="mt-4 text-sm text-error-primary">{error}</p> : null}
+          </div>
+        </PageBody>
+        <ConfirmDialog
+          open={confirmCancel}
+          title={unpaidDraft ? "Discard this unpaid draft?" : "Cancel this production?"}
+          description={
+            unpaidDraft
+              ? "The brief will be permanently deleted. Unpaid drafts are also automatically removed after 14 days."
+              : "Finished takes will stay on the show, and unused credit will remain on your balance."
+          }
+          confirmLabel={unpaidDraft ? "Discard draft" : "Cancel production"}
+          pending={cancelling}
+          onOpenChange={setConfirmCancel}
+          onConfirm={() => void cancel()}
+        />
+      </>
+    );
+  }
 
   return (
     <>
@@ -149,7 +200,7 @@ export default function Page() {
               </Button>
             ) : null}
             {canCancel ? (
-              <Button color="tertiary" iconLeading={XCircle} onClick={cancel}>
+              <Button color="tertiary" iconLeading={XCircle} onClick={() => setConfirmCancel(true)}>
                 {unpaidDraft ? CTA.discardDraft : "Cancel"}
               </Button>
             ) : null}
@@ -158,53 +209,6 @@ export default function Page() {
                 {link.label}
               </Button>
             ))}
-            {run.status === "awaiting_payment" ? (
-              <>
-                <Button
-                  color="primary"
-                  isDisabled={paying}
-                  onClick={() => {
-                    setPaying(true);
-                    const sku = Number(run.sku);
-                    studio
-                      .createProduction({
-                        series_id: run.series_id,
-                        sku: Number.isFinite(sku) && sku > 0 ? sku : 2,
-                        priority: run.priority,
-                        episode_length: run.episode_length,
-                        video_tier: run.video_tier ?? "pro",
-                        mode: run.mode === "studio" ? "studio" : "autopilot",
-                      })
-                      .then((created) => {
-                        window.location.href = `/productions/${created.id}`;
-                      })
-                      .catch((caught) => {
-                        setPaying(false);
-                        if (caught instanceof ApiError && caught.status === 402) {
-                          window.location.href = "/account/billing";
-                          return;
-                        }
-                        setError(caught instanceof Error ? caught.message : "Could not start the run");
-                      });
-                  }}
-                >
-                  {paying ? "Starting…" : CTA.payAgain}
-                </Button>
-                {account?.is_admin ? (
-                  <Button
-                    color="tertiary"
-                    onClick={() =>
-                      studio
-                        .confirmTest(run.id)
-                        .then(reload)
-                        .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not confirm"))
-                    }
-                  >
-                    Confirm test
-                  </Button>
-                ) : null}
-              </>
-            ) : null}
             {run.series_id ? (
               <Button href={`/series/${run.series_id}`} color="tertiary">
                 Open show
@@ -227,6 +231,11 @@ export default function Page() {
               {run.intervention_type === "quality_budget" ? (
                 <Button color="primary" onClick={() => studio.useBest(run.id).then(reload)}>
                   {CTA.useBest}
+                </Button>
+              ) : null}
+              {run.intervention_type === "missing_dependencies" ? (
+                <Button color="primary" href={`/series/${run.series_id}`}>
+                  Restore missing pieces
                 </Button>
               ) : null}
               {run.intervention_type === "technical" || !run.intervention_type ? (
@@ -328,6 +337,19 @@ export default function Page() {
           </div>
         )}
       </PageBody>
+      <ConfirmDialog
+        open={confirmCancel}
+        title={unpaidDraft ? "Discard this unpaid draft?" : "Cancel this production?"}
+        description={
+          unpaidDraft
+            ? "The brief will be permanently deleted. Unpaid drafts are also automatically removed after 14 days."
+            : "Finished takes will stay on the show, and unused credit will remain on your balance."
+        }
+        confirmLabel={unpaidDraft ? "Discard draft" : "Cancel production"}
+        pending={cancelling}
+        onOpenChange={setConfirmCancel}
+        onConfirm={() => void cancel()}
+      />
     </>
   );
 }

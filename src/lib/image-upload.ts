@@ -1,0 +1,25 @@
+export type ImageUpload = {
+  base64: string;
+  mimeType: string;
+};
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Preserve the exact source bytes. Preview conversion happens at delivery. */
+export async function prepareImageUpload(file: File): Promise<ImageUpload> {
+  return {
+    base64: await fileToBase64(file),
+    mimeType: file.type || "application/octet-stream",
+  };
+}

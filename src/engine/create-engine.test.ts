@@ -446,6 +446,7 @@ describe("production design", () => {
         dressing: ["bare desk", "glass wall"],
         people_present: seen < 3,
         placeholder_lettering: false,
+        production_gear_present: false,
         model: "test",
       };
     };
@@ -479,6 +480,7 @@ describe("production design", () => {
       dressing: ["x"],
       people_present: true,
       placeholder_lettering: false,
+      production_gear_present: false,
       model: "test",
     });
     await expect(
@@ -495,6 +497,7 @@ describe("production design", () => {
       dressing: ["steel doors", "floor lamp"],
       people_present: false,
       placeholder_lettering: true,
+      production_gear_present: false,
       model: "test",
     });
     const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
@@ -515,6 +518,38 @@ describe("production design", () => {
     await expect(
       app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "elevator", force: true }),
     ).rejects.toThrow(/dummy lettering or a leaked prop/);
+  });
+
+  it("refuses a location plate containing visible filmmaking equipment", async () => {
+    const ai = testGateway();
+    ai.vision!.describeLocation = async () => ({
+      lighting_lock: "warm window light",
+      palette: "walnut and amber",
+      key_light: "window right",
+      dressing: ["chandelier", "chairs"],
+      people_present: false,
+      placeholder_lettering: false,
+      production_gear_present: true,
+      model: "test",
+    });
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation at a gala.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_design_no_gear",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await expect(
+      app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "gala", force: true }),
+    ).rejects.toThrow(/filmmaking equipment/);
   });
 
   it("reuses a built room instead of paying for it twice", async () => {
@@ -561,6 +596,40 @@ describe("production design", () => {
     expect(walls.every((row) => row.metadata.location === "glass office")).toBe(true);
   });
 
+  it("builds the overhead layout first and uses it to lock every wall view", async () => {
+    const ai = testGateway();
+    const original = ai.image.generateReferenceFromSeed.bind(ai.image);
+    const requests: Array<{ description: string; hasLayout: boolean }> = [];
+    ai.image.generateReferenceFromSeed = async (input) => {
+      if (input.kind === "location") {
+        requests.push({ description: input.description, hasLayout: Boolean(input.layout_bytes) });
+      }
+      return original(input);
+    };
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation in a boardroom.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_design_floor_plan",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+
+    await app.lockLocation({ owner_id: "user-1", series_id: series.id, location: "boardroom" });
+
+    expect(requests).toHaveLength(5);
+    expect(requests[0]?.description).toMatch(/straight-down architectural plan/i);
+    expect(requests[0]?.hasLayout).toBe(false);
+    expect(requests.slice(1).every((request) => request.hasLayout)).toBe(true);
+  });
+
   it("keys an object the way the planner keys the same words", async () => {
     const { app, series } = await designApp("evt_design_prop");
     const prop = await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "leaked NDA" });
@@ -583,6 +652,44 @@ describe("production design", () => {
       (row) => row.metadata.kind === "object_angle" && row.metadata.still_id === prop.asset_id,
     );
     expect(extras.map((row) => row.metadata.angle)).toEqual(["reverse"]);
+    const document = asset?.metadata.document as { heading?: string; date?: string; body?: string } | undefined;
+    expect(document).toEqual(expect.objectContaining({ heading: "NON-DISCLOSURE AGREEMENT", date: "10" }));
+    expect(String(document?.body ?? "")).toMatch(/disclosing party|receiving party/i);
+  });
+
+  it("photographs a written NDA instead of asking for no readable text", async () => {
+    const seen: string[] = [];
+    const ai = testGateway();
+    const generate = ai.image.generateReference;
+    ai.image.generateReference = async (input) => {
+      seen.push(input.description);
+      return generate(input);
+    };
+    ai.llm.writeDocument = async (input) => ({
+      heading: "NON-DISCLOSURE AGREEMENT",
+      date: "10",
+      body: `This agreement is made on 10 between ${input.parties[0] ?? "the disclosing party"} and ${input.parties[1] ?? "the receiving party"}.\n1. The receiving party will keep the disclosed terms confidential.\n2. Copies stay with the receiving party.\n3. This paper is returned on written request.\n4. Signed on 10.`,
+    });
+    const app = createEngine({ dailyCap: 1000, ai, assets: new MemoryAssetStore() });
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Claws in the Contract",
+      description: "A leaked NDA binds a secretary to a CEO.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_design_nda_text",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    await app.lockProp({ owner_id: "user-1", series_id: series.id, name: "leaked NDA" });
+    expect(seen[0]).toMatch(/Typeset this exact document/);
+    expect(seen[0]).toMatch(/NON-DISCLOSURE AGREEMENT/);
+    expect(seen[0]).toMatch(/keep the disclosed terms confidential/);
+    expect(seen[0]).not.toMatch(/no readable text/);
   });
 
   it("does not invent extra views for a one-faced object", async () => {
@@ -728,12 +835,14 @@ describe("engine phase 0", () => {
 
   it("builds a likeness pack from an existing seed without the beauty veto", async () => {
     const modes: string[] = [];
+    const styleAnchors: boolean[] = [];
     const ai = testGateway();
     const image = ai.image;
     ai.image = {
       ...image,
       async generateReferenceFromSeed(input) {
         modes.push(input.mode ?? "generated");
+        styleAnchors.push(Boolean(input.style_bytes));
         return image.generateReferenceFromSeed(input);
       },
     };
@@ -781,6 +890,7 @@ describe("engine phase 0", () => {
     expect(ready.source).toBe("likeness");
     expect(Object.keys(ready.visual_reference_asset_ids).sort()).toEqual(["front", "full_body", "profile", "three_quarter"]);
     expect(modes.every((mode) => mode === "likeness")).toBe(true);
+    expect(styleAnchors.slice(0, 4)).toEqual([false, true, true, true]);
     expect(persisted.length).toBeGreaterThan(0);
 
     const seedId = ready.seed_asset_id!;
@@ -793,6 +903,63 @@ describe("engine phase 0", () => {
     });
     expect(reused.seed_asset_id).toBe(seedId);
     expect(Object.keys(reused.visual_reference_asset_ids)).toHaveLength(4);
+    expect(reused.visual_reference_asset_ids).not.toEqual(ready.visual_reference_asset_ids);
+  });
+
+  it("rebuilds a finished pack from a replacement seed instead of replaying the first job", async () => {
+    const app = engine();
+    const series = await app.createSeries({
+      owner_id: "user-1",
+      title: "Forbidden Billionaire",
+      description: "A confrontation after a three-month lie.",
+    });
+    await app.handleStripeWebhook({
+      event_id: "evt_replace_seed",
+      signature_valid: true,
+      type: "checkout.session.completed",
+      payment_status: "paid",
+      series_id: series.id,
+      owner_id: "user-1",
+      amount: 25,
+    });
+    const actor = app.createActor({
+      owner_id: "user-1",
+      name: "Yacine",
+      source: "likeness",
+      appearance_profile: TEST_BIBLE.characters[0]!.appearance,
+    });
+    const first = await app.generateActor({
+      owner_id: "user-1",
+      actor_id: actor.id,
+      series_id: series.id,
+      seed_bytes: new Uint8Array([137, 80, 78, 71]),
+      seed_mime_type: "image/png",
+    });
+    const donor = app.createActor({
+      owner_id: "user-1",
+      name: "Donor",
+      source: "likeness",
+      appearance_profile: TEST_BIBLE.characters[0]!.appearance,
+    });
+    const nextSeed = await app.generateActor({
+      owner_id: "user-1",
+      actor_id: donor.id,
+      series_id: series.id,
+      seed_bytes: new Uint8Array([137, 80, 78, 72]),
+      seed_mime_type: "image/png",
+    });
+    expect(nextSeed.seed_asset_id).toBeTruthy();
+    expect(nextSeed.seed_asset_id).not.toBe(first.seed_asset_id);
+
+    const replaced = await app.generateActor({
+      owner_id: "user-1",
+      actor_id: actor.id,
+      series_id: series.id,
+      seed_asset_id: nextSeed.seed_asset_id!,
+    });
+    expect(replaced.seed_asset_id).toBe(nextSeed.seed_asset_id);
+    expect(Object.keys(replaced.visual_reference_asset_ids).sort()).toEqual(["front", "full_body", "profile", "three_quarter"]);
+    expect(replaced.visual_reference_asset_ids).not.toEqual(first.visual_reference_asset_ids);
   });
 
   it("finalizes dialogue duration from the wav, then generates independently regenerable shots", async () => {

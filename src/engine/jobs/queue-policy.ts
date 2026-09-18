@@ -4,6 +4,17 @@ export function isBusyVideoJob(status: string): boolean {
   return (BUSY_VIDEO_STATUSES as readonly string[]).includes(status);
 }
 
+export function productionTaskMayRun(
+  production: { status?: string | null; paid_amount?: number | string | null; paused?: boolean | null } | null | undefined,
+): boolean {
+  return Boolean(
+    production &&
+      Number(production.paid_amount ?? 0) > 0 &&
+      (production.status === "queued" || production.status === "running") &&
+      !production.paused,
+  );
+}
+
 export function shotNeedsVideo(
   shot: { id: string; status: string },
   jobs: ReadonlyArray<{ shot_id?: string | null; job_type: string; status: string }>,

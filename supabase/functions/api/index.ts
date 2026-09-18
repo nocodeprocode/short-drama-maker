@@ -17,7 +17,8 @@ import {
   walletBalance,
   type ProductionRow,
 } from "../_shared/productions.ts";
-import { generateStoryIdea, STORY_DIRECTIONS } from "../_shared/story-idea.ts";
+import { hasExplicitStartConfirmation } from "../_shared/production-consent.ts";
+import { generateStoryIdea, STORY_DIRECTIONS, type StoryIdeaInput } from "../_shared/story-idea.ts";
 import { adaptUploadedScript } from "../_shared/story-script.ts";
 import { actorGenerateTasks, actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
 import { ensureCastSlate } from "../_shared/cast-repair.ts";
@@ -29,6 +30,7 @@ import {
   presentPropEntry,
   putLibraryImage,
   signLibraryImages,
+  signLibraryLocationAngles,
   useLocationEntry,
   usePropEntry,
   type LocationEntry,
@@ -45,7 +47,7 @@ import {
   type PropRow,
 } from "../_shared/design.ts";
 import { propKindFor } from "../_shared/design-slate.ts";
-import { decodeSeedPhoto, putSeedAsset, recoverSeedFromTasks } from "../_shared/seed-asset.ts";
+import { decodeSeedPhoto, latestSeedAssetId, putSeedAsset, recoverSeedFromTasks } from "../_shared/seed-asset.ts";
 import { buildCastSlate } from "../_shared/slate.ts";
 import {
   bindCastPlan,
@@ -57,7 +59,12 @@ import {
   type CastSlotRow,
 } from "../_shared/casting.ts";
 import { presentPackedCharacter, signCharacterPacks } from "../_shared/characters.ts";
-import { LIKENESS_RIGHTS_VERSION, likenessGate } from "../_shared/likeness.ts";
+import {
+  LEGAL_ACCEPTANCE_CONFLICT,
+  acceptanceWriteError,
+  likenessAcceptanceRow,
+  likenessGate,
+} from "../_shared/likeness.ts";
 import { discardUnpaidSeries } from "../_shared/drafts.ts";
 import { actionLabel, activityDetail, attentionKind, interventionMessage, seriesNextAction, sortShotVideoRows, stillAssetIds, usd } from "../_shared/present.ts";
 import { wakeJobs } from "../_shared/jobs.ts";
@@ -124,6 +131,55 @@ Deno.serve(async (req) => {
 
     if (req.method === "GET" && path === "/story-ideas/directions") {
       return json({ items: STORY_DIRECTIONS });
+    }
+
+    if (req.method === "POST" && path === "/story-ideas/stream") {
+      const body = await req.json().catch(() => ({}));
+      const generationId = String(body.generation_id ?? "");
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(generationId)) {
+        return json({ error: "A valid generation_id is required" }, 400);
+      }
+      const input = storyIdeaInput(body);
+      const { data: existing } = await supabase
+        .from("story_generations")
+        .select("id")
+        .eq("id", generationId)
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (!existing) {
+        const { error } = await supabase.from("story_generations").insert({
+          id: generationId,
+          owner_id: user.id,
+          status: "queued",
+          input,
+        });
+        if (error) return json({ error: error.code === "23505" ? "generation_id_conflict" : error.message }, error.code === "23505" ? 409 : 400);
+      }
+      launchStoryGeneration(supabase, user.id, generationId);
+      return streamStoryGeneration(req, supabase, user.id, generationId);
+    }
+
+    if (req.method === "GET" && /^\/story-ideas\/[0-9a-f-]+\/stream$/i.test(path)) {
+      const generationId = path.split("/")[2] ?? "";
+      const { data: generation } = await supabase
+        .from("story_generations")
+        .select("id, status, updated_at")
+        .eq("id", generationId)
+        .eq("owner_id", user.id)
+        .maybeSingle();
+      if (!generation) return json({ error: "Story generation not found" }, 404);
+      const stale = generation.status === "running" &&
+        Date.parse(String(generation.updated_at)) < Date.now() - 90_000;
+      if (stale) {
+        await supabase
+          .from("story_generations")
+          .update({ status: "queued", error: null, updated_at: new Date().toISOString() })
+          .eq("id", generationId)
+          .eq("owner_id", user.id)
+          .eq("status", "running");
+      }
+      if (generation.status === "queued" || stale) launchStoryGeneration(supabase, user.id, generationId);
+      return streamStoryGeneration(req, supabase, user.id, generationId);
     }
 
     if (req.method === "POST" && path === "/story-ideas") {
@@ -321,16 +377,18 @@ Deno.serve(async (req) => {
           : null;
       const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
       let seedAssetId = saved.seed_asset_id ? String(saved.seed_asset_id) : null;
+      const latestSeed = await latestSeedAssetId(supabase, { ownerId: user.id, actorId: id });
+      if (latestSeed && latestSeed !== seedAssetId) seedAssetId = latestSeed;
       if (!seedAssetId) {
         seedAssetId = await recoverSeedFromTasks(supabase, { ownerId: user.id, actorId: id, seriesId: host });
-        if (seedAssetId) {
-          const { error: seedError } = await supabase
-            .from("actors")
-            .update({ seed_asset_id: seedAssetId, source: "likeness", updated_at: new Date().toISOString() })
-            .eq("id", id);
-          if (seedError) return json({ error: seedError.message }, 400);
-          saved.seed_asset_id = seedAssetId;
-        }
+      }
+      if (seedAssetId && seedAssetId !== saved.seed_asset_id) {
+        const { error: seedError } = await supabase
+          .from("actors")
+          .update({ seed_asset_id: seedAssetId, source: "likeness", updated_at: new Date().toISOString() })
+          .eq("id", id);
+        if (seedError) return json({ error: seedError.message }, 400);
+        saved.seed_asset_id = seedAssetId;
       }
       if (host) {
         await enqueue(supabase, user.id, host, "generate_actor", {
@@ -370,13 +428,10 @@ Deno.serve(async (req) => {
         bytes: photo.bytes,
         mime: photo.mime,
       });
-      const { error: acceptError } = await supabase.from("legal_acceptances").insert({
-        user_id: user.id,
-        document_type: "likeness_rights",
-        version: LIKENESS_RIGHTS_VERSION,
-        context: "actor_upload",
-      });
-      if (acceptError) return json({ error: acceptError.message }, 400);
+      // Same user + same likeness version already has a row from the first photo.
+      const { error: acceptError } = await supabase.from("legal_acceptances").insert(likenessAcceptanceRow(user.id));
+      const acceptProblem = acceptanceWriteError(acceptError?.message);
+      if (acceptProblem) return json({ error: acceptProblem }, 400);
       const { data: saved, error } = await supabase
         .from("actors")
         .update({
@@ -456,13 +511,9 @@ Deno.serve(async (req) => {
       if (error || !actor) return json({ error: error?.message ?? "Could not create actor" }, 400);
       let seedAssetId: string | null = null;
       if (seed) {
-        const { error: acceptError } = await supabase.from("legal_acceptances").insert({
-          user_id: user.id,
-          document_type: "likeness_rights",
-          version: LIKENESS_RIGHTS_VERSION,
-          context: "actor_upload",
-        });
-        if (acceptError) return json({ error: acceptError.message }, 400);
+        const { error: acceptError } = await supabase.from("legal_acceptances").insert(likenessAcceptanceRow(user.id));
+        const acceptProblem = acceptanceWriteError(acceptError?.message);
+        if (acceptProblem) return json({ error: acceptProblem }, 400);
         const photo = decodeSeedPhoto(seed, body.seed_mime_type);
         const stored = await putSeedAsset(supabase, {
           ownerId: user.id,
@@ -547,9 +598,10 @@ Deno.serve(async (req) => {
         .single();
       if (error) return json({ error: error.message }, 400);
       const slate = buildCastSlate({ title: String(body.title ?? ""), idea: String(body.description ?? "") });
-      if (slate.length) {
+      const people = slate.filter((slot) => slot.castable);
+      if (people.length) {
         await supabase.from("series_cast").insert(
-          slate.map((slot) => ({
+          people.map((slot) => ({
             series_id: data.id,
             actor_id: null,
             character_id: null,
@@ -635,6 +687,10 @@ Deno.serve(async (req) => {
         const rank = (importance: string | null | undefined) =>
           importance === "lead" ? 0 : importance === "supporting" ? 1 : 2;
         const items = ((slots ?? []) as CastSlotRow[])
+          // Non-castable story devices are material for the design slate.
+          // They may remain as internal planning rows, but never belong in the
+          // public cast response or actor UI.
+          .filter((row) => row.castable !== false)
           .slice()
           .sort((left, right) => rank(left.importance) - rank(right.importance) || (left.position ?? 0) - (right.position ?? 0))
           .map((row) =>
@@ -699,6 +755,7 @@ Deno.serve(async (req) => {
             presentProp(row, {
               still_url: row.still_asset_id ? (signed.byId.get(String(row.still_asset_id)) ?? null) : null,
               angles: row.still_asset_id ? (signed.anglesByStill.get(String(row.still_asset_id)) ?? []) : [],
+              document_text: row.still_asset_id ? (signed.documentById.get(String(row.still_asset_id)) ?? null) : null,
             }),
           ),
           /** Before the story exists these come from the brief and can be changed. */
@@ -720,7 +777,14 @@ Deno.serve(async (req) => {
           location_refs: (series.location_refs ?? null) as Record<string, unknown> | null,
         });
         const readiness = await seriesReadiness(supabase, id);
-        return json({ series_id: id, story_written: Boolean(series.story_bible), ...readiness });
+        const storyWritten = Boolean(series.story_bible);
+        return json({
+          series_id: id,
+          story_written: storyWritten,
+          ...readiness,
+          can_start: storyWritten && readiness.can_start,
+          blocking: storyWritten ? readiness.blocking : ["The story has not been written yet", ...readiness.blocking],
+        });
       }
       if (parts[3] === "continuity") {
         const bible = series.story_bible ?? {};
@@ -787,7 +851,7 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/series") {
       const body = await req.json().catch(() => ({}));
       const title = String(body.title ?? "").trim().slice(0, 200);
-      const description = String(body.description ?? "").trim().slice(0, 4000);
+      const description = String(body.description ?? "").trim();
       if (!title) return json({ error: "Give the show a title" }, 400);
       const verdict = moderateText(`${title}\n${description}`, "story_input");
       if (verdict.verdict === "block") {
@@ -1091,9 +1155,12 @@ Deno.serve(async (req) => {
           .eq("owner_id", user.id)
           .order("created_at", { ascending: false });
         const rows = (data ?? []) as Array<Record<string, unknown>>;
-        const [signed, shows] = await Promise.all([
+        const [signed, shows, angles] = await Promise.all([
           signLibraryImages(supabase, rows.flatMap((row) => [String(row[imageColumn] ?? ""), String(row.seed_asset_id ?? "")])),
           libraryShowTitles(supabase, isObject ? "prop" : "location", rows.map((row) => String(row.id))),
+          isObject
+            ? Promise.resolve(new Map())
+            : signLibraryLocationAngles(supabase, user.id, rows.map((row) => String(row.plate_asset_id ?? ""))),
         ]);
         const tags = new Set<string>();
         for (const row of rows) for (const tag of (row.tags as string[] | null) ?? []) tags.add(tag);
@@ -1102,6 +1169,7 @@ Deno.serve(async (req) => {
             present(row, {
               image_url: signed.get(String(row[imageColumn] ?? "")) ?? null,
               seed_url: signed.get(String(row.seed_asset_id ?? "")) ?? null,
+              angles: isObject ? undefined : angles.get(String(row.plate_asset_id ?? "")) ?? [],
               shows: shows.get(String(row.id)) ?? [],
             }),
           ),
@@ -1142,14 +1210,18 @@ Deno.serve(async (req) => {
         const entry = await loadEntry();
         if (!entry) return json({ error: "Not found" }, 404);
         const row = entry as unknown as Record<string, unknown>;
-        const [signed, shows] = await Promise.all([
+        const [signed, shows, angles] = await Promise.all([
           signLibraryImages(supabase, [String(row[imageColumn] ?? ""), String(row.seed_asset_id ?? "")]),
           libraryShowTitles(supabase, isObject ? "prop" : "location", [entry.id]),
+          isObject
+            ? Promise.resolve(new Map())
+            : signLibraryLocationAngles(supabase, user.id, [String(row.plate_asset_id ?? "")]),
         ]);
         return json(
           present(row, {
             image_url: signed.get(String(row[imageColumn] ?? "")) ?? null,
             seed_url: signed.get(String(row.seed_asset_id ?? "")) ?? null,
+            angles: isObject ? undefined : angles.get(String(row.plate_asset_id ?? "")) ?? [],
             shows: shows.get(entry.id) ?? [],
           }),
         );
@@ -1475,7 +1547,7 @@ Deno.serve(async (req) => {
       const { data: tasks } = await supabase
         .from("engine_tasks")
         .select("id, action, status, error_code, payload, created_at, updated_at")
-        .eq("series_id", data.series_id)
+        .eq("production_id", id)
         .order("created_at", { ascending: false })
         .limit(40);
       const { data: characters } = await supabase
@@ -1557,6 +1629,10 @@ Deno.serve(async (req) => {
       } catch {
         /* keep last-good voices on the client */
       }
+      const productionReadiness = await seriesReadiness(supabase, data.series_id);
+      const productionBlocking = series?.story_bible
+        ? productionReadiness.blocking
+        : ["The story has not been written yet", ...productionReadiness.blocking];
       return json({
         ...publicProduction(data as ProductionRow, {
           series_title: series?.title,
@@ -1609,8 +1685,13 @@ Deno.serve(async (req) => {
         assets: feed.filter((item) => item.kind === "shot_video"),
         shoots: await productionShoots(supabase, data.series_id, episodes ?? []),
         current_step: (tasks ?? []).find((task) => task.status === "running") ?? (tasks ?? []).find((task) => task.status === "queued") ?? null,
+        readiness: {
+          ...productionReadiness,
+          can_start: Boolean(series?.story_bible) && productionReadiness.can_start,
+          blocking: productionBlocking,
+        },
         balance: usd(await seriesBalance(supabase, data.series_id)),
-        spent: usd(await seriesSpent(supabase, data.series_id)),
+        spent: data.status === "awaiting_payment" ? 0 : usd(await seriesSpent(supabase, data.series_id)),
       });
     }
 
@@ -2278,6 +2359,9 @@ async function createProduction(
   isAdmin: boolean,
 ) {
   const body = await req.json();
+  if (!hasExplicitStartConfirmation(body)) {
+    return json({ error: "start_confirmation_required", message: "Confirm the final start action before creating a production." }, 409);
+  }
   const parsed = parseProductionBody(body);
   if ("error" in parsed && parsed.error) return json({ error: parsed.error }, 400);
   if (!parsed.sku || parsed.sku === "topup" || parsed.sku === "credit") {
@@ -2391,27 +2475,18 @@ async function createProduction(
    * first. A series created in this same request has no slate to check yet, so
    * this only bites once one exists — which is every show opened from the app.
    */
-  const [{ count: slotCount }, { count: placeCount }, { count: paidCount }] = await Promise.all([
-    supabase.from("series_cast").select("id", { count: "exact", head: true }).eq("series_id", series.id),
-    supabase.from("series_locations").select("id", { count: "exact", head: true }).eq("series_id", series.id),
-    // Later blocks are not gated: an established show's rooms are built by the
-    // shoot as it goes, and a leftover slate row nobody used must not be able to
-    // stop a buyer ordering more episodes.
-    supabase.from("productions").select("id", { count: "exact", head: true }).eq("series_id", series.id).gt("paid_amount", 0),
-  ]);
-  if ((paidCount ?? 0) === 0 && ((slotCount ?? 0) > 0 || (placeCount ?? 0) > 0)) {
-    const readiness = await seriesReadiness(supabase, series.id);
-    if (!readiness.can_start) {
-      return json(
-        {
-          error: "not_ready",
-          message: `This show is not ready to shoot. ${readiness.blocking.join(". ")}.`,
-          series_id: series.id,
-          readiness,
-        },
-        409,
-      );
-    }
+  const readiness = await seriesReadiness(supabase, series.id);
+  const blocking = series.story_bible ? readiness.blocking : ["The story has not been written yet", ...readiness.blocking];
+  if (!series.story_bible || !readiness.can_start) {
+    return json(
+      {
+        error: "not_ready",
+        message: `This show is not ready to shoot. ${blocking.join(". ")}.`,
+        series_id: series.id,
+        readiness: { ...readiness, can_start: false, blocking },
+      },
+      409,
+    );
   }
 
   const { data: unpaid } = await supabase
@@ -2693,13 +2768,29 @@ async function confirmTestPayment(
 ) {
   const production = await loadProduction(supabase, userId, id, true);
   if (!production) return json({ error: "Not found" }, 404);
+  if (production.status !== "awaiting_payment") return json(publicProduction(production));
+  const [{ data: series }, readiness] = await Promise.all([
+    supabase.from("series").select("story_bible").eq("id", production.series_id).maybeSingle(),
+    seriesReadiness(supabase, production.series_id),
+  ]);
+  const blocking = series?.story_bible ? readiness.blocking : ["The story has not been written yet", ...readiness.blocking];
+  if (!series?.story_bible || !readiness.can_start) {
+    return json(
+      {
+        error: "not_ready",
+        message: `This show is not ready to shoot. ${blocking.join(". ")}.`,
+        readiness: { ...readiness, can_start: false, blocking },
+      },
+      409,
+    );
+  }
   const amount = retailForBlock(
     Number(production.sku) as BlockSku,
     production.priority as ProductionPriority,
     production.episode_length as EpisodeLength,
     production.video_tier === "catalog" ? "catalog" : "pro",
   );
-  await supabase.from("project_ledger").insert({
+  const purchase = await supabase.from("project_ledger").insert({
     owner_id: production.owner_id,
     series_id: production.series_id,
     entry_type: "purchase",
@@ -2707,6 +2798,7 @@ async function confirmTestPayment(
     stripe_event_id: `test_${production.id}`,
     price_snapshot_version: PRICE_SNAPSHOT_VERSION,
   });
+  if (purchase.error && purchase.error.code !== "23505") return json({ error: purchase.error.message }, 400);
   const { data, error } = await supabase
     .from("productions")
     .update({
@@ -2716,6 +2808,7 @@ async function confirmTestPayment(
       updated_at: new Date().toISOString(),
     })
     .eq("id", id)
+    .eq("status", "awaiting_payment")
     .select()
     .single();
   if (error) return json({ error: error.message }, 400);
@@ -2948,8 +3041,9 @@ async function recordAcceptances(
     context,
     user_agent_summary: req.headers.get("user-agent")?.slice(0, 180) ?? null,
   }));
-  const { error } = await supabase.from("legal_acceptances").insert(rows);
-  if (error) return json({ error: error.message }, 500);
+  const { error } = await supabase.from("legal_acceptances").upsert(rows, { onConflict: LEGAL_ACCEPTANCE_CONFLICT });
+  const problem = acceptanceWriteError(error?.message);
+  if (problem) return json({ error: problem }, 500);
   return json({ ok: true, accepted: Object.keys(DOCUMENT_VERSIONS) });
 }
 
@@ -3114,4 +3208,166 @@ async function confirmTestCredit(
   });
   if (error) return json({ error: error.message }, 400);
   return json({ ok: true, credit_balance: await walletBalance(supabase, userId), amount });
+}
+
+function storyIdeaInput(body: Record<string, unknown>): StoryIdeaInput {
+  return {
+    hint: String(body.hint ?? ""),
+    category: String(body.category ?? "surprise"),
+    lead: String(body.lead ?? ""),
+    opposite: String(body.opposite ?? ""),
+    setting: String(body.setting ?? ""),
+  };
+}
+
+function launchStoryGeneration(
+  supabase: ReturnType<typeof serviceClient>,
+  ownerId: string,
+  generationId: string,
+) {
+  const promise = runStoryGeneration(supabase, ownerId, generationId);
+  const runtime = (globalThis as typeof globalThis & {
+    EdgeRuntime?: { waitUntil: (work: Promise<unknown>) => void };
+  }).EdgeRuntime;
+  if (runtime) runtime.waitUntil(promise);
+  else void promise;
+}
+
+async function runStoryGeneration(
+  supabase: ReturnType<typeof serviceClient>,
+  ownerId: string,
+  generationId: string,
+) {
+  const { data: queued } = await supabase
+    .from("story_generations")
+    .select("id, input, attempt")
+    .eq("id", generationId)
+    .eq("owner_id", ownerId)
+    .eq("status", "queued")
+    .maybeSingle();
+  if (!queued) return;
+
+  const { data: claimed } = await supabase
+    .from("story_generations")
+    .update({
+      status: "running",
+      attempt: Number(queued.attempt ?? 0) + 1,
+      error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", generationId)
+    .eq("owner_id", ownerId)
+    .eq("status", "queued")
+    .select("id")
+    .maybeSingle();
+  if (!claimed) return;
+
+  let lastWrite = 0;
+  let lastTitle = "";
+  let lastBrief = "";
+  try {
+    const idea = await generateStoryIdea((queued.input ?? {}) as StoryIdeaInput, async (progress) => {
+      const now = Date.now();
+      if (progress.title === lastTitle && progress.brief === lastBrief) return;
+      if (now - lastWrite < 120 && progress.brief.length > 0) return;
+      lastWrite = now;
+      lastTitle = progress.title;
+      lastBrief = progress.brief;
+      await supabase
+        .from("story_generations")
+        .update({
+          partial_title: progress.title,
+          partial_brief: progress.brief,
+          updated_at: new Date(now).toISOString(),
+        })
+        .eq("id", generationId)
+        .eq("owner_id", ownerId)
+        .eq("status", "running");
+    });
+    await supabase
+      .from("story_generations")
+      .update({
+        status: "completed",
+        partial_title: idea.title,
+        partial_brief: idea.brief,
+        title: idea.title,
+        brief: idea.brief,
+        category: idea.category,
+        error: null,
+        updated_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", generationId)
+      .eq("owner_id", ownerId)
+      .eq("status", "running");
+  } catch (error) {
+    await supabase
+      .from("story_generations")
+      .update({
+        status: "failed",
+        error: error instanceof Error ? error.message.slice(0, 500) : "Could not write a brief",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", generationId)
+      .eq("owner_id", ownerId)
+      .eq("status", "running");
+  }
+}
+
+function streamStoryGeneration(
+  request: Request,
+  supabase: ReturnType<typeof serviceClient>,
+  ownerId: string,
+  generationId: string,
+): Response {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  request.signal.addEventListener("abort", () => {
+    cancelled = true;
+  }, { once: true });
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let seen = "";
+      try {
+        while (!cancelled) {
+          const { data, error } = await supabase
+            .from("story_generations")
+            .select("id, status, partial_title, partial_brief, title, brief, category, error, attempt, updated_at")
+            .eq("id", generationId)
+            .eq("owner_id", ownerId)
+            .maybeSingle();
+          if (error || !data) {
+            controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ error: error?.message ?? "Story generation not found" })}\n\n`));
+            break;
+          }
+          const snapshot = JSON.stringify(data);
+          if (snapshot !== seen) {
+            seen = snapshot;
+            controller.enqueue(encoder.encode(`event: progress\ndata: ${snapshot}\n\n`));
+          }
+          if (data.status === "completed" || data.status === "failed") break;
+          await new Promise((resolve) => setTimeout(resolve, 160));
+        }
+      } catch {
+        // A browser disconnect only closes this subscriber. The waitUntil task
+        // keeps writing the generation, and a refreshed page reconnects by id.
+      } finally {
+        if (!cancelled) controller.close();
+      }
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      "access-control-allow-origin": "*",
+    },
+  });
 }

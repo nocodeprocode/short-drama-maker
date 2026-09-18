@@ -14,6 +14,10 @@ export class ApiError extends Error {
   }
 }
 
+export class StoryGenerationFailed extends Error {
+  override name = "StoryGenerationFailed";
+}
+
 async function authorizedFetch(path: string, init: RequestInit, token: string | null) {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");
@@ -51,6 +55,104 @@ export async function publicApi<T>(path: string, init: RequestInit = {}): Promis
   return readJson<T>(await authorizedFetch(path, init, null));
 }
 
+export type StoryGenerationState = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  partial_title: string;
+  partial_brief: string;
+  title: string | null;
+  brief: string | null;
+  category: string | null;
+  error: string | null;
+  attempt: number;
+  updated_at: string;
+};
+
+async function authorizedStreamFetch(path: string, init: RequestInit): Promise<Response> {
+  let token = getAccessToken();
+  let response = await authorizedFetch(path, init, token);
+  if (response.status === 401) {
+    const session = await refreshSession();
+    token = session?.access_token ?? getAccessToken();
+    if (token) response = await authorizedFetch(path, init, token);
+  }
+  if (!response.ok) await readJson(response);
+  return response;
+}
+
+async function consumeStoryStream(
+  response: Response,
+  onProgress: (state: StoryGenerationState) => void,
+): Promise<StoryIdea | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+
+  const consume = (block: string): StoryIdea | null => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("\n");
+    if (!data) return null;
+    const state = JSON.parse(data) as StoryGenerationState & { error?: string | null };
+    if (!state.id && state.error) throw new Error(state.error);
+    onProgress(state);
+    if (state.status === "failed") throw new StoryGenerationFailed(state.error || "Could not write a brief");
+    if (state.status === "completed" && state.title && state.brief) {
+      return { title: state.title, brief: state.brief, category: state.category ?? "surprise" };
+    }
+    return null;
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    pending += decoder.decode(value, { stream: !done });
+    const blocks = pending.split(/\r?\n\r?\n/);
+    pending = blocks.pop() ?? "";
+    for (const block of blocks) {
+      const result = consume(block);
+      if (result) return result;
+    }
+    if (done) break;
+  }
+  if (pending) return consume(pending);
+  return null;
+}
+
+export async function streamStoryIdea(
+  body: { hint?: string; category?: string; lead?: string; opposite?: string; setting?: string },
+  options: {
+    generationId?: string;
+    onGenerationId?: (id: string) => void;
+    onProgress: (state: StoryGenerationState) => void;
+    signal?: AbortSignal;
+  },
+): Promise<StoryIdea> {
+  const generationId = options.generationId ?? crypto.randomUUID();
+  options.onGenerationId?.(generationId);
+  let first = !options.generationId;
+
+  while (!options.signal?.aborted) {
+    const response = await authorizedStreamFetch(
+      first ? "/story-ideas/stream" : `/story-ideas/${generationId}/stream`,
+      first
+        ? {
+            method: "POST",
+            body: JSON.stringify({ ...body, generation_id: generationId }),
+            signal: options.signal,
+          }
+        : { method: "GET", signal: options.signal },
+    );
+    first = false;
+    const result = await consumeStoryStream(response, options.onProgress);
+    if (result) return result;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new DOMException("Story generation cancelled", "AbortError");
+}
+
 export const studio = {
   me: () => api<Me>("/me"),
   home: () => api<Home>("/home"),
@@ -67,6 +169,7 @@ export const studio = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  streamStoryIdea,
   adaptScript: (text: string) =>
     api<AdaptedScript>("/story-scripts", {
       method: "POST",
@@ -81,7 +184,7 @@ export const studio = {
   productions: (status?: string) =>
     api<{ items: Production[] }>(status ? `/productions?status=${status}` : "/productions"),
   production: (id: string) => api<ProductionDetail>(`/productions/${id}`),
-  createProduction: (body: Record<string, unknown>) =>
+  createProduction: (body: Record<string, unknown> & { start_confirmed: true }) =>
     api<Production & { checkout?: { id: string; url: string }; paid_from?: string }>("/productions", {
       method: "POST",
       body: JSON.stringify(body),
@@ -483,6 +586,8 @@ export type DesignProp = {
   still_url: string | null;
   /** Extra faces of the same object when it has a back or an open state. */
   angles: Array<{ angle: string; url: string }>;
+  /** The written sample this still typesets, when the object is a paper. */
+  document_text?: string | null;
   kind: string | null;
   state: string | null;
   status: DesignStatus;
@@ -504,6 +609,8 @@ export type PlaceEntry = {
   image_url: string | null;
   /** The buyer's original upload, if they brought their own picture. */
   seed_url: string | null;
+  /** Alternate walls and overhead views generated from the master plate. */
+  angles: Array<{ angle: string; url: string }>;
   lighting_lock: string | null;
   status: DesignStatus;
   error: string | null;
@@ -710,6 +817,7 @@ export type ProductionDetail = Production & {
   /** Settled provider spend on this series to date. */
   spent?: number;
   story_bible?: { logline?: string } | null;
+  readiness?: Readiness;
 };
 
 export type Home = {

@@ -94,10 +94,28 @@ import {
   type SceneTakeStrip,
 } from "./pipeline/scene-take-refs.ts";
 import { publicLog } from "./logging.ts";
-import { inferPropKind, OBJECT_ANGLE_KIND, objectLettering, objectViews, PROP_BIBLE_KINDS, PROP_KIND, PROP_PROMPTS, propFromLockText, propKey, type PropKind } from "./pipeline/prop-bible.ts";
+import {
+  documentFromMeta,
+  documentPrompt,
+  documentTypeset,
+  fallbackDocument,
+  inferPropKind,
+  isReadableDocument,
+  normalizeWrittenDocument,
+  OBJECT_ANGLE_KIND,
+  objectLettering,
+  objectViews,
+  PROP_BIBLE_KINDS,
+  PROP_KIND,
+  PROP_PROMPTS,
+  propFromLockText,
+  propKey,
+  type PropKind,
+  type WrittenDocument,
+} from "./pipeline/prop-bible.ts";
 import { LAST_FRAME_KIND, previousContinuityShot, previousSceneTake } from "./pipeline/last-frame.ts";
 import { wordErrorRate } from "./media/qc.ts";
-import { placeLettering, placeLockClause, placePlateRetry, roomAnglesFor } from "../drama-engine/craft/place.ts";
+import { placeLettering, placeLockClause, placePlateRetry, ROOM_PACK_VERSION, roomAnglesFor } from "../drama-engine/craft/place.ts";
 import { expandPlaceName } from "./design/slate.ts";
 import { evidenceMotif, identityLockLine, objectPlateCamera, peopleOnSceneTake, sameSpeakerCast, sceneTakeImageLocks, speakersForSceneTake } from "../drama-engine/craft/prompt-fragments.ts";
 import { dropOpeningEcho } from "../drama-engine/types/dialogue.ts";
@@ -690,7 +708,7 @@ export function createEngine(deps: EngineDeps = {}) {
   }
 
   const STILL_LOOK_ATTEMPTS = 5;
-  const LIKENESS_LOOK_ATTEMPTS = 2;
+  const LIKENESS_LOOK_ATTEMPTS = 5;
   const LIKENESS_WARDROBE =
     "contemporary modest clothes: a closed jacket over a buttoned shirt, opaque cloth to the throat";
 
@@ -703,6 +721,7 @@ export function createEngine(deps: EngineDeps = {}) {
     mime: string;
     kind: string;
     faceText?: string | null;
+    reference?: { bytes: Uint8Array; mime_type: string } | null;
     mode?: "likeness" | "generated";
     identityFidelity?: "faithful" | "idealized";
   }): Promise<{ notes: string | null }> {
@@ -712,7 +731,7 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
     const locate = ai.vision?.locateFace;
     const judge = ai.vision?.judgeCastLook;
-    if (!locate && !judge) return { notes: null };
+    if (!locate && !judge && !(faithful && input.reference && ai.vision?.judgeIdentity)) return { notes: null };
     let box: { width: number; height: number } | null = null;
     if (locate) {
       const found = await locate({ image: input.bytes, imageMime: input.mime });
@@ -724,10 +743,26 @@ export function createEngine(deps: EngineDeps = {}) {
     let notes: string | null = null;
     if (judge) {
       const look = await judge({ image: input.bytes, imageMime: input.mime });
+      if (look.production_gear_present && look.production_gear_evidence?.trim()) {
+        throw new Error(`CAST_LOOK: production_gear (${look.production_gear_evidence})`);
+      }
       beauty = look.beauty;
       modest = look.modest;
       close = look.close;
       notes = look.notes;
+    }
+    if (faithful && input.reference && ai.vision?.judgeIdentity) {
+      const identity = await ai.vision.judgeIdentity({
+        reference: input.reference.bytes,
+        referenceMime: input.reference.mime_type,
+        frames: [input.bytes],
+        frameMime: input.mime,
+        expectedFaces: 1,
+        description: input.faceText,
+      });
+      if (identity.face_count !== 1 || identity.same_person < 0.75) {
+        throw new Error(`CAST_LOOK: identity_or_skin_tone_drift (${identity.same_person.toFixed(2)})`);
+      }
     }
     const verdict = screenCastLook({
       faceBox: box,
@@ -735,7 +770,7 @@ export function createEngine(deps: EngineDeps = {}) {
       beauty: faithful ? null : beauty,
       modest,
       close,
-      checkDistance: tight,
+      checkDistance: tight && Boolean(locate || judge),
     });
     if (!verdict.pass) throw new Error(`CAST_LOOK: ${verdict.reasons.join(", ")}`);
     return { notes };
@@ -747,6 +782,7 @@ export function createEngine(deps: EngineDeps = {}) {
     kind: string;
     faceText?: string | null;
     seed?: { bytes: Uint8Array; mime_type: string } | null;
+    style?: { bytes: Uint8Array; mime_type: string } | null;
     mode?: "likeness" | "generated";
     identityFidelity?: "faithful" | "idealized";
     replaceWardrobe?: string;
@@ -765,6 +801,9 @@ export function createEngine(deps: EngineDeps = {}) {
               kind: input.kind,
               seed_bytes: input.seed.bytes,
               seed_mime_type: input.seed.mime_type,
+              style_bytes: input.style?.bytes,
+              style_mime_type: input.style?.mime_type,
+              retry_attempt: attempt,
               replaceWardrobe: input.replaceWardrobe,
               mode: input.mode,
             })
@@ -789,6 +828,7 @@ export function createEngine(deps: EngineDeps = {}) {
           faceText: input.faceText,
           mode: input.mode,
           identityFidelity: input.identityFidelity,
+          reference: input.seed,
         });
         return { ...candidate, notes: gated.notes };
       } catch (error) {
@@ -907,8 +947,15 @@ export function createEngine(deps: EngineDeps = {}) {
     let actor = store.actors.get(input.actor_id);
     if (!actor || actor.owner_id !== input.owner_id) throw new Error("Actor not found");
     requireSeries(input.series_id, input.owner_id);
-    if (input.seed_asset_id && !actor.seed_asset_id) {
-      actor = { ...actor, seed_asset_id: input.seed_asset_id, source: "likeness", updated_at: iso(clock) };
+    if (input.seed_asset_id && input.seed_asset_id !== actor.seed_asset_id) {
+      actor = {
+        ...actor,
+        seed_asset_id: input.seed_asset_id,
+        source: "likeness",
+        visual_reference_asset_ids: {},
+        judge_notes: null,
+        updated_at: iso(clock),
+      };
       store.actors.set(actor.id, actor);
       await input.onProgress?.(actor);
     }
@@ -930,13 +977,6 @@ export function createEngine(deps: EngineDeps = {}) {
     const refs: Partial<Record<VisualReferenceKind, string>> = { ...actor.visual_reference_asset_ids };
     const missing = FACE_KIND_ORDER.filter((kind) => !refs[kind]);
     if (missing.length === 0) return actor;
-    const existing = findJobByKey(`appearance:actor:${actor.id}`);
-    const saved = (existing?.result_metadata.refs ?? null) as Partial<Record<VisualReferenceKind, string>> | null;
-    if (Object.keys(refs).length === 0 && saved && FACE_KIND_ORDER.every((kind) => saved[kind])) {
-      const next = { ...actor, visual_reference_asset_ids: saved, updated_at: iso(clock) };
-      store.actors.set(actor.id, next);
-      return next;
-    }
     await moderate(
       `${actor.name}\n${appearanceDescription(actor.appearance_profile)}`,
       "character_create",
@@ -953,19 +993,22 @@ export function createEngine(deps: EngineDeps = {}) {
       model: "image/actor-pack",
       provider: "openrouter",
       upstream_job_id: null,
-      idempotency_key: freshJobKey(`appearance:actor:${actor.id}`),
+      idempotency_key: freshJobKey(`appearance:actor:${actor.id}:${actor.seed_asset_id ?? "none"}`),
       status: "queued",
-      request_metadata: { actor_id: actor.id },
+      request_metadata: { actor_id: actor.id, seed_asset_id: actor.seed_asset_id },
       estimated_cost: ai.pricing.estimateImage() * missing.length,
       expected_ready_at: addSeconds(clock, 30),
     });
     if (job.status === "completed") {
-      const done = (job.result_metadata.refs ?? saved ?? refs) as Partial<Record<VisualReferenceKind, string>>;
+      const done = (job.result_metadata.refs ?? refs) as Partial<Record<VisualReferenceKind, string>>;
       const next = { ...actor, visual_reference_asset_ids: { ...refs, ...done }, updated_at: iso(clock) };
       store.actors.set(actor.id, next);
       return next;
     }
     if (job.status !== "queued" && job.status !== "failed") return actor;
+    if (job.status === "failed") {
+      store.jobs.set(job.id, transitionJob(job, "queued", iso(clock), { error_code: null }));
+    }
     if (!reservedForJob(store.ledger, job.id)) reserve(job);
     const description = appearanceDescription({ description: actor.name, ...actor.appearance_profile });
     const seed = actor.seed_asset_id ? await assets.get(actor.seed_asset_id) : null;
@@ -974,6 +1017,13 @@ export function createEngine(deps: EngineDeps = {}) {
     const replaceWardrobe = likeness
       ? actor.appearance_profile.default_wardrobe?.trim() || LIKENESS_WARDROBE
       : undefined;
+    let style: { bytes: Uint8Array; mime_type: string } | null = null;
+    const styleId = refs.front;
+    if (styleId) {
+      const lockedStyle = await assets.get(styleId);
+      if (lockedStyle) style = { bytes: lockedStyle.body, mime_type: lockedStyle.asset.mime_type };
+    }
+    try {
     for (const kind of missing) {
       const image = await generateGatedStill({
         characterName: actor.name,
@@ -981,6 +1031,7 @@ export function createEngine(deps: EngineDeps = {}) {
         kind,
         faceText: actor.appearance_profile.face,
         seed: seed ? { bytes: seed.body, mime_type: seed.asset.mime_type } : null,
+        style,
         mode: likeness ? "likeness" : "generated",
         identityFidelity: fidelity,
         replaceWardrobe,
@@ -996,6 +1047,9 @@ export function createEngine(deps: EngineDeps = {}) {
         metadata: { actor_id: actor.id, kind },
       });
       refs[kind] = asset.id;
+      if (!style && kind === "front") {
+        style = { bytes: image.bytes, mime_type: image.mime_type };
+      }
       actor = {
         ...actor,
         visual_reference_asset_ids: { ...refs },
@@ -1016,6 +1070,11 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     completeSyncJob(job, job.estimated_cost, { actor_id: actor.id, refs });
     return actor;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "actor_pack_failed";
+      recordJobError(store.jobs.get(job.id) ?? job, message);
+      throw error;
+    }
   }
 
   async function attachActor(input: { owner_id: string; character_id: string; actor_id: string }) {
@@ -1485,6 +1544,7 @@ export function createEngine(deps: EngineDeps = {}) {
     let image: Awaited<ReturnType<typeof ai.image.generateReference>> | null = null;
     let peoplePresent: boolean | null = null;
     let placeholderLettering: boolean | null = null;
+    let productionGearPresent: boolean | null = null;
     let notes: Record<string, unknown> = {};
     // The physical description only; a name like "wall of household files"
     // reads as a household and the model staffs it.
@@ -1509,6 +1569,7 @@ export function createEngine(deps: EngineDeps = {}) {
         const described = await ai.vision.describeLocation({ plate: small?.bytes ?? candidate.bytes, plateMime: small?.mime ?? candidate.mime_type, location });
         peoplePresent = described.people_present;
         placeholderLettering = described.placeholder_lettering;
+        productionGearPresent = described.production_gear_present;
         notes = {
           lighting_lock: described.lighting_lock,
           palette: described.palette,
@@ -1516,9 +1577,10 @@ export function createEngine(deps: EngineDeps = {}) {
           dressing: described.dressing,
           people_present: described.people_present,
           placeholder_lettering: described.placeholder_lettering,
+          production_gear_present: described.production_gear_present,
           ...(described.geometry ? { geometry: described.geometry } : {}),
         };
-        if (!described.people_present && !described.placeholder_lettering) break;
+        if (!described.people_present && !described.placeholder_lettering && !described.production_gear_present) break;
       } catch (caught) {
         // Without vision nothing checks the room is empty, so say so loudly
         // rather than shipping an unjudged plate in silence.
@@ -1541,6 +1603,9 @@ export function createEngine(deps: EngineDeps = {}) {
     }
     if (placeholderLettering) {
       throw new Error(`Location plate for ${location} still shows dummy lettering or a leaked prop after ${LOCATION_PLATE_ATTEMPTS} attempts`);
+    }
+    if (productionGearPresent) {
+      throw new Error(`Location plate for ${location} still shows filmmaking equipment after ${LOCATION_PLATE_ATTEMPTS} attempts`);
     }
     const asset = await putAsset({
       owner_id: series.owner_id,
@@ -2787,17 +2852,43 @@ export function createEngine(deps: EngineDeps = {}) {
    * the way the planner keys the same words, so when a shot locks that object
    * the shoot reuses this still instead of inventing the prop a second time.
    */
+  async function writeStoryDocument(series: { title: string; description?: string | null; story_bible?: StoryBible | null }, name: string): Promise<WrittenDocument | null> {
+    if (!isReadableDocument(name)) return null;
+    const parties = (series.story_bible?.characters ?? []).map((row) => row.name).filter(Boolean);
+    const input = {
+      name,
+      title: series.story_bible?.title ?? series.title,
+      logline: series.story_bible?.logline ?? series.description ?? "",
+      parties,
+    };
+    if (ai.llm.writeDocument) {
+      try {
+        return normalizeWrittenDocument(await ai.llm.writeDocument(input), fallbackDocument(input));
+      } catch {
+        return fallbackDocument(input);
+      }
+    }
+    return fallbackDocument(input);
+  }
+
   async function lockProp(input: { owner_id: string; series_id: string; name: string; force?: boolean }) {
     const series = requireSeries(input.series_id, input.owner_id);
     const parsed = propFromLockText(input.name);
     if (!parsed) throw new Error("Name the object so it can be shot on its own");
     const existing = await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.key);
+    const existingMeta = existing
+      ? ((await liveAssetsForSeries(series.id)).find((row) => row.id === existing)?.metadata ?? null)
+      : null;
+    const existingDocument = documentFromMeta(existingMeta);
     const views = objectViews(parsed.name);
     const existingViews = existing ? await listedObjectViews(series.id, existing) : [];
-    if (existing && !input.force && existingViews.length >= views.length) {
+    // A document still without written lines is the old dummy-lettering plate.
+    const needsDocument = isReadableDocument(parsed.name) && !existingDocument;
+    if (existing && !input.force && existingViews.length >= views.length && !needsDocument) {
       return { asset_id: existing, key: parsed.key, name: parsed.name, state: parsed.state, reused: true };
     }
-    const remaining = existing && !input.force ? Math.max(0, views.length - existingViews.length) : 1 + views.length;
+    const remaining =
+      existing && !input.force && !needsDocument ? Math.max(0, views.length - existingViews.length) : 1 + views.length;
     const job = createJob({
       owner_id: series.owner_id,
       series_id: series.id,
@@ -2811,12 +2902,15 @@ export function createEngine(deps: EngineDeps = {}) {
       idempotency_key: freshJobKey(`prop:${series.id}:${parsed.key}`),
       status: "queued",
       request_metadata: { prop: parsed.name, key: parsed.key },
-      estimated_cost: ai.pricing.estimateImage() * Math.max(1, remaining),
+      estimated_cost: ai.pricing.estimateImage() * Math.max(1, remaining) + (isReadableDocument(parsed.name) ? ai.pricing.estimateLlm() : 0),
       expected_ready_at: addSeconds(clock, views.length ? 90 : 30),
     });
     reserve(job);
-    let stillId = existing && !input.force ? existing : null;
+    let stillId = existing && !input.force && !needsDocument ? existing : null;
+    let document = existingDocument;
     if (!stillId) {
+      document = (await writeStoryDocument(series, parsed.name)) ?? existingDocument;
+      const description = document ? documentPrompt(parsed.name, document) : parsed.prompt;
       // A state change ("open") is the sealed object again, not a new object.
       const seedId = parsed.seedKey
         ? await findAssetByMeta(series.id, PROP_KIND, (meta) => meta.key === parsed.seedKey)
@@ -2825,14 +2919,14 @@ export function createEngine(deps: EngineDeps = {}) {
       const image = seed
         ? await ai.image.generateReferenceFromSeed({
             characterName: parsed.name,
-            description: `${parsed.prompt}. Same object as the attached still, only the state changes.`,
+            description: `${description}. Same object as the attached still, only the state changes.`,
             kind: "object_insert",
             seed_bytes: seed.body,
             seed_mime_type: seed.asset.mime_type,
           })
         : await ai.image.generateReference({
             characterName: parsed.name,
-            description: parsed.prompt,
+            description,
             kind: "object_insert",
           });
       const kind = inferPropKind(parsed.name);
@@ -2845,23 +2939,30 @@ export function createEngine(deps: EngineDeps = {}) {
         body: image.bytes,
         // `prop` carries the cached kind so the generic prop bible reuses this
         // show's own object instead of generating a stock one beside it.
-        metadata: { kind: PROP_KIND, prop: kind ?? parsed.name, key: parsed.key, state: parsed.state, name: parsed.name },
+        metadata: {
+          kind: PROP_KIND,
+          prop: kind ?? parsed.name,
+          key: parsed.key,
+          state: parsed.state,
+          name: parsed.name,
+          ...(document ? { document } : {}),
+        },
       });
       stillId = asset.id;
     }
-    await ensureObjectViews(series.id, parsed.name, stillId, { required: true });
+    await ensureObjectViews(series.id, parsed.name, stillId, { required: true, document });
     completeSyncJob(job, job.estimated_cost, { key: parsed.key, asset_id: stillId });
     return {
       asset_id: stillId,
       key: parsed.key,
       name: parsed.name,
       state: parsed.state,
-      reused: Boolean(existing && !input.force),
+      reused: Boolean(existing && !input.force && !needsDocument),
     };
   }
 
   const ROOM_ANGLE_KIND = "room_angle";
-  const ROOM_ANGLE_ATTEMPTS = 2;
+  const ROOM_ANGLE_ATTEMPTS = 3;
 
   async function listedRoomAngles(
     seriesId: string,
@@ -2871,7 +2972,7 @@ export function createEngine(deps: EngineDeps = {}) {
     const listed = await liveAssetsForSeries(seriesId);
     return listed.flatMap((asset) => {
       const meta = asset.metadata ?? {};
-      if (meta.kind !== ROOM_ANGLE_KIND) return [];
+      if (meta.kind !== ROOM_ANGLE_KIND || meta.room_pack_version !== ROOM_PACK_VERSION) return [];
       if (meta.location !== location || meta.plate_id !== plateId) return [];
       const angle = typeof meta.angle === "string" ? meta.angle : "";
       return angle ? [{ id: asset.id, angle }] : [];
@@ -2881,8 +2982,10 @@ export function createEngine(deps: EngineDeps = {}) {
   async function judgeEmptyPlace(
     image: { bytes: Uint8Array; mime_type: string },
     location: string,
-  ): Promise<{ peoplePresent: boolean | null; placeholderLettering: boolean | null }> {
-    if (!ai.vision?.describeLocation) return { peoplePresent: null, placeholderLettering: null };
+  ): Promise<{ peoplePresent: boolean | null; placeholderLettering: boolean | null; productionGearPresent: boolean | null }> {
+    if (!ai.vision?.describeLocation) {
+      return { peoplePresent: null, placeholderLettering: null, productionGearPresent: null };
+    }
     try {
       const small = await shrinkReference(image.bytes);
       const described = await ai.vision.describeLocation({
@@ -2890,9 +2993,42 @@ export function createEngine(deps: EngineDeps = {}) {
         plateMime: small?.mime ?? image.mime_type,
         location,
       });
-      return { peoplePresent: described.people_present, placeholderLettering: described.placeholder_lettering };
+      return {
+        peoplePresent: described.people_present,
+        placeholderLettering: described.placeholder_lettering,
+        productionGearPresent: described.production_gear_present,
+      };
     } catch {
-      return { peoplePresent: null, placeholderLettering: null };
+      return { peoplePresent: null, placeholderLettering: null, productionGearPresent: null };
+    }
+  }
+
+  async function judgeRoomContinuity(
+    master: { bytes: Uint8Array; mime_type: string },
+    layout: { bytes: Uint8Array; mime_type: string } | null,
+    candidate: { bytes: Uint8Array; mime_type: string },
+    location: string,
+    angle: string,
+  ): Promise<{ consistent: boolean; camera_correct: boolean; notes: string } | null> {
+    if (!ai.vision?.judgePlaceContinuity) return null;
+    try {
+      const [masterSmall, layoutSmall, candidateSmall] = await Promise.all([
+        shrinkReference(master.bytes),
+        layout ? shrinkReference(layout.bytes) : Promise.resolve(null),
+        shrinkReference(candidate.bytes),
+      ]);
+      return await ai.vision.judgePlaceContinuity({
+        master: masterSmall?.bytes ?? master.bytes,
+        masterMime: masterSmall?.mime ?? master.mime_type,
+        layout: layout ? layoutSmall?.bytes ?? layout.bytes : null,
+        layoutMime: layout ? layoutSmall?.mime ?? layout.mime_type : undefined,
+        candidate: candidateSmall?.bytes ?? candidate.bytes,
+        candidateMime: candidateSmall?.mime ?? candidate.mime_type,
+        location,
+        angle,
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -2913,22 +3049,44 @@ export function createEngine(deps: EngineDeps = {}) {
       return [];
     }
     const wanted = roomAnglesFor(location);
+    // Establish one shared floor plan before asking for any wall view. Each
+    // subsequent image receives both the master and this layout.
+    const ordered = [...wanted].sort((left, right) =>
+      left.angle === "overhead" ? -1 : right.angle === "overhead" ? 1 : 0
+    );
     const out: Array<{ url: string; id: string; angle: string }> = [];
     const missing: string[] = [];
-    for (const row of wanted) {
+    const plate = await assets.get(plateId).catch(() => null);
+    if (!plate) {
+      if (opts.required) throw new Error(`Could not read the plate for ${location}`);
+      return [];
+    }
+    let layout: { bytes: Uint8Array; mime_type: string } | null = null;
+    const existingLayoutId = await findAssetByMeta(
+      seriesId,
+      ROOM_ANGLE_KIND,
+      (meta) =>
+        meta.location === location &&
+        meta.angle === "overhead" &&
+        meta.plate_id === plateId &&
+        meta.room_pack_version === ROOM_PACK_VERSION,
+    );
+    if (existingLayoutId) {
+      const existingLayout = await assets.get(existingLayoutId).catch(() => null);
+      if (existingLayout) layout = { bytes: existingLayout.body, mime_type: existingLayout.asset.mime_type };
+    }
+    for (const row of ordered) {
       try {
         let id = await findAssetByMeta(
           seriesId,
           ROOM_ANGLE_KIND,
-          (meta) => meta.location === location && meta.angle === row.angle && meta.plate_id === plateId,
+          (meta) =>
+            meta.location === location &&
+            meta.angle === row.angle &&
+            meta.plate_id === plateId &&
+            meta.room_pack_version === ROOM_PACK_VERSION,
         );
         if (!id) {
-          const plate = await assets.get(plateId).catch(() => null);
-          if (!plate) {
-            if (opts.required) throw new Error(`Could not read the plate for ${location}`);
-            missing.push(row.angle);
-            continue;
-          }
           let lastError: Error | null = null;
           for (let attempt = 0; attempt < ROOM_ANGLE_ATTEMPTS; attempt += 1) {
             const image = await ai.image.generateReferenceFromSeed({
@@ -2937,6 +3095,8 @@ export function createEngine(deps: EngineDeps = {}) {
               kind: "location",
               seed_bytes: plate.body,
               seed_mime_type: plate.asset.mime_type,
+              layout_bytes: row.angle === "overhead" ? undefined : layout?.bytes,
+              layout_mime_type: row.angle === "overhead" ? undefined : layout?.mime_type,
             });
             const judged = await judgeEmptyPlace(image, location);
             if (judged.peoplePresent) {
@@ -2947,6 +3107,27 @@ export function createEngine(deps: EngineDeps = {}) {
               lastError = new Error(`The ${row.angle} view of ${location} still shows dummy lettering or a leaked prop`);
               continue;
             }
+            if (judged.productionGearPresent) {
+              lastError = new Error(`The ${row.angle} view of ${location} still shows filmmaking equipment`);
+              continue;
+            }
+            const continuity = await judgeRoomContinuity(
+              { bytes: plate.body, mime_type: plate.asset.mime_type },
+              row.angle === "overhead" ? null : layout,
+              image,
+              location,
+              row.angle,
+            );
+            if (ai.vision?.judgePlaceContinuity && !continuity) {
+              lastError = new Error(`Could not verify the ${row.angle} view of ${location}`);
+              continue;
+            }
+            if (continuity && (!continuity.consistent || !continuity.camera_correct)) {
+              lastError = new Error(
+                `The ${row.angle} view of ${location} failed set continuity: ${continuity.notes || "layout or camera direction was wrong"}`,
+              );
+              continue;
+            }
             const asset = await putAsset({
               owner_id: series.owner_id,
               series_id: series.id,
@@ -2954,9 +3135,16 @@ export function createEngine(deps: EngineDeps = {}) {
               bucket: "private-character",
               mime_type: image.mime_type,
               body: image.bytes,
-              metadata: { kind: ROOM_ANGLE_KIND, location, angle: row.angle, plate_id: plateId },
+              metadata: {
+                kind: ROOM_ANGLE_KIND,
+                location,
+                angle: row.angle,
+                plate_id: plateId,
+                room_pack_version: ROOM_PACK_VERSION,
+              },
             });
             id = asset.id;
+            if (row.angle === "overhead") layout = { bytes: image.bytes, mime_type: image.mime_type };
             lastError = null;
             break;
           }
@@ -2973,7 +3161,8 @@ export function createEngine(deps: EngineDeps = {}) {
     if (opts.required && missing.length) {
       throw new Error(`Could not build the ${missing[0]} view of ${location}`);
     }
-    return out;
+    const order = new Map(wanted.map((row, index) => [row.angle, index]));
+    return out.sort((left, right) => (order.get(left.angle) ?? 0) - (order.get(right.angle) ?? 0));
   }
 
   async function listedObjectViews(seriesId: string, stillId: string): Promise<Array<{ id: string; angle: string }>> {
@@ -2994,7 +3183,7 @@ export function createEngine(deps: EngineDeps = {}) {
     seriesId: string,
     name: string,
     stillId: string,
-    opts: { required?: boolean } = {},
+    opts: { required?: boolean; document?: WrittenDocument | null } = {},
   ): Promise<Array<{ url: string; id: string; angle: string }>> {
     const series = store.series.get(seriesId);
     const wanted = objectViews(name);
@@ -3015,9 +3204,10 @@ export function createEngine(deps: EngineDeps = {}) {
             missing.push(row.angle);
             continue;
           }
+          const lettering = opts.document ? documentTypeset(opts.document) : objectLettering(name);
           const image = await ai.image.generateReferenceFromSeed({
             characterName: name,
-            description: `${row.prompt}. Same object as the attached still. ${objectLettering(name)} Object only, no people, no hands. Cinematic still.`,
+            description: `${row.prompt}. Same object as the attached still. ${lettering} Object only, no people, no hands. Cinematic still.`,
             kind: "object_insert",
             seed_bytes: hero.body,
             seed_mime_type: hero.asset.mime_type,
@@ -3061,15 +3251,17 @@ export function createEngine(deps: EngineDeps = {}) {
       if (!series) return null;
       const seedId = prop.seedKey ? await findAssetByMeta(seriesId, PROP_KIND, (meta) => meta.key === prop.seedKey) : null;
       const seed = seedId ? await assets.get(seedId).catch(() => null) : null;
+      const document = await writeStoryDocument(series, prop.name);
+      const description = document ? documentPrompt(prop.name, document) : prop.prompt;
       const image = seed
         ? await ai.image.generateReferenceFromSeed({
             characterName: prop.name,
-            description: `${prop.prompt}. Same object as the attached still, only the state changes.`,
+            description: `${description}. Same object as the attached still, only the state changes.`,
             kind: "object_insert",
             seed_bytes: seed.body,
             seed_mime_type: seed.asset.mime_type,
           })
-        : await ai.image.generateReference({ characterName: prop.name, description: prop.prompt, kind: "object_insert" });
+        : await ai.image.generateReference({ characterName: prop.name, description, kind: "object_insert" });
       const asset = await putAsset({
         owner_id: series.owner_id,
         series_id: series.id,
@@ -3077,7 +3269,7 @@ export function createEngine(deps: EngineDeps = {}) {
         bucket: "private-character",
         mime_type: image.mime_type,
         body: image.bytes,
-        metadata: { kind: PROP_KIND, prop: prop.name, key: prop.key, state: prop.state },
+        metadata: { kind: PROP_KIND, prop: prop.name, key: prop.key, state: prop.state, ...(document ? { document } : {}) },
       });
       const url = await signedOrSkip(asset.id);
       return url ? { url, id: asset.id, name: prop.name } : null;

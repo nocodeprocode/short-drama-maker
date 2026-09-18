@@ -17,9 +17,10 @@ type Rows = {
 
 /** Enough of the query builder for the shapes `seriesReadiness` actually uses. */
 function fakeClient(rows: Rows) {
+  const available: Rows = { characters: [{ id: "char-1", locked: false }], ...rows };
   return {
     from(table: keyof Rows) {
-      const data = rows[table] ?? [];
+      const data = available[table] ?? [];
       const result = { data, error: null };
       const builder: Record<string, unknown> = {
         select: () => builder,
@@ -43,7 +44,7 @@ function speakingSlot(over: Record<string, unknown> = {}) {
     archetype: "ruthless heir",
     castable: true,
     actor_id: "actor-1",
-    character_id: null,
+    character_id: "char-1",
     role_name: "Mara",
     suggested_name: null,
     suggested_gender: "woman",
@@ -52,6 +53,22 @@ function speakingSlot(over: Record<string, unknown> = {}) {
 }
 
 describe("seriesReadiness", () => {
+  it("does not treat deleted cast and places as a ready empty show", async () => {
+    const ready = await seriesReadiness(
+      fakeClient({
+        series_cast: [],
+        series_locations: [],
+        series_props: [],
+      }),
+      "series-1",
+    );
+    expect(ready.can_start).toBe(false);
+    expect(ready.blocking).toEqual([
+      "Cast has not been created yet",
+      "No places have been prepared yet",
+    ]);
+  });
+
   it("lets a show start when every face, place and object exists", async () => {
     const ready = await seriesReadiness(
       fakeClient({
@@ -81,6 +98,20 @@ describe("seriesReadiness", () => {
     expect(ready.can_start).toBe(false);
     expect(ready.cast).toMatchObject({ done: 0, total: 1 });
     expect(ready.blocking[0]).toContain("Mara");
+  });
+
+  it("holds a slot whose character was deleted even if its old actor still has a face", async () => {
+    const ready = await seriesReadiness(
+      fakeClient({
+        series_cast: [speakingSlot()],
+        characters: [],
+        actors: [FACED_ACTOR],
+        series_locations: [{ name: "penthouse", plate_asset_id: "asset-2" }],
+      }),
+      "series-1",
+    );
+    expect(ready.can_start).toBe(false);
+    expect(ready.cast).toMatchObject({ done: 0, total: 1, missing: ["Mara"] });
   });
 
   it("does not demand a face for a story device", async () => {

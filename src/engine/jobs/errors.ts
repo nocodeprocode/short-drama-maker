@@ -6,7 +6,7 @@ const TRANSIENT =
 const POLICY = /fictional|not allowed|content.?polic|blocked|moderation|real.person|likeness/i;
 
 const QUALITY =
-  /quality bar|qc failed|needs_review|below the quality|not every shot is complete|render failed|mux audit/i;
+  /CAST_LOOK|quality bar|qc failed|needs_review|below the quality|not every shot is complete|render failed|mux audit/i;
 
 const INPUT_IMAGE_PRIVACY =
   /InputImageSensitiveContentDetected|PrivacyInformation|input image[\s\S]{0,120}may contain real person/i;

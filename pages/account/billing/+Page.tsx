@@ -115,6 +115,7 @@ export default function Page() {
     setGap(null);
     try {
       const created = await studio.createProduction({
+        start_confirmed: true,
         series_id: selectedSeries,
         sku,
         priority: "balanced",

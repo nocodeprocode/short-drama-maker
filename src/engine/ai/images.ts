@@ -133,8 +133,8 @@ export function createOpenRouterImages(): ImageEngine {
       return requestImage(
         [
           tight
-            ? "Photorealistic vertical 9:16 HEAD-AND-SHOULDERS close-up. Face fills the frame. Cropped at the chest. NOT a full-body standing pose. NOT a wide master."
-            : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
+            ? "Photorealistic vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. Face fills the frame, cropped at the chest. No wide-angle distortion."
+            : "Photorealistic vertical 9:16 HEAD-TO-TOE full-body portrait. Eye-level camera at chest height, 70mm portrait-lens perspective. Straight horizon. NO overhead angle, NO high angle, NO fisheye, NO wide-angle distortion.",
           // create-engine/face-screen rejects a NEW still that fails CAST_LOOK; old locked PNGs are not recut.
           "Short-drama lead: strikingly beautiful adult, camera-ready, the kind of face a viewer pauses for. Clear skin, defined features, catchlight in the eyes. Flattering, not tired, not plain.",
           HUMAN_EYE_CLAUSE,
@@ -142,23 +142,35 @@ export function createOpenRouterImages(): ImageEngine {
           input.description,
           `Pose / framing: ${input.kind}.`,
           MODEST_DRESS_RULE,
-          "Fictional adult. Do not copy a public figure. Neutral set lighting. Single subject. ONE person only. Same wardrobe as described.",
+          "Fictional adult. Do not copy a public figure. Single subject. ONE person only. Same wardrobe as described.",
+          "Canonical pack style: a plain warm-grey wall extending edge to edge, softly and evenly illuminated by daylight from outside the frame, with natural contrast and skin tone.",
+          "No visible studio lamp, LED panel, softbox, light stand, tripod, camera, reflector, cable, backdrop edge, boom, monitor, or production equipment. Lighting equipment stays outside frame.",
           "Ignore any sleepwear, bare-leg, open-collar, unbuttoned, or underdressed wardrobe in the character notes. Dress them modestly instead: opaque cloth to the throat, or a closed jacket over a buttoned shirt. No open chest.",
         ].join(" "),
       );
     },
     async generateReferenceFromSeed(input) {
       if (input.kind === "location") {
+        const references: ImageRef[] = [
+          { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
+        ];
+        if (input.layout_bytes && input.layout_mime_type) {
+          references.push({ bytes: input.layout_bytes, mime_type: input.layout_mime_type });
+        }
         return requestImage(
           [
             placePlateLead(input.characterName),
-            "Same place as the reference still. Same walls, same ground, same light. A new angle of that place, not a new place.",
+            "Reference image 1 is the MASTER VIEW of the set.",
+            input.layout_bytes
+              ? "Reference image 2 is the AUTHORITATIVE OVERHEAD LAYOUT. Keep every wall, window, door, table, chair, and fixed object in exactly those floor-plan positions. Objects may look different under perspective, but must never rotate, swap sides, or move within the room."
+              : "Derive an authoritative overhead layout from the master. Preserve the physical orientation and position of every fixed object.",
+            "Same physical place as the references. Move or rotate only the camera as requested. Never rotate or rearrange the room.",
             input.description,
             placePlateDressing(input.characterName),
             placeLettering(input.characterName),
             "No captions, no watermark, no clapperboard, no film slate.",
           ].join(" "),
-          { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
+          references,
         );
       }
       if (input.kind === "object_insert") {
@@ -178,13 +190,25 @@ export function createOpenRouterImages(): ImageEngine {
         input.kind === "three_quarter" ||
         input.kind === "profile";
       const likeness = input.mode === "likeness";
+      const references: ImageRef[] = [{ bytes: input.seed_bytes, mime_type: input.seed_mime_type }];
+      if (input.style_bytes && input.style_mime_type) {
+        references.push({ bytes: input.style_bytes, mime_type: input.style_mime_type });
+      }
       return requestImage(
         [
           tight
-            ? "Same person as the reference photo. Tight vertical 9:16 HEAD-AND-SHOULDERS close-up. Face fills the frame. Cropped at the chest. NOT full body. NOT a second person."
-            : "Photorealistic vertical 9:16 character reference still, FaceTime-close.",
+            ? "Tight vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. Face fills the frame, cropped at the chest. No wide-angle distortion."
+            : "Vertical 9:16 HEAD-TO-TOE full-body portrait. Eye-level camera at chest height, 70mm portrait-lens perspective. Straight horizon. NO overhead angle, NO high angle, NO fisheye, NO wide-angle distortion.",
+          "Reference image 1 is the IDENTITY AND COMPLEXION SOURCE. Preserve this exact person and natural skin tone.",
+          "Use only the person's face, hair, complexion, and body identity from reference 1. Its room, background, camera angle, lighting fixtures, and photographic setup are contamination: do not copy or reproduce them.",
+          input.style_bytes
+            ? "Reference image 2 is the APPROVED PACK STYLE. Match its plain wall, camera height, lens character, wardrobe, light direction, exposure, white balance, contrast, and colour grade exactly."
+            : "Create the canonical pack style: a plain warm-grey wall extending edge to edge, softly and evenly illuminated by daylight from outside the frame, with natural contrast.",
+          input.retry_attempt
+            ? "RETRY CORRECTION: a previous result was rejected for visible production equipment. Every corner and edge must contain only the plain wall—no bright disc, lamp head, pole, stand, tripod, fixture, cable, backdrop edge, or photographic object."
+            : "",
           likeness
-            ? "IDENTITY LOCK: keep the exact face, bone structure, hair, age, skin tone, and identifying marks from the reference photo. Do not restyle into a different person. Retouch skin and groom the hair. Studio key light with a catchlight, cinematic grade, neutral seamless background. A professional short-drama still of this same adult."
+            ? "IDENTITY LOCK: keep the exact face, bone structure, hairline, age, skin tone, undertone, and identifying marks from reference 1. Correct exposure without whitening, bleaching, paling, desaturating, or changing ethnicity. Preserve natural complexion and melanin. Groom hair and retouch only temporary blemishes."
             : "Keep the same strikingly beautiful adult face. Flattering, camera-ready, catchlight in the eyes.",
           HUMAN_EYE_CLAUSE,
           input.replaceWardrobe || likeness
@@ -194,10 +218,11 @@ export function createOpenRouterImages(): ImageEngine {
           input.description,
           `Pose / framing: ${input.kind}.`,
           MODEST_DRESS_RULE,
-          "Adult only. Do not copy a public figure. Neutral set lighting. Single subject.",
+          "Adult only. Do not copy a public figure. Single subject. Background is clean and empty.",
+          "No visible studio lamp, LED panel, softbox, light stand, tripod, camera, reflector, cable, backdrop edge, boom, monitor, or production equipment. Lighting equipment stays outside frame.",
           "Ignore any sleepwear, bare-leg, open-collar, unbuttoned, or underdressed wardrobe in the notes. Dress them modestly instead: opaque cloth to the throat, or a closed jacket over a buttoned shirt. No open chest.",
         ].join(" "),
-        { bytes: input.seed_bytes, mime_type: input.seed_mime_type },
+        references,
       );
     },
     async generateBlockingStill(input) {

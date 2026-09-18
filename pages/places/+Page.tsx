@@ -4,25 +4,27 @@ import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
 import { CastCardSkeleton } from "@/components/drama/cast-card.tsx";
+import { CatalogPagination, pageItems } from "@/components/drama/catalog-pagination.tsx";
+import { ConfirmDialog } from "@/components/drama/confirm-dialog.tsx";
+import {
+  filterPlaces,
+  firstCover,
+  foldersFor,
+  PlaceFolderBar,
+  PlaceFolderHeading,
+  PlaceFolderTile,
+  PlaceSearch,
+  type OpenFolder,
+} from "@/components/drama/place-folders.tsx";
 import { LoadError } from "@/components/drama/skeleton.tsx";
+import { roomAngleLabel } from "@/drama-engine/craft/place.ts";
 import { studio, type PlaceEntry } from "@/lib/api.ts";
+import { prepareImageUpload } from "@/lib/image-upload.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
 
 const IMAGE_TYPES = "image/png,image/jpeg,image/webp";
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result ?? "");
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
+const PAGE_SIZE = 12;
 
 function statusChip(place: PlaceEntry): string | undefined {
   if (place.status === "building") return "Building…";
@@ -35,9 +37,19 @@ function statusChip(place: PlaceEntry): string | undefined {
  * A place is a room, never a person, so this deliberately does not use the cast
  * poster with its human silhouette placeholder.
  */
-function Plate({ src, chip, working }: { src?: string | null; chip?: string; working?: boolean }) {
-  return (
-    <div className={cx("poster g1 ratio-34", working && "is-working")}>
+function Plate({
+  src,
+  chip,
+  working,
+  onOpen,
+}: {
+  src?: string | null;
+  chip?: string;
+  working?: boolean;
+  onOpen?: () => void;
+}) {
+  const content = (
+    <>
       {src ? <img src={src} alt="" className="poster-photo" /> : null}
       {chip ? <span className={cx("pchip", working && "is-working")}>{chip}</span> : null}
       {working ? (
@@ -45,32 +57,63 @@ function Plate({ src, chip, working }: { src?: string | null; chip?: string; wor
           <i />
         </span>
       ) : null}
-    </div>
+    </>
+  );
+  return src && onOpen ? (
+    <button type="button" onClick={onOpen} className={cx("poster no-shade ratio-34 block w-full cursor-pointer", working && "is-working")}>
+      {content}
+    </button>
+  ) : (
+    <div className={cx("poster no-shade ratio-34", working && "is-working")}>{content}</div>
   );
 }
 
 export default function Page() {
   const { data, error, reload } = useStudio("places", () => studio.places());
-  /** A tag, or "" for every place. */
-  const [tag, setTag] = useState("");
+  const [query, setQuery] = useState("");
+  const [folder, setFolder] = useState<OpenFolder>("");
+  const [page, setPage] = useState(1);
 
   if (error && !data) return <LoadError message={error} onRetry={() => void reload()} />;
 
-  const shown = data ? (tag ? data.items.filter((place) => place.tags.includes(tag)) : data.items) : [];
+  const searching = query.trim().length > 0;
+  const shown = data
+    ? filterPlaces(data.items, query, (place) => [...place.tags, ...place.shows, place.notes, place.lighting_lock ?? ""])
+    : [];
+  const folders = foldersFor(shown);
+  const open = !searching && folder ? folders.find((row) => row.id === folder) : null;
+  const cards = open ? open.items : searching ? shown : [];
+  const pagedCards = pageItems(cards, page, PAGE_SIZE);
+  const pagedSearchIds = new Set(pageItems(shown, page, PAGE_SIZE).map((place) => place.id));
 
   return (
     <>
       <PageHeader
         title="Places"
-        subtitle="Your catalog of sets. A place is built once as an empty plate and reused, so every scene there is the same room. Use the same place on any show."
+        subtitle="Your catalog of sets, filed by the kind of place they are. A place is built once as an empty plate and reused, so every scene there is the same room."
       />
       <PageBody>
-        {data && data.tags.length ? (
-          <div className="mb-5 flex flex-wrap items-center gap-1.5">
-            <TagChip label="All places" isOn={!tag} onClick={() => setTag("")} />
-            {data.tags.map((item) => (
-              <TagChip key={item} label={item} isOn={tag === item} onClick={() => setTag(tag === item ? "" : item)} />
-            ))}
+        {data && data.items.length ? (
+          <div className="mb-5 space-y-4">
+            <PlaceSearch
+              value={query}
+              onChange={(value) => {
+                setQuery(value);
+                setPage(1);
+              }}
+              placeholder="Find a room, street, car, or show"
+              ariaLabel="Find a place"
+            />
+            {searching ? (
+              <p className="text-xs text-tertiary">
+                {shown.length ? `${shown.length} ${shown.length === 1 ? "place" : "places"}` : "Nothing matches that."}
+              </p>
+            ) : open ? (
+              <PlaceFolderBar label={open.label} onBack={() => {
+                setFolder("");
+                setPage(1);
+              }} />
+            ) : null}
           </div>
         ) : null}
 
@@ -82,12 +125,51 @@ export default function Page() {
           </div>
         ) : null}
 
-        {shown.length ? (
+        {data && data.items.length && !searching && !open ? (
+          folders.length ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {folders.map((row) => (
+                <PlaceFolderTile
+                  key={row.id}
+                  label={row.label}
+                  count={row.items.length}
+                  cover={firstCover(row.items)}
+                  onOpen={() => {
+                    setFolder(row.id);
+                    setPage(1);
+                  }}
+                />
+              ))}
+            </div>
+          ) : null
+        ) : null}
+
+        {searching && folders.length ? (
+          <div className="space-y-8">
+            {folders.map((row) => (
+              row.items.some((place) => pagedSearchIds.has(place.id)) ? <section key={row.id} className="space-y-3">
+                <PlaceFolderHeading label={row.label} count={row.items.length} />
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {row.items.filter((place) => pagedSearchIds.has(place.id)).map((place) => (
+                    <PlaceCard key={place.id} place={place} onChanged={() => void reload()} />
+                  ))}
+                </div>
+              </section> : null
+            ))}
+          </div>
+        ) : null}
+
+        {cards.length && !searching ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {shown.map((place) => (
+            {pagedCards.map((place) => (
               <PlaceCard key={place.id} place={place} onChanged={() => void reload()} />
             ))}
           </div>
+        ) : null}
+        {searching ? (
+          <CatalogPagination page={page} pageSize={PAGE_SIZE} totalItems={shown.length} noun="places" onPageChange={setPage} />
+        ) : open ? (
+          <CatalogPagination page={page} pageSize={PAGE_SIZE} totalItems={cards.length} noun="places" onPageChange={setPage} />
         ) : null}
 
         {data && data.items.length === 0 ? (
@@ -99,8 +181,8 @@ export default function Page() {
             </p>
           </div>
         ) : null}
-        {data && data.items.length > 0 && shown.length === 0 ? (
-          <p className="text-sm text-tertiary">No place is tagged “{tag}”.</p>
+        {data && data.items.length > 0 && searching && shown.length === 0 ? (
+          <p className="text-sm text-tertiary">No place matches that.</p>
         ) : null}
 
         {data ? <AddPlace onAdded={() => void reload()} /> : null}
@@ -109,28 +191,13 @@ export default function Page() {
   );
 }
 
-function TagChip({ label, isOn, onClick }: { label: string; isOn: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={isOn}
-      onClick={onClick}
-      className={cx(
-        "cursor-pointer rounded-full px-3 py-1 text-xs font-semibold ring-1 transition duration-100 ease-linear ring-inset outline-focus-ring",
-        "focus-visible:outline-2 focus-visible:outline-offset-2",
-        isOn ? "bg-brand-solid text-white ring-transparent" : "text-tertiary ring-secondary hover:text-secondary",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
 function PlaceCard({ place, onChanged }: { place: PlaceEntry; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(place.name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const pickerRef = useRef<HTMLInputElement>(null);
   const building = place.status === "building";
   const blocked = busy || building;
@@ -161,17 +228,20 @@ function PlaceCard({ place, onChanged }: { place: PlaceEntry; onChanged: () => v
     // A place already in footage stays in those shows: the shoot keeps its own
     // copy, so the buyer has to be told what removing it here does and does not do.
     if (place.shows.length) {
-      const ok = window.confirm(
-        `${place.name} is used in ${place.shows.join(", ")}. Those shows keep their own copy of the room. Remove it from your catalog?`,
-      );
-      if (!ok) return;
+      setConfirmRemove(true);
+      return;
     }
     void run(() => studio.deletePlace(place.id), "Could not remove this place.");
   }
 
   return (
     <div className="overflow-hidden rounded-xl border border-secondary bg-primary">
-      <Plate src={place.image_url} chip={statusChip(place)} working={building} />
+      <Plate
+        src={place.image_url}
+        chip={statusChip(place)}
+        working={building}
+        onOpen={place.image_url ? () => setPreview({ url: place.image_url!, label: `${place.name} — Master` }) : undefined}
+      />
       <div className="p-4">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -186,6 +256,29 @@ function PlaceCard({ place, onChanged }: { place: PlaceEntry; onChanged: () => v
         {place.lighting_lock ? <p className="mt-1 text-xs text-tertiary">{place.lighting_lock}</p> : null}
         {place.shows.length ? (
           <p className="mt-1 text-sm text-tertiary">Used in {place.shows.join(", ")}</p>
+        ) : null}
+        {(place.angles ?? []).length ? (
+          <div className="mt-3">
+            <p className="text-xs font-semibold text-tertiary">Generated views</p>
+            <div className="mt-2 grid grid-cols-5 gap-2">
+              {(place.angles ?? []).map((angle) => {
+                const label = roomAngleLabel(angle.angle, place.name);
+                return (
+                  <button
+                    key={angle.angle}
+                    type="button"
+                    onClick={() => setPreview({ url: angle.url, label: `${place.name} — ${label}` })}
+                    className="min-w-0 cursor-pointer text-left"
+                  >
+                    <img src={angle.url} alt={label} className="aspect-[9/16] w-full rounded-md object-cover" />
+                    <span className="mt-1 block truncate text-[10px] text-tertiary">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : place.image_url && !building ? (
+          <p className="mt-3 text-xs text-tertiary">The alternate views have not been built yet.</p>
         ) : null}
         {place.error ? <p className="mt-2 text-xs text-error-primary">{place.error}</p> : null}
 
@@ -245,9 +338,10 @@ function PlaceCard({ place, onChanged }: { place: PlaceEntry; onChanged: () => v
                 event.target.value = "";
                 if (!file) return;
                 void run(async () => {
+                  const upload = await prepareImageUpload(file);
                   await studio.uploadPlaceImage(place.id, {
-                    image_base64: await fileToBase64(file),
-                    image_mime_type: file.type,
+                    image_base64: upload.base64,
+                    image_mime_type: upload.mimeType,
                   });
                 }, "Could not use that picture.");
               }}
@@ -257,6 +351,27 @@ function PlaceCard({ place, onChanged }: { place: PlaceEntry; onChanged: () => v
 
         {error ? <p className="mt-2 text-sm text-error-primary">{error}</p> : null}
       </div>
+      {preview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={preview.label}>
+          <button type="button" aria-label="Close preview" className="absolute inset-0 bg-black/60" onClick={() => setPreview(null)} />
+          <div className="relative z-10 w-full max-w-lg rounded-xl bg-primary p-4 shadow-xl">
+            <img src={preview.url} alt={preview.label} className="mx-auto max-h-[78vh] rounded-lg object-contain" />
+            <div className="mt-3 text-sm font-semibold">{preview.label}</div>
+          </div>
+        </div>
+      ) : null}
+      <ConfirmDialog
+        open={confirmRemove}
+        title={`Remove ${place.name}?`}
+        description={`${place.name} is used in ${place.shows.join(", ")}. Those shows keep their own copy of the room, but it will be removed from your catalog.`}
+        confirmLabel="Remove place"
+        pending={busy}
+        onOpenChange={setConfirmRemove}
+        onConfirm={() => {
+          setConfirmRemove(false);
+          void run(() => studio.deletePlace(place.id), "Could not remove this place.");
+        }}
+      />
     </div>
   );
 }
@@ -318,10 +433,11 @@ function AddPlace({ onAdded }: { onAdded: () => void }) {
             event.target.value = "";
             if (!file) return;
             void run(async (value) => {
+              const upload = await prepareImageUpload(file);
               await studio.createPlace({
                 name: value,
-                image_base64: await fileToBase64(file),
-                image_mime_type: file.type,
+                image_base64: upload.base64,
+                image_mime_type: upload.mimeType,
               });
             });
           }}

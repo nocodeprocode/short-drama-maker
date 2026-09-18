@@ -7,6 +7,7 @@ import { Tab, TabList, Tabs } from "@/components/base/tabs/tabs";
 import { cx } from "@/utils/cx";
 import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
 import { CastSheet } from "@/components/drama/cast-sheet.tsx";
+import { ConfirmDialog } from "@/components/drama/confirm-dialog.tsx";
 import { DesignSheet } from "@/components/drama/design-sheet.tsx";
 import { EpisodeStrip } from "@/components/drama/episode-strip.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
@@ -53,6 +54,7 @@ export default function Page() {
   const [orderSku, setOrderSku] = useState<(typeof BLOCK_SKUS)[number]>(15);
   const [busy, setBusy] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gap, setGap] = useState<{ needed: number; available: number; shortfall: number } | null>(null);
   const { data: billing } = useStudio("billing", () => studio.billing());
@@ -168,6 +170,7 @@ export default function Page() {
     setGap(null);
     try {
       const created = await studio.createProduction({
+        start_confirmed: true,
         series_id: series.id,
         title: series.title,
         description: series.description ?? "",
@@ -213,7 +216,6 @@ export default function Page() {
   };
 
   const discard = async () => {
-    if (!window.confirm("Discard this draft? The brief is deleted. Unpaid drafts are also removed after 14 days.")) return;
     setDiscarding(true);
     setError(null);
     try {
@@ -295,7 +297,7 @@ export default function Page() {
                   {CTA.editDraft}
                 </Button>
                 {series.can_discard !== false ? (
-                  <Button color="tertiary" isDisabled={discarding} onClick={() => void discard()}>
+                  <Button color="tertiary" isDisabled={discarding} onClick={() => setConfirmDiscard(true)}>
                     {discarding ? "Discarding…" : CTA.discardDraft}
                   </Button>
                 ) : null}
@@ -561,6 +563,15 @@ export default function Page() {
           )
         ) : null}
       </PageBody>
+      <ConfirmDialog
+        open={confirmDiscard}
+        title="Discard this draft?"
+        description="The brief will be permanently deleted. Unpaid drafts are also automatically removed after 14 days."
+        confirmLabel="Discard draft"
+        pending={discarding}
+        onOpenChange={setConfirmDiscard}
+        onConfirm={() => void discard()}
+      />
     </>
   );
 }

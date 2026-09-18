@@ -13,6 +13,7 @@ import type {
   VoiceCandidate,
   VoiceIdentity,
 } from "../domain.ts";
+import type { WrittenDocument } from "../pipeline/prop-bible.ts";
 
 export type StoryAnalysisInput = {
   title: string;
@@ -85,6 +86,16 @@ export interface LLMEngine {
     bible: StoryBible;
     takes: Array<{ index: number; scene_script: string; staging?: string | null }>;
   }): Promise<Array<{ index: number; scene_script: string }>>;
+  /**
+   * Real English for a contract / NDA / letter still. The image model typesets
+   * these exact words so the paper is not dummy lettering.
+   */
+  writeDocument?(input: {
+    name: string;
+    title?: string;
+    logline?: string;
+    parties: string[];
+  }): Promise<WrittenDocument>;
 }
 
 export interface VoiceEngine {
@@ -111,6 +122,13 @@ export interface ImageEngine {
     kind: string;
     seed_bytes: Uint8Array;
     seed_mime_type: string;
+    /** Authoritative overhead room layout used with the master plate for new set angles. */
+    layout_bytes?: Uint8Array;
+    layout_mime_type?: string;
+    /** Approved front still that locks lighting, backdrop, styling, and grading across an actor pack. */
+    style_bytes?: Uint8Array;
+    style_mime_type?: string;
+    retry_attempt?: number;
     replaceWardrobe?: string;
     mode?: "likeness" | "generated";
   }): Promise<{ bytes: Uint8Array; mime_type: string }>;

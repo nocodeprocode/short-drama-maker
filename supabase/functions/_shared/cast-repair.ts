@@ -59,9 +59,10 @@ export async function ensureCastSlate(
   const existing = (slots ?? []) as SlotRow[];
   const now = new Date().toISOString();
   const fromBible = bibleCharacters(series.story_bible ?? null);
-  const slate = buildCastSlate({ title: series.title ?? "", idea: series.description ?? "" });
+  const slate = buildCastSlate({ title: series.title ?? "", idea: series.description ?? "" }).filter(
+    (slot) => slot.castable,
+  );
 
-  const takenJobs = new Set(existing.map((row) => asJob(row.job)).filter((job): job is CharacterJob => Boolean(job)));
   const takenNames = new Set(existing.map((row) => String(row.role_name ?? "").trim().toLowerCase()).filter(Boolean));
 
   // A stale "hidden heir / leaked NDA" row was marked castable because "heir"
@@ -77,6 +78,13 @@ export async function ensureCastSlate(
       .eq("id", row.id);
     row.castable = castable;
   }
+
+  const takenJobs = new Set(
+    existing
+      .filter((row) => row.castable !== false)
+      .map((row) => asJob(row.job))
+      .filter((job): job is CharacterJob => Boolean(job)),
+  );
 
   // Stamp a job onto a buyer row that predates the slate columns.
   for (const [index, row] of existing.entries()) {

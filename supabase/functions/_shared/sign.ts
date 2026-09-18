@@ -31,6 +31,12 @@ export async function signedGetUrl(
   return `${baseUrl.replace(/\/$/, "")}/o/${encoded}?exp=${exp}&sig=${hex(signature)}`;
 }
 
+/** Ask the media worker for a bounded WebP derivative; the signed original remains unchanged. */
+export function imagePreviewUrl(signedUrl: string): string {
+  const separator = signedUrl.includes("?") ? "&" : "?";
+  return `${signedUrl}${separator}preview=webp`;
+}
+
 export async function signAssetRows(
   rows: Array<{ id: string; kind: string; mime_type: string; storage_path: string; metadata?: Record<string, unknown>; created_at: string }>,
 ): Promise<Array<{ id: string; kind: string; mime: string; url: string; label: string; created_at: string }>> {
@@ -44,7 +50,9 @@ export async function signAssetRows(
         id: row.id,
         kind: row.kind,
         mime: row.mime_type,
-        url: await signedGetUrl(base, secret, row.storage_path, 60 * 30),
+        url: row.mime_type.startsWith("image/")
+          ? imagePreviewUrl(await signedGetUrl(base, secret, row.storage_path, 60 * 30))
+          : await signedGetUrl(base, secret, row.storage_path, 60 * 30),
         label: assetLabel(row.kind, row.metadata ?? {}),
         created_at: row.created_at,
       });
