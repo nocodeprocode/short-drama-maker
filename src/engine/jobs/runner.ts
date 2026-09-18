@@ -18,7 +18,7 @@ import { isSceneTake } from "../../drama-engine/types/editorial.ts";
 import { BUSY_VIDEO_STATUSES, productionTaskMayRun, shotNeedsVideo } from "./queue-policy.ts";
 import { commitSeriesStore, isMissingFunction, loadSeriesStore } from "../store-postgres.ts";
 import { isEpisodeLength } from "../config/catalog.ts";
-import { seriesReadiness } from "../../../supabase/functions/_shared/readiness.ts";
+import { seriesReadiness } from "../../lib/series-readiness.ts";
 import { DRAFT_TTL_DAYS } from "../drafts.ts";
 
 /** Takes kept in flight per series; the provider renders them concurrently. */

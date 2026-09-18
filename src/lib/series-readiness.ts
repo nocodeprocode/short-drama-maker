@@ -1,0 +1,132 @@
+import {
+  isStoryDevice,
+  parseSlateGender,
+  personName,
+  type CharacterJob,
+  type SlateGender,
+} from "../engine/casting/slate.ts";
+
+type DatabaseClient = {
+  from: (table: string) => any;
+};
+
+type CastSlotRow = {
+  actor_id: string | null;
+  character_id: string | null;
+  role_name: string | null;
+  role_note: string;
+  job?: string | null;
+  archetype?: string | null;
+  castable?: boolean;
+  suggested_name?: string | null;
+  suggested_gender?: string | null;
+};
+
+export type ReadyGroup = {
+  done: number;
+  total: number;
+  missing: string[];
+};
+
+export type Readiness = {
+  cast: ReadyGroup;
+  places: ReadyGroup;
+  objects: ReadyGroup;
+  unnamed: number;
+  can_start: boolean;
+  blocking: string[];
+};
+
+function asJob(value: unknown): CharacterJob | null {
+  return value === "engine" || value === "wall" || value === "witness" || value === "nuke" ? value : null;
+}
+
+function inferSlotGender(slot: CastSlotRow): SlateGender | null {
+  const fromColumn = parseSlateGender(slot.suggested_gender);
+  if (fromColumn) return fromColumn;
+  const hay =
+    `${slot.role_note ?? ""} ${slot.archetype ?? ""} ${slot.role_name ?? ""} ${slot.suggested_name ?? ""}`.toLowerCase();
+  const woman = /\b(woman|female|girl|lady|wife|mother|sister|daughter|she|her|luna|omega|bride|maid)\b/.test(hay);
+  const man = /\b(man|male|boy|gentleman|husband|father|brother|son|he|him|his|alpha|don|prince)\b/.test(hay);
+  if (woman && !man) return "woman";
+  if (man && !woman) return "man";
+  return null;
+}
+
+function group(done: number, total: number, missing: string[]): ReadyGroup {
+  return { done, total, missing: missing.slice(0, 8) };
+}
+
+function sentence(count: number, one: string, many: string, names: string[]): string {
+  const label = count === 1 ? one : many;
+  if (!names.length) return `${count} ${label} still to do`;
+  const shown = names.slice(0, 3).join(", ");
+  const rest = count - Math.min(names.length, 3);
+  return `${count} ${label} still to do: ${shown}${rest > 0 ? ` +${rest}` : ""}`;
+}
+
+export async function seriesReadiness(supabase: DatabaseClient, seriesId: string): Promise<Readiness> {
+  const [{ data: castRows }, { data: locationRows }, { data: propRows }, { data: characterRows }] =
+    await Promise.all([
+      supabase.from("series_cast").select("*").eq("series_id", seriesId).order("position"),
+      supabase.from("series_locations").select("id, name, plate_asset_id, locked").eq("series_id", seriesId),
+      supabase.from("series_props").select("id, name, still_asset_id, locked").eq("series_id", seriesId),
+      supabase.from("characters").select("id, locked").eq("series_id", seriesId),
+    ]);
+
+  const slots = ((castRows ?? []) as CastSlotRow[]).filter((row) => {
+    const job = asJob(row.job);
+    return !(row.castable === false || (job && isStoryDevice(job, String(row.archetype ?? ""))));
+  });
+
+  const actorIds = [...new Set(slots.map((row) => row.actor_id).filter((id): id is string => Boolean(id)))];
+  const { data: actorRows } = actorIds.length
+    ? await supabase.from("actors").select("id, visual_reference_asset_ids").in("id", actorIds)
+    : { data: [] };
+  const faced = new Set(
+    ((actorRows ?? []) as Array<{ id: string; visual_reference_asset_ids?: Record<string, unknown> | null }>)
+      .filter((row) => Object.keys(row.visual_reference_asset_ids ?? {}).length > 0)
+      .map((row) => String(row.id)),
+  );
+  const characters = (characterRows ?? []) as Array<{ id: string; locked?: boolean }>;
+  const lockedCharacters = new Set(characters.filter((row) => row.locked).map((row) => String(row.id)));
+  const existingCharacters = new Set(characters.map((row) => String(row.id)));
+
+  let castDone = 0;
+  let unnamed = 0;
+  const castMissing: string[] = [];
+  for (const slot of slots) {
+    const hasCharacter = Boolean(slot.character_id && existingCharacters.has(String(slot.character_id)));
+    const shot = hasCharacter && lockedCharacters.has(String(slot.character_id));
+    if (shot || (hasCharacter && slot.actor_id && faced.has(String(slot.actor_id)))) {
+      castDone += 1;
+      continue;
+    }
+    const label = personName(slot) || String(slot.archetype ?? "").trim() || "a part";
+    castMissing.push(label);
+    if (!personName(slot) || !inferSlotGender(slot)) unnamed += 1;
+  }
+
+  const places = (locationRows ?? []) as Array<{ name: string; plate_asset_id: string | null }>;
+  const placeMissing = places.filter((row) => !row.plate_asset_id).map((row) => row.name);
+  const objects = (propRows ?? []) as Array<{ name: string; still_asset_id: string | null }>;
+  const objectMissing = objects.filter((row) => !row.still_asset_id).map((row) => row.name);
+
+  const blocking: string[] = [];
+  if (slots.length === 0) blocking.push("Cast has not been created yet");
+  if (places.length === 0) blocking.push("No places have been prepared yet");
+  if (castMissing.length) {
+    blocking.push(sentence(castMissing.length, "part has no face", "parts have no face", castMissing));
+  }
+  if (placeMissing.length) blocking.push(sentence(placeMissing.length, "place", "places", placeMissing));
+  if (objectMissing.length) blocking.push(sentence(objectMissing.length, "object", "objects", objectMissing));
+
+  return {
+    cast: group(castDone, slots.length, castMissing),
+    places: group(places.length - placeMissing.length, places.length, placeMissing),
+    objects: group(objects.length - objectMissing.length, objects.length, objectMissing),
+    unnamed,
+    can_start: blocking.length === 0,
+    blocking,
+  };
+}

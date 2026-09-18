@@ -5,11 +5,7 @@
 .env.*
 node_modules
 pages
-supabase/*
-!supabase/functions
-supabase/functions/*
-!supabase/functions/_shared
-!supabase/functions/_shared/**
+supabase
 workers
 assets/live
 assets/engine

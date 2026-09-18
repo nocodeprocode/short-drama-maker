@@ -8,7 +8,6 @@ COPY package.json package-lock.json tsconfig.json vitest.config.ts ./
 RUN npm ci --omit=dev --ignore-scripts && npm install --no-save tsx
 COPY src ./src
 COPY worker ./worker
-COPY supabase/functions/_shared ./supabase/functions/_shared
 # Music library is resolved relative to the working directory (assets/music/**).
 COPY assets/music ./assets/music
 ENV PORT=8080

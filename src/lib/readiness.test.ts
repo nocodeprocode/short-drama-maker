@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { seriesReadiness } from "../../supabase/functions/_shared/readiness.ts";
+import { seriesReadiness } from "./series-readiness.ts";
 
 /**
  * This rule decides whether a buyer is allowed to pay, so it has to be wrong in
