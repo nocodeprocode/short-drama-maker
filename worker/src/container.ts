@@ -1,4 +1,4 @@
-import { Container } from "@cloudflare/containers";
+import { Container, getContainer } from "@cloudflare/containers";
 
 export class MediaWorker extends Container<Env> {
   defaultPort = 8080;
@@ -50,7 +50,7 @@ function shardName(request: Request, env: Env): string {
   const key = request.headers.get("x-render-key") ?? new URL(request.url).searchParams.get("key") ?? "";
   let hash = 0;
   for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return `shard-${key ? hash % shards : Math.floor(Math.random() * shards)}`;
+  return `runtime-v2-shard-${key ? hash % shards : Math.floor(Math.random() * shards)}`;
 }
 
 export default {
@@ -65,7 +65,10 @@ export default {
         });
       }
     }
-    const container = env.MEDIA_WORKER.getByName(shardName(request, env));
+    const container = getContainer(env.MEDIA_WORKER, shardName(request, env));
+    await container.startAndWaitForPorts({
+      cancellationOptions: { portReadyTimeoutMS: 60_000 },
+    });
     return container.fetch(request);
   },
 };
