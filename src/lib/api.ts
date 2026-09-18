@@ -55,6 +55,20 @@ export async function publicApi<T>(path: string, init: RequestInit = {}): Promis
   return readJson<T>(await authorizedFetch(path, init, null));
 }
 
+/**
+ * The season order travels with the idea: the writer sizes the engine to the
+ * episode count, so a 15-episode brief is a different show from a 90.
+ */
+export type StoryIdeaRequest = {
+  hint?: string;
+  category?: string;
+  lead?: string;
+  opposite?: string;
+  setting?: string;
+  episode_count?: number;
+  episode_length?: string;
+};
+
 export type StoryGenerationState = {
   id: string;
   status: "queued" | "running" | "completed" | "failed";
@@ -122,7 +136,7 @@ async function consumeStoryStream(
 }
 
 export async function streamStoryIdea(
-  body: { hint?: string; category?: string; lead?: string; opposite?: string; setting?: string },
+  body: StoryIdeaRequest,
   options: {
     generationId?: string;
     onGenerationId?: (id: string) => void;
@@ -164,7 +178,7 @@ export const studio = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
-  storyIdea: (body: { hint?: string; category?: string; lead?: string; opposite?: string; setting?: string } = {}) =>
+  storyIdea: (body: StoryIdeaRequest = {}) =>
     api<StoryIdea>("/story-ideas", {
       method: "POST",
       body: JSON.stringify(body),

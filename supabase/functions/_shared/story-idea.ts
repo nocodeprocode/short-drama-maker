@@ -1,4 +1,5 @@
 import { moderateText } from "./moderation.ts";
+import { isEpisodeLength, SECONDS_PER_EPISODE } from "./skus.ts";
 
 export const STORY_DIRECTIONS = [
   { id: "contract", label: "Contract marriage" },
@@ -23,9 +24,27 @@ export type StoryIdeaInput = {
   lead?: string;
   opposite?: string;
   setting?: string;
+  episode_count?: number;
+  episode_length?: string;
 };
 
 export type StoryIdeaProgress = Pick<StoryIdea, "title" | "brief">;
+
+export type SeasonOrder = { episodes: number; seconds: number };
+
+/**
+ * The order the buyer is paying for. The writer has to size the spine to it: a
+ * 15-episode engine and a 90-episode engine are different shows, and a brief
+ * that never sees the count writes episode 1 and stops.
+ */
+export function seasonOrder(count: unknown, length: unknown): SeasonOrder {
+  const asked = Math.round(Number(count));
+  const episodes = Number.isFinite(asked) && asked > 0 ? Math.min(90, Math.max(15, asked)) : 30;
+  return {
+    episodes,
+    seconds: isEpisodeLength(length) ? SECONDS_PER_EPISODE[length] : SECONDS_PER_EPISODE["60_90"],
+  };
+}
 
 /** Same writer family as the production bible. Sonnet is the fallback if Opus is dark. */
 const IDEA_MODELS = ["anthropic/claude-opus-5", "anthropic/claude-sonnet-4.6"] as const;
@@ -36,7 +55,9 @@ This is a coin-pack advertisement, not a prestige pilot. Write like an ad copywr
 
 Hard rules:
 - Every character is fictional and an adult. Never use a real person's name or likeness.
-- The product is 15 to 90 episodes of 60 to 120 seconds. Write a series, not a feature film.
+- Never write a minor, not even in passing. The safety gate rejects the words for children and throws the whole draft away. Land a hidden-child twist on an adult (a grown heir, a daughter who is now 30) or on an object (a birth record, a paternity result).
+- You are given the exact season order. Write that whole season, not one episode and not a feature film.
+- Name the season engine: the renewable pressure that forces a fresh confrontation every episode, and the ladder that raises the cost as the order runs. A 15-episode order needs a spine that survives 15 turns; a 90-episode order needs one that survives 90. If the engine is spent after episode 1, it is the wrong engine.
 - One core expectation in a single sentence. The plot is the delay mechanism, not the promise.
 - If it is a love story — almost all of these are — the leads meet in episode 1.
 - Episode 1 opens at the height of the conflict. No runway. No drive home.
@@ -46,33 +67,49 @@ Hard rules:
 - Titles are 2 to 6 words, specific, trope-legible. Never generic ("The Secret", "Love Again", "Broken Vows").
 - No sexual content, no minors, no celebrities, no real brands as villains.
 - If the user locked a lead, opposite, setting, or idea, those are law. Escalate them. Do not replace them with a stock plot.
-- If they locked nothing, invent a commercially hot premise that feels current this week — a specific people-and-room version of a live trope (hidden identity, contract marriage, revenge, secret child, second chance, family secret). Do not recite a famous plot beat-for-beat.
-- The brief is a complete 8 to 12 sentence story treatment. Include: who they are, the locked rooms, the core expectation, the season engine, how episode 1 opens, its major turn, how episode 1 ends, and why a stranger would tap the next episode. Finish every sentence and every thought. Never stop mid-sentence.
+- If they locked nothing, invent a commercially hot premise that feels current this week — a specific people-and-room version of a live trope (hidden identity, contract marriage, revenge, a hidden adult heir, second chance, family secret). Do not recite a famous plot beat-for-beat.
+- The brief is a complete 8 to 12 sentence story treatment. Include: who they are, the locked rooms, the core expectation, the season engine, the ladder that escalates it across the order, how episode 1 opens, its major turn, how episode 1 ends, and why a stranger would tap the next episode. Finish every sentence and every thought. Never stop mid-sentence.
 - Return JSON only: {"title":"...","brief":"...","category":"..."}`;
 
-const FALLBACKS: StoryIdea[] = [
+/**
+ * Only reachable when the buyer locked nothing, so a canned premise cannot
+ * contradict their people and rooms. Each one carries a renewable engine, not a
+ * single episode, and stays clear of the words the safety gate rejects.
+ */
+export const FALLBACKS: StoryIdea[] = [
   {
     title: "The Night Ledger",
     brief:
-      "Mara Voss, 27, is the night auditor who married a hotel heir to keep her mother in treatment. In his locked study she finds a second set of books and a photograph of a wife who is still alive. The core expectation: when will he admit the marriage was a cover for the theft. Episode 1 opens on her already in the study, not walking down the hall. It ends when she hears the study door lock from the outside and his voice, calm, on the other side: the photograph is the least of what he hid.",
+      "Mara Voss, 27, is the night auditor at a family-owned hotel who married the heir to keep her mother in treatment. In his locked study she finds a second set of books and a photograph of a wife who is still alive. The rooms are that study, the front desk at 3am, and the owners' floor she cannot badge into. The core expectation: when will he admit the marriage was a cover for the theft. The season engine is the ledger itself: every episode she reconciles one more falsified line, and every line she closes prints the name of another relative who signed it. Each name costs her something she cannot get back, starting with her access and ending with her own signature on a page she never read. Episode 1 opens on her already in the study, not walking down the hall. It turns when the outside auditor she called for help is escorted in as his lawyer. It ends when she hears the study door lock from the outside and his voice, calm, on the other side: the photograph is the least of what he hid. A stranger taps the next episode because she is holding the proof while standing in the room that locks.",
     category: "family_secret",
   },
   {
     title: "Wife on Paper",
     brief:
-      "A debt-squeezed designer signs a one-year marriage contract with a cold hotel heir who needs a public spouse before a board vote. The core expectation: when will the contract stop being the only thing holding them in the same room. Episode 1 opens at the courthouse counter, the ring already on. It ends when his mother produces a child he never mentioned and tells the designer the contract has a clause she was not shown.",
+      "Nadia Ruiz, 29, is a debt-squeezed interior designer who signs a one-year marriage contract with a cold hotel heir who needs a public spouse before a board vote. The rooms are the courthouse counter, the show apartment she is paid to stage, and the boardroom she is not allowed to enter. The core expectation: when will the contract stop being the only thing holding them in the same room. The season engine is the contract's own schedule: every episode triggers one more clause she was never shown, and every clause buys the board another week of his control. She can refuse a clause only by paying its penalty herself, so each refusal pushes her further into the debt she married to escape. Episode 1 opens at the counter with the ring already on. It turns when his mother hands her a copy of the agreement containing a page she has never seen. It ends when the woman who signed this same contract last year walks in and asks Nadia how far she has read. A stranger taps the next episode because the page is in her hand and the vote is nine days out.",
     category: "contract",
   },
   {
     title: "Her Second Name",
     brief:
-      "A quiet florist is stopped in a private hospital corridor by a dying CEO who calls her the daughter he hid twenty years ago. The core expectation: when will the family who sold her out watch her take the company. Episode 1 opens on that corridor, not the shop. It ends at the will reading when her name is already printed, and the legitimate son realizes the document in his pocket is a copy.",
+      "Iris Lang, 31, runs a flower stall until a dying founder stops her in a private hospital corridor and calls her the daughter he hid for thirty years. The rooms are that corridor, the founder's glass office, and the estate dining room where the family eats without her. The core expectation: when will the family who sold her out have to watch her take the company. The season engine is the succession: every episode a different relative produces a document meant to erase her, and every document she survives moves one more vote to her side. Each vote she wins costs her the one person in the last room who was kind to her. Episode 1 opens in that corridor, not at the stall. It turns when the founder's assistant confirms her name was on the register the entire time. It ends at the will reading where her name is already printed, and the legitimate son realizes the paper in his pocket is a copy. A stranger taps the next episode because the original is somewhere in the building and everyone at the table knows it.",
     category: "secret_child",
   },
 ];
 
 export function directionLabel(id: string | undefined): string | undefined {
   return STORY_DIRECTIONS.find((item) => item.id === id)?.label;
+}
+
+/**
+ * Only what the buyer typed. The category is our own catalog label, and feeding
+ * it to the gate made "Secret child" reject itself before a word was written.
+ */
+export function buyerText(input: StoryIdeaInput): string {
+  return [input.hint, input.lead, input.opposite, input.setting]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
 }
 
 export async function generateStoryIdea(
@@ -84,7 +121,7 @@ export async function generateStoryIdea(
   const opposite = String(input.opposite ?? "").trim().slice(0, 200);
   const setting = String(input.setting ?? "").trim().slice(0, 200);
   const category = String(input.category ?? "surprise").trim() || "surprise";
-  const combined = [directionLabel(category) ?? category, hint, lead, opposite, setting].filter(Boolean).join(" ");
+  const combined = buyerText({ hint, lead, opposite, setting });
   if (combined) {
     const incoming = moderateText(combined, "story_idea_hint");
     if (incoming.verdict === "block") {
@@ -94,16 +131,30 @@ export async function generateStoryIdea(
     }
   }
 
-  const idea = await completeIdea({ hint, category, lead, opposite, setting }, onProgress);
-  const locked = applyLocks(idea, { lead, opposite, setting });
-  const outgoing = moderateText(`${locked.title}\n${locked.brief}`, "story_idea");
-  if (outgoing.verdict === "block") {
-    const fallback = applyLocks(pickFallback(category), { lead, opposite, setting });
-    await onProgress?.({ title: fallback.title, brief: fallback.brief });
-    return fallback;
+  const locks = { lead, opposite, setting };
+  const order = seasonOrder(input.episode_count, input.episode_length);
+
+  // A rejected draft is rewritten with the reason, never swapped for a canned
+  // premise. The buyer locked people and rooms; handing back a different show
+  // and calling it theirs is worse than saying no.
+  let rejection = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const idea = await completeIdea({ hint, category, lead, opposite, setting, order, rejection }, onProgress);
+    const locked = applyLocks(idea, locks);
+    const outgoing = moderateText(`${locked.title}\n${locked.brief}`, "story_idea");
+    if (outgoing.verdict !== "block") {
+      await onProgress?.({ title: locked.title, brief: locked.brief });
+      return locked;
+    }
+    rejection = outgoing.reason;
   }
-  await onProgress?.({ title: locked.title, brief: locked.brief });
-  return locked;
+
+  if (hint || lead || opposite || setting) {
+    throw Object.assign(new Error(rejection), { name: "PolicyError" });
+  }
+  const fallback = pickFallback(category);
+  await onProgress?.({ title: fallback.title, brief: fallback.brief });
+  return fallback;
 }
 
 async function completeIdea(input: {
@@ -112,6 +163,8 @@ async function completeIdea(input: {
   lead: string;
   opposite: string;
   setting: string;
+  order: SeasonOrder;
+  rejection: string;
 }, onProgress?: (progress: StoryIdeaProgress) => void | Promise<void>): Promise<StoryIdea> {
   const key = Deno.env.get("OPENROUTER_API_KEY")?.trim();
   if (!key) {
@@ -129,8 +182,14 @@ async function completeIdea(input: {
       ? `The person they collide with (law): ${input.opposite}`
       : "No opposite lock. Invent the person who can take the lead's power away in one line.",
     input.setting ? `Setting (law): ${input.setting}` : "No setting lock. Invent 1–2 contemporary interiors we can shoot forever.",
+    `Season order (law): ${input.order.episodes} episodes of about ${input.order.seconds} seconds each. The engine must still be generating confrontations at episode ${input.order.episodes}.`,
+    input.rejection
+      ? `Your previous draft was rejected: ${input.rejection} Rewrite it so it passes, keeping every lock above.`
+      : "",
     `Variety seed: ${Date.now() % 9973}`,
-  ].join("\n");
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
 
   let lastStatus = 0;
   let lastBody = "";

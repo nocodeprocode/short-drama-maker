@@ -185,13 +185,7 @@ Deno.serve(async (req) => {
     if (req.method === "POST" && path === "/story-ideas") {
       const body = await req.json().catch(() => ({}));
       try {
-        const idea = await generateStoryIdea({
-          hint: String(body.hint ?? ""),
-          category: String(body.category ?? "surprise"),
-          lead: String(body.lead ?? ""),
-          opposite: String(body.opposite ?? ""),
-          setting: String(body.setting ?? ""),
-        });
+        const idea = await generateStoryIdea(storyIdeaInput(body));
         return json(idea);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not write a brief";
@@ -3217,6 +3211,8 @@ function storyIdeaInput(body: Record<string, unknown>): StoryIdeaInput {
     lead: String(body.lead ?? ""),
     opposite: String(body.opposite ?? ""),
     setting: String(body.setting ?? ""),
+    episode_count: Number(body.episode_count ?? 0),
+    episode_length: String(body.episode_length ?? ""),
   };
 }
 

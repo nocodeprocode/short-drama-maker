@@ -157,7 +157,9 @@ export default function Page() {
     }
     try {
       const idea = await studio.streamStoryIdea(
-        generationId ? {} : { hint, category, lead, opposite, setting },
+        generationId
+          ? {}
+          : { hint, category, lead, opposite, setting, episode_count: sku, episode_length: length },
         {
           generationId,
           signal: controller.signal,
