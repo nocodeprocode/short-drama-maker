@@ -178,15 +178,17 @@ function ActorCard({ actor, onChanged }: { actor: Actor; onChanged: () => void }
           src={actor.still_url}
           title={actor.still_url ? undefined : actor.name}
           chip={
-            building
-              ? (actor.progress?.done ?? 0) === 0
-                ? "Creating first portrait…"
-                : `Building · ${actor.progress?.done ?? 0}/${actor.progress?.total ?? 4}`
-              : actor.status === "failed"
-                ? "Needs attention"
-                : actor.still_url
-                  ? undefined
-                  : "Casting"
+            actor.status === "queued"
+              ? "Waiting its turn"
+              : building
+                ? (actor.progress?.done ?? 0) === 0
+                  ? "Creating first portrait…"
+                  : `Building · ${actor.progress?.done ?? 0}/${actor.progress?.total ?? 4}`
+                : actor.status === "failed"
+                  ? "Needs attention"
+                  : actor.still_url
+                    ? undefined
+                    : "Casting"
           }
           ratio="34"
           working={building && !actor.still_url}

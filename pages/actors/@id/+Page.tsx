@@ -17,7 +17,10 @@ import { prepareImageUpload } from "@/lib/image-upload.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 
 function statusChip(actor: Pick<Actor, "status" | "progress" | "ready">): string {
-  if (actor.status === "running" || actor.status === "queued") {
+  // Faces are built one at a time, so a queued pack has not started. Calling that
+  // "Building" made an ordinary wait read as a stall.
+  if (actor.status === "queued") return "Waiting its turn";
+  if (actor.status === "running") {
     const done = actor.progress?.done ?? 0;
     const total = actor.progress?.total ?? 4;
     return done === 0 ? "Creating first portrait…" : `Building face pack · ${done}/${total}`;

@@ -56,14 +56,13 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
     applyEnv(env);
-    // A wake says "there is work", not "do the work now". Draining the queue can
-    // take as long as an image generation, and the caller is usually a user
-    // request waiting on a response, so the tick outlives the reply.
-    ctx.waitUntil(
-      tick()
-        .catch(() => undefined)
-        .then(() => pokeMediaRunner(env)),
-    );
+    // A wake says "there is work", and that is all it does. Draining the queue
+    // takes minutes per actor pack, and a fetch invocation is not guaranteed to
+    // live that long: claiming here meant a task could be leased and then torn
+    // down having written neither an image nor an error, leaving the row parked
+    // until its lease aged out. The cron tick owns execution; the wake only
+    // nudges the media runner.
+    ctx.waitUntil(pokeMediaRunner(env));
     return Response.json({ ok: true, woken: true, media_runner: mediaRunnerConfigured(env) });
   },
 

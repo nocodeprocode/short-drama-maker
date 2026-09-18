@@ -85,9 +85,15 @@ async function isAdmin(client: SupabaseClient, userId: string): Promise<boolean>
   return accessFromAppMetadata(data.user.app_metadata as Record<string, unknown>).isAdmin;
 }
 
-/** Lease granted by the claim RPC and renewed by the heartbeat. */
-export const TASK_LEASE_SECONDS = 5 * 60;
-export const TASK_HEARTBEAT_MS = 60_000;
+/**
+ * Lease granted by the claim RPC and renewed by the heartbeat. It has to stay a
+ * small multiple of the heartbeat: the lease is the only thing standing between
+ * a worker dying mid-task and the task being retried, so a long one buys
+ * nothing but dead air. A live worker renews every 30s; a dead claim is
+ * reclaimable after 90s.
+ */
+export const TASK_LEASE_SECONDS = 90;
+export const TASK_HEARTBEAT_MS = 30_000;
 /** Attempts before a task is dead-lettered instead of re-queued. */
 export const TASK_MAX_ATTEMPTS = 6;
 

@@ -7,6 +7,7 @@ import { CastCardSkeleton } from "@/components/drama/cast-card.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { LoadError } from "@/components/drama/skeleton.tsx";
 import { studio, type Actor, type CastSlot } from "@/lib/api.ts";
+import { packPercent, queueLabel, queuePlaces } from "@/lib/cast-queue.ts";
 import { useStudio } from "@/lib/use-studio.ts";
 import { cx } from "@/utils/cx";
 
@@ -23,16 +24,21 @@ function slotIsWorking(slot: CastSlot): boolean {
 
 /** How far along the face pack is, as a percentage, or null before the first step lands. */
 function slotProgress(slot: CastSlot): number | undefined {
-  const done = slot.actor_progress?.done ?? 0;
-  const total = slot.actor_progress?.total ?? 0;
-  if (!total || done <= 0) return undefined;
-  return Math.round((Math.min(done, total) / total) * 100);
+  return packPercent(slot.actor_progress?.done, slot.actor_progress?.total);
 }
 
-function actorChip(slot: CastSlot): string | undefined {
-  if (slot.actor_status === "running" || slot.actor_status === "queued") {
-    return `Building · ${slot.actor_progress?.done ?? 0}/${slot.actor_progress?.total ?? 4}`;
+/**
+ * Faces are built one part at a time for a show, so most waiting cards have not
+ * started yet. Saying "Building" on all of them made a normal queue look like a
+ * stall, so a part that is only waiting says so, and says how many are ahead.
+ */
+function actorChip(slot: CastSlot, place?: number): string | undefined {
+  if (slot.actor_status === "running") {
+    const done = slot.actor_progress?.done ?? 0;
+    const total = slot.actor_progress?.total ?? 4;
+    return done === 0 ? "Creating first portrait…" : `Building · ${done}/${total}`;
   }
+  if (slot.actor_status === "queued") return queueLabel(place);
   if (slot.actor_status === "failed") return "Needs attention";
   if (!slot.character_still_url && !slot.actor_still_url) {
     if (!slotIsNamed(slot)) return "Naming…";
@@ -40,6 +46,7 @@ function actorChip(slot: CastSlot): string | undefined {
   }
   return undefined;
 }
+
 
 /**
  * The cast sheet for one show. Slate placeholders (Lead / Antagonist /
@@ -125,6 +132,8 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
   // The cast sheet contains people only. Older API responses can still include
   // internal story-device rows, so keep this boundary on both client and server.
   const people = data.items.filter((slot) => slot.castable);
+  // One queue for the whole show, so it is counted across sections, not inside them.
+  const places = queuePlaces(people);
   const leads = people.filter((slot) => slot.importance === "lead");
   const supporting = people.filter((slot) => slot.importance === "supporting");
   const background = people.filter((slot) => slot.importance === "background");
@@ -157,6 +166,7 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
         title="Leads"
         empty="No leads on this slate yet."
         slots={leads}
+        places={places}
         seriesId={seriesId}
         roster={data.roster}
         busy={busy}
@@ -171,6 +181,7 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
         title="Supporting"
         empty="No supporting parts yet."
         slots={supporting}
+        places={places}
         seriesId={seriesId}
         roster={data.roster}
         busy={busy}
@@ -188,6 +199,7 @@ export function CastSheet({ seriesId }: { seriesId: string }) {
               title="Background"
               empty=""
               slots={background}
+              places={places}
               seriesId={seriesId}
               roster={data.roster}
               busy={busy}
@@ -299,6 +311,7 @@ function SlotSection({
   title,
   empty,
   slots,
+  places,
   seriesId,
   roster,
   busy,
@@ -311,6 +324,7 @@ function SlotSection({
   title: string;
   empty: string;
   slots: CastSlot[];
+  places: Map<string, number>;
   seriesId: string;
   roster: Actor[];
   busy: boolean;
@@ -336,6 +350,7 @@ function SlotSection({
           <SlotCard
             key={slot.id}
             slot={slot}
+            place={places.get(slot.id)}
             busy={busy}
             isOpen={open === slot.id}
             onOpen={() => onOpen(open === slot.id ? null : slot.id)}
@@ -359,6 +374,7 @@ function SlotSection({
 
 function SlotCard({
   slot,
+  place,
   busy,
   isOpen,
   onOpen,
@@ -367,6 +383,7 @@ function SlotCard({
   children,
 }: {
   slot: CastSlot;
+  place?: number;
   busy: boolean;
   isOpen: boolean;
   onOpen: () => void;
@@ -381,7 +398,7 @@ function SlotCard({
       <Poster
         src={still}
         title={still ? undefined : slot.display_name}
-        chip={actorChip(slot)}
+        chip={actorChip(slot, place)}
         ratio="34"
         working={working}
         progress={working ? slotProgress(slot) : undefined}
