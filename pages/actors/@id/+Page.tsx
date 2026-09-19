@@ -12,6 +12,7 @@ import { PageBody, PageHeader } from "@/components/drama/app-shell.tsx";
 import { Poster } from "@/components/drama/poster.tsx";
 import { AccountSkeleton, LoadError } from "@/components/drama/skeleton.tsx";
 import { parseTags } from "@/components/drama/actor-form.tsx";
+import { packTiles } from "@/lib/actor-pack.ts";
 import { studio, type Actor, type ActorDetail } from "@/lib/api.ts";
 import { prepareImageUpload } from "@/lib/image-upload.ts";
 import { useStudio } from "@/lib/use-studio.ts";
@@ -195,10 +196,10 @@ export default function Page() {
             <div>
               <h2 className="text-sm font-semibold text-tertiary">Generated stills</h2>
               <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {(actor.refs.length ? actor.refs : [{ kind: "front", url: "", label: statusChip(actor) }]).map((item) => (
+                {packTiles(actor.refs).map((item) => (
                   <figure key={item.kind} className="min-w-0">
                     <Poster
-                      src={item.url || null}
+                      src={item.url}
                       chip={item.url ? item.label : statusChip(actor)}
                       ratio="34"
                       working={!item.url && isBuilding(actor)}
@@ -206,16 +207,16 @@ export default function Page() {
                     />
                     <figcaption className="mt-1.5 flex items-center justify-between gap-2 text-xs font-medium text-tertiary">
                       <span>{item.label}</span>
-                      {item.url && !locked ? (
+                      {locked || isBuilding(actor) ? null : (
                         <button
                           type="button"
                           disabled={busy}
                           onClick={() => void regenerate([item.kind])}
                           className="cursor-pointer font-semibold text-brand-secondary hover:underline disabled:opacity-60"
                         >
-                          Redo
+                          {item.url ? "Redo" : "Generate"}
                         </button>
-                      ) : null}
+                      )}
                     </figcaption>
                   </figure>
                 ))}
