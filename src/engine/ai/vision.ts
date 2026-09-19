@@ -96,18 +96,28 @@ export type CastLookJudgement = {
   /** False when the irises glow, emit light, or do not match each other. */
   eyes_natural?: boolean;
   eye_evidence?: string;
+  /** How far the head is actually turned, counted from the visible eyes. */
+  head_turn?: "front" | "three_quarter" | "profile";
   notes: string;
   model: string;
 };
 
 const CAST_LOOK_RUBRIC = `You judge a short-drama character still for phone-close beauty.
-Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "production_gear_present": true|false, "production_gear_evidence": "<visible object and its position, or empty>", "eyes_natural": true|false, "eye_evidence": "<what is wrong with the eyes, or empty>", "notes": "<one sentence>"}.
+Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "production_gear_present": true|false, "production_gear_evidence": "<visible object and its position, or empty>", "eyes_natural": true|false, "eye_evidence": "<what is wrong with the eyes, or empty>", "head_turn": "front"|"three_quarter"|"profile", "notes": "<one sentence>"}.
 beauty is true only if the face is strikingly beautiful and camera-ready — not tired, plain, average, or unremarkable.
 close is true only if the face is FaceTime-close or closer (eyes readable, head-and-shoulders or tighter), not a wide or full-body.
 modest is true if clothes are on and opaque.
 production_gear_present is true only if unmistakable filmmaking equipment is visibly inside the image pixels: a studio lamp, LED panel, softbox, light stand, tripod, reflector, camera, cable, backdrop edge, boom, or monitor. Do not infer equipment from professional lighting. A clean seamless backdrop is allowed. If uncertain, answer false. When true, production_gear_evidence must name the visible object and where it appears; otherwise it must be empty.
-eyes_natural is false if the irises glow, emit or radiate light, look luminous or backlit, read as LED or neon, or if the two eyes are different colours as heterochromia. This is a human being, not a creature: a catchlight reflection is fine, a lit-up iris is not. If eyes_natural is false, eye_evidence must say which eye and what is wrong; otherwise it must be empty. If the eyes are not visible, answer true.
+eyes_natural is false if the irises glow, emit or radiate light, look luminous or backlit, read as LED or neon, or if the two eyes are different colours as heterochromia. It is also false when a pale iris stays brighter than the lit skin of the same face, or keeps its colour while the face around it falls into shadow: a real iris darkens with the light on it. This is a human being, not a creature: a small catchlight reflection is fine, a lit-up iris is not. If eyes_natural is false, eye_evidence must say which eye and what is wrong; otherwise it must be empty. If the eyes are not visible, answer true.
+head_turn is counted from the eyes, not from the shoulders or the gaze. "front" means both eyes sit fully inside the face with the nose between them. "three_quarter" means both eyes are still visible but the far one is pushed towards the edge of the cheek. "profile" means only ONE eye is visible because the head is turned a full 90 degrees and the nose, lips and chin read as an outline against the background. A head that shows two eyes is never profile, however far the gaze is thrown.
 Fictional adult. Never explain outside the JSON.`;
+
+/** Undefined for anything the model did not answer: a missing turn is not a defect. */
+function parseHeadTurn(value: unknown): CastLookJudgement["head_turn"] {
+  const word = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (word === "front" || word === "three_quarter" || word === "profile") return word;
+  return undefined;
+}
 
 export function parseCastLook(content: string, model: string): CastLookJudgement {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -125,6 +135,7 @@ export function parseCastLook(content: string, model: string): CastLookJudgement
     // Absent means the model did not answer, which must not read as a defect.
     eyes_natural: raw.eyes_natural === false || raw.eyes_natural === "false" ? false : true,
     eye_evidence: typeof raw.eye_evidence === "string" ? raw.eye_evidence.slice(0, 160) : "",
+    head_turn: parseHeadTurn(raw.head_turn),
     notes: typeof raw.notes === "string" ? raw.notes.slice(0, 240) : "",
     model,
   };

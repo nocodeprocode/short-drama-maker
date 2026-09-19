@@ -129,6 +129,8 @@ export interface ImageEngine {
     style_bytes?: Uint8Array;
     style_mime_type?: string;
     retry_attempt?: number;
+    /** What the gate rejected last time, so the retry corrects that instead of guessing. */
+    retry_note?: string;
     replaceWardrobe?: string;
     mode?: "likeness" | "generated";
   }): Promise<{ bytes: Uint8Array; mime_type: string }>;

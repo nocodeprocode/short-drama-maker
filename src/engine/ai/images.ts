@@ -225,9 +225,11 @@ export function createOpenRouterImages(): ImageEngine {
           input.style_bytes
             ? "Reference image 2 is the APPROVED PACK STYLE. Match its plain wall, camera height, lens character, wardrobe, light direction, exposure, white balance, contrast, and colour grade exactly."
             : "Create the canonical pack style: a plain warm-grey wall extending edge to edge, softly and evenly illuminated by daylight from outside the frame, with natural contrast.",
-          input.retry_attempt
-            ? "RETRY CORRECTION: a previous result was rejected for visible production equipment. Every corner and edge must contain only the plain wall—no bright disc, lamp head, pole, stand, tripod, fixture, cable, backdrop edge, or photographic object."
-            : "",
+          input.retry_note?.trim()
+            ? input.retry_note.trim()
+            : input.retry_attempt
+              ? "RETRY CORRECTION: a previous result was rejected for visible production equipment. Every corner and edge must contain only the plain wall—no bright disc, lamp head, pole, stand, tripod, fixture, cable, backdrop edge, or photographic object."
+              : "",
           likeness
             ? "IDENTITY LOCK: keep the exact face, bone structure, hairline, age, skin tone, undertone, and identifying marks from reference 1. Correct exposure without whitening, bleaching, paling, desaturating, or changing ethnicity. Preserve natural complexion and melanin. Groom hair and retouch only temporary blemishes."
             : "Keep the same strikingly beautiful adult face. Flattering, camera-ready, catchlight in the eyes.",

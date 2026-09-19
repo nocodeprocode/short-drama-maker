@@ -28,6 +28,29 @@ export const CAST_LOOK_EYE_DEFECT =
 const PLAIN_BACKDROP =
   /\bplain\b(?=(?:\s+[\w-]+){0,2}\s+(?:wall|walls|backdrop|background|surface|room|studio|canvas|grey|gray))/gi;
 
+/**
+ * Which turns may lock for a requested still kind.
+ *
+ * Naming the turn in the prompt was not enough: anchoring an angle on the
+ * locked front made the model copy the front's head angle, and every "profile"
+ * came back as a deep three-quarter with both eyes showing. The lists are wider
+ * than the directive on purpose — the judge's own front/three-quarter line is
+ * blurry, and a retry costs a paid image — so each kind only rejects the turn
+ * that was actually wrong.
+ */
+const HEAD_TURN_ALLOWED: Record<string, ReadonlyArray<string>> = {
+  front: ["front", "three_quarter"],
+  three_quarter: ["three_quarter", "profile"],
+  profile: ["profile"],
+};
+
+export function castLookFromHeadTurn(kind: string, turn: string | null | undefined): string[] {
+  if (!turn) return [];
+  const allowed = HEAD_TURN_ALLOWED[kind];
+  if (!allowed || allowed.includes(turn)) return [];
+  return ["pose_mismatch"];
+}
+
 export function castLookFromFaceBox(box: { width: number; height: number } | null | undefined): string[] {
   if (!box) return ["face_missing"];
   if (box.height < CAST_LOOK_FACE_MIN_HEIGHT) return ["face_too_far"];
@@ -55,6 +78,9 @@ export function screenCastLook(input: {
   modest?: boolean | null;
   close?: boolean | null;
   eyesNatural?: boolean | null;
+  /** The still kind being generated, so the judged turn can be held to it. */
+  kind?: string | null;
+  headTurn?: string | null;
   checkDistance?: boolean;
 }): CastLookVerdict {
   const reasons: string[] = [];
@@ -62,6 +88,7 @@ export function screenCastLook(input: {
     if (input.close === false) reasons.push("face_too_far");
     else if (input.close !== true) reasons.push(...castLookFromFaceBox(input.faceBox));
   }
+  if (input.kind) reasons.push(...castLookFromHeadTurn(input.kind, input.headTurn));
   reasons.push(...castLookFromNotes(input.notes));
   if (input.eyeNotes && CAST_LOOK_EYE_DEFECT.test(input.eyeNotes)) reasons.push("eyes_unnatural");
   if (input.eyesNatural === false) reasons.push("eyes_unnatural");

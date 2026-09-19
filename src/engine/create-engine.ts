@@ -56,6 +56,7 @@ import { acceptPolishedTalk, keepPlanAfterPolishFailure } from "../drama-engine/
 import { expectedSpokenText, shouldSampleDialogueStt } from "./pipeline/stt-qc.ts";
 import { nameLeakReasons } from "./pipeline/seedance-qc.ts";
 import { isPrivacyRefusal, screenCastLook } from "./pipeline/face-screen.ts";
+import { stillRetryNote } from "./pipeline/still-retry.ts";
 import { addSeconds, cryptoIds, iso, systemClock, type Clock, type IdFactory } from "./ids.ts";
 import { isInputImagePrivacyFailure, redactTaskError } from "./jobs/errors.ts";
 import { locationRefForScene, pinLocationToBible } from "./pipeline/location-ref.ts";
@@ -741,6 +742,7 @@ export function createEngine(deps: EngineDeps = {}) {
     let modest: boolean | null = null;
     let close: boolean | null = null;
     let eyesNatural: boolean | null = null;
+    let headTurn: string | null = null;
     let notes: string | null = null;
     if (judge) {
       const look = await judge({ image: input.bytes, imageMime: input.mime });
@@ -754,6 +756,7 @@ export function createEngine(deps: EngineDeps = {}) {
       modest = look.modest;
       close = look.close;
       eyesNatural = look.eyes_natural ?? null;
+      headTurn = look.head_turn ?? null;
       notes = look.notes;
     }
     if (faithful && input.reference && ai.vision?.judgeIdentity) {
@@ -777,6 +780,8 @@ export function createEngine(deps: EngineDeps = {}) {
       modest,
       close,
       eyesNatural,
+      kind: input.kind,
+      headTurn,
       checkDistance: tight && Boolean(locate || judge),
     });
     if (!verdict.pass) throw new Error(`CAST_LOOK: ${verdict.reasons.join(", ")}`);
@@ -805,18 +810,26 @@ export function createEngine(deps: EngineDeps = {}) {
     const anchor = input.seed ?? input.style ?? null;
     const anchorIsSeed = Boolean(input.seed);
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const rejection = lastError instanceof Error ? lastError.message : null;
+      // A style anchor is another still from the same pack, so a defect in it —
+      // a lit iris, a head that will not turn — is copied into every retry and
+      // the whole pack fails. An uploaded photo is the point of a likeness and
+      // is never dropped; a pack still is, on the last attempt.
+      const inherited = rejection ? /eyes_unnatural|pose_mismatch/i.test(rejection) : false;
+      const useAnchor = anchorIsSeed || attempt < attempts - 1 || !inherited ? anchor : null;
       let candidate: { bytes: Uint8Array; mime_type: string };
       try {
-        candidate = anchor
+        candidate = useAnchor
           ? await ai.image.generateReferenceFromSeed({
               characterName: input.characterName,
               description: input.description,
               kind: input.kind,
-              seed_bytes: anchor.bytes,
-              seed_mime_type: anchor.mime_type,
+              seed_bytes: useAnchor.bytes,
+              seed_mime_type: useAnchor.mime_type,
               style_bytes: anchorIsSeed ? input.style?.bytes : undefined,
               style_mime_type: anchorIsSeed ? input.style?.mime_type : undefined,
               retry_attempt: attempt,
+              retry_note: stillRetryNote(rejection),
               replaceWardrobe: input.replaceWardrobe,
               mode: input.mode,
             })
