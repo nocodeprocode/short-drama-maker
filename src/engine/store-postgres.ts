@@ -188,6 +188,15 @@ export function mergeCharacterCommit(
   };
 }
 
+/** Postgres hands back "2026-09-19 21:22:00+00"; the engine writes ISO. Compare instants, not text. */
+function laterThan(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const left = Date.parse(a);
+  const right = Date.parse(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return left > right;
+}
+
 /**
  * A photo replace writes the new seed on the actors table first. A job that
  * loaded the previous face must not upsert that stale seed (or its stills)
@@ -212,14 +221,20 @@ export function mergeActorCommit<T extends {
   if (!existing) return incoming;
   const existingSeed = existing.seed_asset_id ?? null;
   const incomingSeed = incoming.seed_asset_id ?? null;
-  if (existingSeed && existingSeed !== incomingSeed) {
+  // A commit writes every actor in the loaded store, not just the one the task
+  // worked on. Two Redo clicks while a pack was already building put the whole
+  // snapshot back: the deleted stills reappeared, the next task saw nothing
+  // missing, and the redo silently did nothing. A row touched since this
+  // snapshot was loaded belongs to whoever touched it.
+  const stale = laterThan(existing.updated_at, incoming.updated_at);
+  if (stale || (existingSeed && existingSeed !== incomingSeed)) {
     return {
       ...incoming,
       seed_asset_id: existingSeed,
       source: existing.source ?? incoming.source,
       visual_reference_asset_ids: (existing.visual_reference_asset_ids ?? {}) as T["visual_reference_asset_ids"],
       judge_notes: existing.judge_notes === undefined ? incoming.judge_notes : existing.judge_notes,
-      updated_at: existing.updated_at && existing.updated_at > incoming.updated_at ? existing.updated_at : incoming.updated_at,
+      updated_at: stale ? (existing.updated_at as string) : incoming.updated_at,
     };
   }
   return incoming;

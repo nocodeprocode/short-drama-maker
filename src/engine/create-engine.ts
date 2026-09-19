@@ -812,10 +812,11 @@ export function createEngine(deps: EngineDeps = {}) {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const rejection = lastError instanceof Error ? lastError.message : null;
       // A style anchor is another still from the same pack, so a defect in it —
-      // a lit iris, a head that will not turn — is copied into every retry and
-      // the whole pack fails. An uploaded photo is the point of a likeness and
-      // is never dropped; a pack still is, on the last attempt.
-      const inherited = rejection ? /eyes_unnatural|pose_mismatch/i.test(rejection) : false;
+      // a lit iris, a lamp in the corner, a head that will not turn — is copied
+      // into every retry and the whole pack fails. An uploaded photo is the
+      // point of a likeness and is never dropped; a pack still is, on the last
+      // attempt.
+      const inherited = rejection ? /eyes_unnatural|pose_mismatch|production_gear/i.test(rejection) : false;
       const useAnchor = anchorIsSeed || attempt < attempts - 1 || !inherited ? anchor : null;
       let candidate: { bytes: Uint8Array; mime_type: string };
       try {

@@ -158,6 +158,50 @@ describe("mergeActorCommit", () => {
     expect(merged.judge_notes).toBeNull();
   });
 
+  it("does not put a deleted still back when the table moved on under the snapshot", () => {
+    // A pack was already building when Redo cleared the profile on a second
+    // actor. The running task committed its whole loaded store, the deleted
+    // still reappeared, and the redo that followed found nothing missing.
+    const merged = mergeActorCommit(
+      {
+        seed_asset_id: null,
+        visual_reference_asset_ids: { front: "still-1", profile: "still-old" },
+        source: "generated",
+        judge_notes: "old pack",
+        updated_at: "2026-09-19T20:39:13.000Z",
+      },
+      {
+        seed_asset_id: null,
+        visual_reference_asset_ids: { front: "still-1" },
+        source: "generated",
+        judge_notes: "old pack",
+        // Postgres spells an instant differently than the engine does.
+        updated_at: "2026-09-19 21:22:04.117+00",
+      },
+    );
+    expect(merged.visual_reference_asset_ids).toEqual({ front: "still-1" });
+  });
+
+  it("still writes the stills a task just generated", () => {
+    const merged = mergeActorCommit(
+      {
+        seed_asset_id: null,
+        visual_reference_asset_ids: { front: "still-1", profile: "still-new" },
+        source: "generated",
+        judge_notes: null,
+        updated_at: "2026-09-19T21:27:18.000Z",
+      },
+      {
+        seed_asset_id: null,
+        visual_reference_asset_ids: { front: "still-1" },
+        source: "generated",
+        judge_notes: null,
+        updated_at: "2026-09-19 21:22:04.117+00",
+      },
+    );
+    expect(merged.visual_reference_asset_ids).toEqual({ front: "still-1", profile: "still-new" });
+  });
+
   it("lets a first generate persist a new seed when the table has none", () => {
     const merged = mergeActorCommit(
       {
