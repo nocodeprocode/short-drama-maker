@@ -151,6 +151,42 @@ export async function actorShowTitles(supabase: Service, actorIds: string[]) {
   return byActor;
 }
 
+/**
+ * The show whose store already holds this actor's face-pack work.
+ *
+ * An actor belongs to an owner, not a show, but every engine task runs inside
+ * one show's store. Sending a redo to an unrelated show loaded a store without
+ * the actor's existing pack job, so the engine made a second job with the same
+ * idempotency key and the commit died on the unique index. Prefer the show the
+ * pack was built under.
+ */
+export async function actorHostSeriesId(
+  supabase: Service,
+  ownerId: string,
+  actorId: string,
+  fallback: string | null,
+): Promise<string | null> {
+  const { data: stills } = await supabase
+    .from("assets")
+    .select("series_id, created_at")
+    .eq("owner_id", ownerId)
+    .eq("actor_id", actorId)
+    .eq("kind", "character_reference")
+    .not("series_id", "is", null)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1);
+  const fromStill = stills?.[0]?.series_id ? String(stills[0].series_id) : null;
+  if (fromStill) return fromStill;
+  const { data: roles } = await supabase
+    .from("characters")
+    .select("series_id")
+    .eq("actor_id", actorId)
+    .limit(1);
+  const fromRole = roles?.[0]?.series_id ? String(roles[0].series_id) : null;
+  return fromRole ?? fallback;
+}
+
 export async function firstOwnedSeriesId(supabase: Service, ownerId: string, isAdmin: boolean) {
   let query = supabase.from("series").select("id").is("deleted_at", null).limit(1);
   if (!isAdmin) query = query.eq("owner_id", ownerId);

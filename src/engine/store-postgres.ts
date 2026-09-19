@@ -400,6 +400,32 @@ export async function commitSeriesStore(
     if (error) throw new Error(error.message);
   }
 
+  // Assets go in as soon as the rows they need (series, actors) exist, and
+  // before anything that can still fail. An actor's visual_reference_asset_ids
+  // is JSONB with no foreign key, so a later error — a duplicate job
+  // idempotency key, say — used to leave the pack pointing at a paid still
+  // whose row was never written, and the still vanished from the UI.
+  if (assets && assets.length > 0) {
+    const { error } = await client.from("assets").upsert(
+      assets.map((asset) => ({
+        id: asset.id,
+        owner_id: asset.owner_id,
+        series_id: asset.series_id,
+        actor_id: asset.actor_id ?? null,
+        kind: asset.kind,
+        bucket: asset.bucket,
+        storage_path: asset.storage_path,
+        mime_type: asset.mime_type,
+        bytes: asset.bytes,
+        checksum: asset.checksum,
+        metadata: asset.metadata,
+        created_at: asset.created_at,
+        deleted_at: asset.deleted_at,
+      })),
+    );
+    if (error) throw new Error(error.message);
+  }
+
   const characters = store.charactersFor(seriesId).map(characterToRow);
   if (characters.length > 0) {
     const { data: existingRows, error: existingError } = await client
@@ -477,27 +503,6 @@ export async function commitSeriesStore(
   const moderation = store.moderation.filter((row) => row.series_id === seriesId);
   if (moderation.length > 0) {
     const { error } = await client.from("moderation_decisions").upsert(moderation);
-    if (error) throw new Error(error.message);
-  }
-
-  if (assets && assets.length > 0) {
-    const { error } = await client.from("assets").upsert(
-      assets.map((asset) => ({
-        id: asset.id,
-        owner_id: asset.owner_id,
-        series_id: asset.series_id,
-        actor_id: asset.actor_id ?? null,
-        kind: asset.kind,
-        bucket: asset.bucket,
-        storage_path: asset.storage_path,
-        mime_type: asset.mime_type,
-        bytes: asset.bytes,
-        checksum: asset.checksum,
-        metadata: asset.metadata,
-        created_at: asset.created_at,
-        deleted_at: asset.deleted_at,
-      })),
-    );
     if (error) throw new Error(error.message);
   }
 

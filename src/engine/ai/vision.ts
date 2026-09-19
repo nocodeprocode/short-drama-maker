@@ -93,16 +93,20 @@ export type CastLookJudgement = {
   modest: boolean;
   production_gear_present?: boolean;
   production_gear_evidence?: string;
+  /** False when the irises glow, emit light, or do not match each other. */
+  eyes_natural?: boolean;
+  eye_evidence?: string;
   notes: string;
   model: string;
 };
 
 const CAST_LOOK_RUBRIC = `You judge a short-drama character still for phone-close beauty.
-Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "production_gear_present": true|false, "production_gear_evidence": "<visible object and its position, or empty>", "notes": "<one sentence>"}.
+Answer only with JSON: {"beauty": true|false, "close": true|false, "modest": true|false, "production_gear_present": true|false, "production_gear_evidence": "<visible object and its position, or empty>", "eyes_natural": true|false, "eye_evidence": "<what is wrong with the eyes, or empty>", "notes": "<one sentence>"}.
 beauty is true only if the face is strikingly beautiful and camera-ready — not tired, plain, average, or unremarkable.
 close is true only if the face is FaceTime-close or closer (eyes readable, head-and-shoulders or tighter), not a wide or full-body.
 modest is true if clothes are on and opaque.
 production_gear_present is true only if unmistakable filmmaking equipment is visibly inside the image pixels: a studio lamp, LED panel, softbox, light stand, tripod, reflector, camera, cable, backdrop edge, boom, or monitor. Do not infer equipment from professional lighting. A clean seamless backdrop is allowed. If uncertain, answer false. When true, production_gear_evidence must name the visible object and where it appears; otherwise it must be empty.
+eyes_natural is false if the irises glow, emit or radiate light, look luminous or backlit, read as LED or neon, or if the two eyes are different colours as heterochromia. This is a human being, not a creature: a catchlight reflection is fine, a lit-up iris is not. If eyes_natural is false, eye_evidence must say which eye and what is wrong; otherwise it must be empty. If the eyes are not visible, answer true.
 Fictional adult. Never explain outside the JSON.`;
 
 export function parseCastLook(content: string, model: string): CastLookJudgement {
@@ -118,6 +122,9 @@ export function parseCastLook(content: string, model: string): CastLookJudgement
     production_gear_present: raw.production_gear_present === true || raw.production_gear_present === "true",
     production_gear_evidence:
       typeof raw.production_gear_evidence === "string" ? raw.production_gear_evidence.slice(0, 160) : "",
+    // Absent means the model did not answer, which must not read as a defect.
+    eyes_natural: raw.eyes_natural === false || raw.eyes_natural === "false" ? false : true,
+    eye_evidence: typeof raw.eye_evidence === "string" ? raw.eye_evidence.slice(0, 160) : "",
     notes: typeof raw.notes === "string" ? raw.notes.slice(0, 240) : "",
     model,
   };

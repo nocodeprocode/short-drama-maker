@@ -740,15 +740,20 @@ export function createEngine(deps: EngineDeps = {}) {
     let beauty: boolean | null = null;
     let modest: boolean | null = null;
     let close: boolean | null = null;
+    let eyesNatural: boolean | null = null;
     let notes: string | null = null;
     if (judge) {
       const look = await judge({ image: input.bytes, imageMime: input.mime });
       if (look.production_gear_present && look.production_gear_evidence?.trim()) {
         throw new Error(`CAST_LOOK: production_gear (${look.production_gear_evidence})`);
       }
+      if (look.eyes_natural === false) {
+        throw new Error(`CAST_LOOK: eyes_unnatural (${look.eye_evidence?.trim() || "iris glows or does not match"})`);
+      }
       beauty = look.beauty;
       modest = look.modest;
       close = look.close;
+      eyesNatural = look.eyes_natural ?? null;
       notes = look.notes;
     }
     if (faithful && input.reference && ai.vision?.judgeIdentity) {
@@ -767,9 +772,11 @@ export function createEngine(deps: EngineDeps = {}) {
     const verdict = screenCastLook({
       faceBox: box,
       notes: faithful ? null : notes,
+      eyeNotes: notes,
       beauty: faithful ? null : beauty,
       modest,
       close,
+      eyesNatural,
       checkDistance: tight && Boolean(locate || judge),
     });
     if (!verdict.pass) throw new Error(`CAST_LOOK: ${verdict.reasons.join(", ")}`);
@@ -791,18 +798,24 @@ export function createEngine(deps: EngineDeps = {}) {
     if (!text.pass) throw new Error(`CAST_LOOK: ${text.reasons.join(", ")}`);
     const attempts = input.mode === "likeness" ? LIKENESS_LOOK_ATTEMPTS : STILL_LOOK_ATTEMPTS;
     let lastError: unknown = null;
+    // A generated pack has no uploaded photo, so its own locked front still is
+    // the only thing that makes the four angles one person. Without it every
+    // kind was drawn from text alone and the pack drifted: a different haircut,
+    // a different suit, and a different eye colour in each still.
+    const anchor = input.seed ?? input.style ?? null;
+    const anchorIsSeed = Boolean(input.seed);
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       let candidate: { bytes: Uint8Array; mime_type: string };
       try {
-        candidate = input.seed
+        candidate = anchor
           ? await ai.image.generateReferenceFromSeed({
               characterName: input.characterName,
               description: input.description,
               kind: input.kind,
-              seed_bytes: input.seed.bytes,
-              seed_mime_type: input.seed.mime_type,
-              style_bytes: input.style?.bytes,
-              style_mime_type: input.style?.mime_type,
+              seed_bytes: anchor.bytes,
+              seed_mime_type: anchor.mime_type,
+              style_bytes: anchorIsSeed ? input.style?.bytes : undefined,
+              style_mime_type: anchorIsSeed ? input.style?.mime_type : undefined,
               retry_attempt: attempt,
               replaceWardrobe: input.replaceWardrobe,
               mode: input.mode,
@@ -879,6 +892,7 @@ export function createEngine(deps: EngineDeps = {}) {
       ...character.appearance_profile,
     });
     const refs: Partial<Record<VisualReferenceKind, string>> = { ...actor.visual_reference_asset_ids };
+    let style: { bytes: Uint8Array; mime_type: string } | null = null;
     for (const kind of FACE_KIND_ORDER) {
       if (refs[kind]) continue;
       const image = await generateGatedStill({
@@ -886,6 +900,7 @@ export function createEngine(deps: EngineDeps = {}) {
         description,
         kind,
         faceText: character.appearance_profile.face,
+        style,
       });
       const asset = await putAsset({
         owner_id: input.owner_id,
@@ -898,6 +913,7 @@ export function createEngine(deps: EngineDeps = {}) {
         metadata: { character_id: character.id, actor_id: actor.id, kind },
       });
       refs[kind] = asset.id;
+      if (!style) style = { bytes: image.bytes, mime_type: image.mime_type };
     }
     store.actors.set(actor.id, { ...actor, visual_reference_asset_ids: refs, updated_at: iso(clock) });
     const next = {
@@ -1018,7 +1034,10 @@ export function createEngine(deps: EngineDeps = {}) {
       ? actor.appearance_profile.default_wardrobe?.trim() || LIKENESS_WARDROBE
       : undefined;
     let style: { bytes: Uint8Array; mime_type: string } | null = null;
-    const styleId = refs.front;
+    // Front is the preferred anchor, but redoing a bad front must not orphan the
+    // stills that stay: without a fallback the new front is drawn from text and
+    // comes back as a different person than the rest of the pack.
+    const styleId = refs.front ?? FACE_KIND_ORDER.map((kind) => refs[kind]).find(Boolean);
     if (styleId) {
       const lockedStyle = await assets.get(styleId);
       if (lockedStyle) style = { bytes: lockedStyle.body, mime_type: lockedStyle.asset.mime_type };

@@ -20,7 +20,7 @@ import {
 import { hasExplicitStartConfirmation } from "../_shared/production-consent.ts";
 import { generateStoryIdea, STORY_DIRECTIONS, type StoryIdeaInput } from "../_shared/story-idea.ts";
 import { adaptUploadedScript } from "../_shared/story-script.ts";
-import { actorGenerateTasks, actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
+import { actorGenerateTasks, actorHostSeriesId, actorShowTitles, firstOwnedSeriesId, presentActor, signActorPacks } from "../_shared/actors.ts";
 import { ensureCastSlate } from "../_shared/cast-repair.ts";
 import {
   decodeLibraryImage,
@@ -369,7 +369,14 @@ Deno.serve(async (req) => {
         typeof body.series_id === "string" && body.series_id
           ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
           : null;
-      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
+      const host =
+        asked?.id ??
+        (await actorHostSeriesId(
+          supabase,
+          user.id,
+          id,
+          await firstOwnedSeriesId(supabase, user.id, access.isAdmin),
+        ));
       let seedAssetId = saved.seed_asset_id ? String(saved.seed_asset_id) : null;
       const latestSeed = await latestSeedAssetId(supabase, { ownerId: user.id, actorId: id });
       if (latestSeed && latestSeed !== seedAssetId) seedAssetId = latestSeed;
@@ -414,7 +421,14 @@ Deno.serve(async (req) => {
         typeof body.series_id === "string" && body.series_id
           ? await ownedSeries(supabase, user.id, body.series_id, access.isAdmin)
           : null;
-      const host = asked?.id ?? (await firstOwnedSeriesId(supabase, user.id, access.isAdmin));
+      const host =
+        asked?.id ??
+        (await actorHostSeriesId(
+          supabase,
+          user.id,
+          id,
+          await firstOwnedSeriesId(supabase, user.id, access.isAdmin),
+        ));
       const stored = await putSeedAsset(supabase, {
         ownerId: user.id,
         actorId: id,

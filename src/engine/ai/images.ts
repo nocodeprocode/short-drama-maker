@@ -20,6 +20,27 @@ function decodeBase64(value: string): Uint8Array {
 
 const ALLOWED_IMAGE_HOSTS = ["openrouter.ai", "openrouterusercontent.com"];
 
+/**
+ * A pack is four angles of one person, and "Pose / framing: profile" was too
+ * weak to earn the turn. Anchoring later stills on the locked front fixed the
+ * drifting identity but made the model copy the anchor's head angle too, so
+ * three of the four came back square to camera. Name the turn in degrees and
+ * say what the silhouette must show.
+ */
+const POSE_DIRECTIVES: Record<string, string> = {
+  front: "POSE: head square to the camera, face level, both eyes to the lens. A passport-straight front view.",
+  three_quarter:
+    "POSE: head turned 45 degrees to the subject's left so the camera sees three quarters of the face. Both eyes visible, the far eye nearer the edge of the face, the nose breaking the line of the far cheek. NOT a straight-on front view.",
+  profile:
+    "POSE: a TRUE SIDE PROFILE, head turned a full 90 degrees so the camera sees one side of the face only. Exactly ONE eye visible. The forehead, nose, lips and chin read as an outline against the wall. The far eye and far cheek are hidden behind the nose. NOT a front view, NOT a three-quarter turn.",
+  cu: "POSE: head square to the camera, face level, both eyes to the lens.",
+  full_body: "POSE: standing straight, head-to-toe in frame, body square to the camera, arms relaxed at the sides.",
+};
+
+function poseDirective(kind: string): string {
+  return POSE_DIRECTIVES[kind] ?? `Pose / framing: ${kind}.`;
+}
+
 function assertSafeImageUrl(url: string): void {
   let parsed: URL;
   try {
@@ -140,7 +161,7 @@ export function createOpenRouterImages(): ImageEngine {
           HUMAN_EYE_CLAUSE,
           `Character: ${input.characterName}.`,
           input.description,
-          `Pose / framing: ${input.kind}.`,
+          poseDirective(input.kind),
           MODEST_DRESS_RULE,
           "Fictional adult. Do not copy a public figure. Single subject. ONE person only. Same wardrobe as described.",
           "Canonical pack style: a plain warm-grey wall extending edge to edge, softly and evenly illuminated by daylight from outside the frame, with natural contrast and skin tone.",
@@ -216,7 +237,8 @@ export function createOpenRouterImages(): ImageEngine {
             : "Keep the same face, hair, age, and wardrobe as the reference photo. No costume change.",
           `Character: ${input.characterName}.`,
           input.description,
-          `Pose / framing: ${input.kind}.`,
+          poseDirective(input.kind),
+          "The references fix identity, wardrobe, lighting and colour only. They do NOT fix the head angle: turn the head as the POSE line says, even though the reference faces the camera.",
           MODEST_DRESS_RULE,
           "Adult only. Do not copy a public figure. Single subject. Background is clean and empty.",
           "No visible studio lamp, LED panel, softbox, light stand, tripod, camera, reflector, cable, backdrop edge, boom, monitor, or production equipment. Lighting equipment stays outside frame.",

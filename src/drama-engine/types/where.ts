@@ -12,9 +12,11 @@
  */
 export const HUMAN_EYE_CLAUSE =
   "HUMAN EYES. Irises are matte and natural, the same everyday colour a person has in a dim room. " +
+  "BOTH EYES ARE THE SAME COLOUR: no heterochromia, no one amber eye beside one blue eye. " +
   "The iris REFLECTS the lamp; it never emits light. FORBIDDEN: a self-lit or glowing iris, a saturated " +
   "neon or contact-lens colour, an iris brighter than the skin, an iris that stays bright when the face " +
-  "is in shadow, bloom or halo around the eye, a ring light in the pupil. In a dark room the eyes go " +
+  "is in shadow, bloom or halo around the eye, a ring light in the pupil, a bright patch of light landing " +
+  "on one eye only. In a dark room the eyes go " +
   "darker with the face — they do not stay lit.";
 
 export const WHERE_RULES =

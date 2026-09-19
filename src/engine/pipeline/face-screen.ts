@@ -11,6 +11,23 @@ export const CAST_LOOK_FACE_MIN_HEIGHT = 0.18;
 export const CAST_LOOK_PLAIN =
   /\b(average|plain|ordinary|tired|unremarkable|nondescript)\b/i;
 
+/**
+ * A lit-up or mismatched iris. The judge kept describing these in its own notes
+ * — "heterochromatic glowing eyes" — while still passing the still, so a pack
+ * locked with LED eyes on a human being. Read as a backstop to the eyes_natural
+ * verdict, because the model volunteers the words even when it answers true.
+ */
+export const CAST_LOOK_EYE_DEFECT =
+  /\b(?:heterochromia|heterochromatic|mismatched eyes?|different colou?red eyes?|one eye is (?:a )?different|neon eyes?|led eyes?|(?:glowing|luminous|self-lit|lit-up|backlit|incandescent) (?:eyes?|iris(?:es)?|pupils?)|(?:eyes?|iris(?:es)?|pupils?) (?:that )?(?:glow|glows|glowing|emit|emits|radiate|radiates))\b/i;
+
+/**
+ * The canonical pack style is "a plain warm-grey wall", so the judge describes
+ * the backdrop as plain on every good still. Read as a plain FACE that rejected
+ * clean stills and burned paid retries, so the backdrop sense is stripped first.
+ */
+const PLAIN_BACKDROP =
+  /\bplain\b(?=(?:\s+[\w-]+){0,2}\s+(?:wall|walls|backdrop|background|surface|room|studio|canvas|grey|gray))/gi;
+
 export function castLookFromFaceBox(box: { width: number; height: number } | null | undefined): string[] {
   if (!box) return ["face_missing"];
   if (box.height < CAST_LOOK_FACE_MIN_HEIGHT) return ["face_too_far"];
@@ -19,7 +36,10 @@ export function castLookFromFaceBox(box: { width: number; height: number } | nul
 
 export function castLookFromNotes(notes: string | null | undefined): string[] {
   if (!notes) return [];
-  return CAST_LOOK_PLAIN.test(notes) ? ["face_plain"] : [];
+  const reasons: string[] = [];
+  if (CAST_LOOK_PLAIN.test(notes.replace(PLAIN_BACKDROP, " "))) reasons.push("face_plain");
+  if (CAST_LOOK_EYE_DEFECT.test(notes)) reasons.push("eyes_unnatural");
+  return reasons;
 }
 
 /**
@@ -29,9 +49,12 @@ export function castLookFromNotes(notes: string | null | undefined): string[] {
 export function screenCastLook(input: {
   faceBox?: { width: number; height: number } | null;
   notes?: string | null;
+  /** Read even for a faithful likeness: a lit iris is wrong on any face. */
+  eyeNotes?: string | null;
   beauty?: boolean | null;
   modest?: boolean | null;
   close?: boolean | null;
+  eyesNatural?: boolean | null;
   checkDistance?: boolean;
 }): CastLookVerdict {
   const reasons: string[] = [];
@@ -40,6 +63,8 @@ export function screenCastLook(input: {
     else if (input.close !== true) reasons.push(...castLookFromFaceBox(input.faceBox));
   }
   reasons.push(...castLookFromNotes(input.notes));
+  if (input.eyeNotes && CAST_LOOK_EYE_DEFECT.test(input.eyeNotes)) reasons.push("eyes_unnatural");
+  if (input.eyesNatural === false) reasons.push("eyes_unnatural");
   if (input.beauty === false) reasons.push("face_plain");
   if (input.modest === false) reasons.push("modest_dress");
   return { pass: reasons.length === 0, reasons: [...new Set(reasons)] };
