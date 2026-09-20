@@ -26,4 +26,10 @@ describe("still pose directives", () => {
   it("tells the anchored path that the reference does not fix the head angle", () => {
     expect(source).toMatch(/do NOT fix the head angle/i);
   });
+
+  it("keeps the single visible iris matte on a turned head", () => {
+    expect(source).toMatch(/TURNED_EYE_RULE/);
+    expect(source).toMatch(/kind === "profile" \|\| kind === "three_quarter"/);
+    expect(source).toMatch(/DARKER than the lit skin/);
+  });
 });

@@ -37,8 +37,20 @@ const POSE_DIRECTIVES: Record<string, string> = {
   full_body: "POSE: standing straight, head-to-toe in frame, body square to the camera, arms relaxed at the sides.",
 };
 
+/**
+ * A turned head shows the iris edge-on, and the model reads that as licence to
+ * light it: ten paid attempts on one profile were rejected for a single eye
+ * glowing orange-gold brighter than the lit skin, while the same character's
+ * front and three-quarter passed first time. The generic eye clause was not
+ * enough where the eye is the only one in frame.
+ */
+const TURNED_EYE_RULE =
+  "The visible eye is seen edge-on and sits in the shadow of the brow: its iris is dark, matte and DARKER than the lit skin. " +
+  "It is never a bright disc, never catches the lamp, never glows orange, gold, teal or blue.";
+
 function poseDirective(kind: string): string {
-  return POSE_DIRECTIVES[kind] ?? `Pose / framing: ${kind}.`;
+  const pose = POSE_DIRECTIVES[kind] ?? `Pose / framing: ${kind}.`;
+  return kind === "profile" || kind === "three_quarter" ? `${pose} ${TURNED_EYE_RULE}` : pose;
 }
 
 function assertSafeImageUrl(url: string): void {
