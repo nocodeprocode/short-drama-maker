@@ -1,4 +1,5 @@
 import type { Service } from "./productions.ts";
+import { castAppearance, inferGenderFromText, type CastAppearance } from "../../../src/drama-engine/craft/appearance.ts";
 import {
   isStoryDevice,
   JOB_LABELS,
@@ -100,18 +101,24 @@ export function asJob(value: unknown): CharacterJob | null {
 export function inferSlotGender(slot: CastSlotRow): SlateGender | null {
   const fromCol = parseSlateGender(slot.suggested_gender);
   if (fromCol) return fromCol;
-  const hay = `${slot.role_note ?? ""} ${slot.archetype ?? ""} ${slot.role_name ?? ""} ${slot.suggested_name ?? ""}`.toLowerCase();
-  const woman = /\b(woman|female|girl|lady|wife|mother|sister|daughter|she|her|luna|omega|bride|maid)\b/.test(hay);
-  const man = /\b(man|male|boy|gentleman|husband|father|brother|son|he|him|his|alpha|don|prince)\b/.test(hay);
-  if (woman && !man) return "woman";
-  if (man && !woman) return "man";
-  return null;
+  const hay = `${slot.role_note ?? ""} ${slot.archetype ?? ""} ${slot.role_name ?? ""} ${slot.suggested_name ?? ""}`;
+  return inferGenderFromText(hay);
 }
 
-function personLook(name: string, gender: SlateGender, jobLabel: string | null, note: string): string {
-  const who = jobLabel ? `${name}, adult ${gender}, ${jobLabel}` : `${name}, adult ${gender}`;
+function personLook(
+  name: string,
+  gender: SlateGender,
+  jobLabel: string | null,
+  note: string,
+  look: CastAppearance,
+): string {
+  const who = jobLabel ? `${name}, ${look.age_look}, ${jobLabel}` : `${name}, ${look.age_look}`;
   const brief = note.trim();
-  return `${who}. ${brief ? `${brief}. ` : ""}Photoreal adult human. A real person, not an object, document, cartoon, or mascot.`;
+  // The physical traits come before the plot note: the image model reads the
+  // first lines hardest, and what the role does in the story tells it nothing
+  // about the face.
+  const body = [look.ethnicity_notes, look.hair, look.face, look.body].filter(Boolean).join(". ");
+  return `${who}. ${body}. ${brief ? `${brief}. ` : ""}Photoreal adult human. A real person, not an object, document, cartoon, or mascot.`;
 }
 
 /**
@@ -154,7 +161,8 @@ export async function generateMissingFaces(
     const job = asJob(slot.job);
     const jobTag = job ? JOB_LABELS[job] : null;
     const note = String(slot.role_note || "").slice(0, 600);
-    const look = personLook(name, gender, jobTag, note);
+    const appearance = castAppearance({ name, gender, note });
+    const look = personLook(name, gender, jobTag, note, appearance);
     const { data: actor, error } = await supabase
       .from("actors")
       .insert({
@@ -164,14 +172,7 @@ export async function generateMissingFaces(
         tags: normalizeTags([jobTag, gender, "generated"]),
         notes: look.slice(0, 600),
         identity_fidelity: "faithful",
-        appearance_profile: {
-          age_look: "adult",
-          ethnicity_notes: "",
-          hair: "",
-          face: `adult ${gender}`,
-          body: `adult ${gender}`,
-          default_wardrobe: "",
-        },
+        appearance_profile: { ...appearance, default_wardrobe: "" },
       })
       .select("*")
       .single();

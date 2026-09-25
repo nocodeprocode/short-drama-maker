@@ -1,4 +1,5 @@
 import { DOCUMENT_VERSIONS } from "../_shared/access.ts";
+import { castAppearance, fillAppearance, inferGenderFromText } from "../../../src/drama-engine/craft/appearance.ts";
 import { json, requireAccess, serviceClient } from "../_shared/auth.ts";
 import { requireTurnstile } from "../_shared/turnstile.ts";
 import { moderateText } from "../_shared/moderation.ts";
@@ -512,7 +513,23 @@ Deno.serve(async (req) => {
           tags: normalizeTags(body.tags),
           notes: description.slice(0, 600),
           identity_fidelity: body.identity_fidelity === "idealized" ? "idealized" : "faithful",
-          appearance_profile: { default_wardrobe: "", description },
+          // A generated face is drawn from this text alone, so a thin note left
+          // the model to invent the person and it always invented the same one.
+          // A photo brings its own identity and needs no invented traits.
+          appearance_profile: seed
+            ? { default_wardrobe: "", description }
+            : {
+                default_wardrobe: "",
+                description,
+                ...fillAppearance(
+                  description,
+                  castAppearance({
+                    name,
+                    gender: inferGenderFromText(`${name} ${description}`),
+                    note: description,
+                  }),
+                ),
+              },
         })
         .select("*")
         .single();

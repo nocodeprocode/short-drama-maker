@@ -169,10 +169,14 @@ export function createOpenRouterImages(): ImageEngine {
             ? "Photorealistic vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. Face fills the frame, cropped at the chest. No wide-angle distortion."
             : "Photorealistic vertical 9:16 HEAD-TO-TOE full-body portrait. Eye-level camera at chest height, 70mm portrait-lens perspective. Straight horizon. NO overhead angle, NO high angle, NO fisheye, NO wide-angle distortion.",
           // create-engine/face-screen rejects a NEW still that fails CAST_LOOK; old locked PNGs are not recut.
-          "Short-drama lead: strikingly beautiful adult, camera-ready, the kind of face a viewer pauses for. Clear skin, defined features, catchlight in the eyes. Flattering, not tired, not plain.",
+          "Short-drama lead: a strikingly beautiful, camera-ready adult, the kind of face a viewer pauses for. Clear skin, catchlight in the eyes. Flattering, not tired, not plain.",
           HUMAN_EYE_CLAUSE,
           `Character: ${input.characterName}.`,
           input.description,
+          // Beauty was the only strong instruction in this prompt, so with a
+          // vague character note the model drew its own idea of a beautiful
+          // adult and every generated character came out the same person.
+          "IDENTITY IS BINDING: the age, heritage, skin tone, hair, face shape, eye colour, distinguishing mark and build named above are this person's real features and must all be visible in the picture. Draw THIS specific human. Do not substitute a default handsome or pretty model face, do not lighten or neutralise the described skin tone, and do not average the features towards a generic look. Two characters from the same story must be recognisably different people.",
           poseDirective(input.kind),
           MODEST_DRESS_RULE,
           "Fictional adult. Do not copy a public figure. Single subject. ONE person only. Same wardrobe as described.",

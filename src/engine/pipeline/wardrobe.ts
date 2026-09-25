@@ -78,12 +78,14 @@ export function stillRefEntries(visual: Record<string, unknown> | null | undefin
 export function appearanceDescription(input: {
   description?: string;
   age_look?: string;
+  /** Skin tone and heritage. Omitted here, every face came back the same face. */
+  ethnicity_notes?: string;
   hair?: string;
   face?: string;
   body?: string;
   default_wardrobe?: string;
 }): string {
-  return [input.description, input.age_look, input.hair, input.face, input.body, input.default_wardrobe]
+  return [input.description, input.age_look, input.ethnicity_notes, input.hair, input.face, input.body, input.default_wardrobe]
     .map((part) => stripPowerLanguage(part).trim())
     .filter((part): part is string => Boolean(part))
     .join(". ");
