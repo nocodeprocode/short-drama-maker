@@ -33,7 +33,9 @@ export function stillRetryNote(message: string | null | undefined): string {
     lines.push("the last attempt read as plain or tired. Make the face strikingly beautiful and camera-ready.");
   }
   if (/modest_dress/i.test(reasons)) {
-    lines.push("the last attempt was underdressed. Opaque cloth to the throat, or a closed jacket over a buttoned shirt.");
+    lines.push(
+      "the last attempt was underdressed: an open jacket over bare skin. Put a buttoned shirt UNDER the jacket, fastened to the collarbone. No bare chest, no bare sternum, no plunging neckline.",
+    );
   }
   if (lines.length === 0) return "";
   return `RETRY CORRECTION: ${lines.join(" Also, ")}`;

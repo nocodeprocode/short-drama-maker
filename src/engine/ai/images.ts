@@ -48,6 +48,15 @@ const TURNED_EYE_RULE =
   "The visible eye is seen edge-on and sits in the shadow of the brow: its iris is dark, matte and DARKER than the lit skin. " +
   "It is never a bright disc, never catches the lamp, never glows orange, gold, teal or blue.";
 
+/**
+ * "Cropped at the chest" was read as a suggestion: one front came back as a
+ * fashion mid-shot to the hips, with the head filling a fifth of the frame.
+ * Say where the bottom edge lands and what must not be in shot.
+ */
+const TIGHT_CROP_RULE =
+  "The head fills at least a third of the frame height and the BOTTOM EDGE OF THE PICTURE CUTS ACROSS THE CHEST. " +
+  "No waist, no hips, no hands, no full jacket in shot. Not a fashion or lookbook mid-shot. No wide-angle distortion.";
+
 function poseDirective(kind: string): string {
   const pose = POSE_DIRECTIVES[kind] ?? `Pose / framing: ${kind}.`;
   return kind === "profile" || kind === "three_quarter" ? `${pose} ${TURNED_EYE_RULE}` : pose;
@@ -166,7 +175,7 @@ export function createOpenRouterImages(): ImageEngine {
       return requestImage(
         [
           tight
-            ? "Photorealistic vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. Face fills the frame, cropped at the chest. No wide-angle distortion."
+            ? `Photorealistic vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. ${TIGHT_CROP_RULE}`
             : "Photorealistic vertical 9:16 HEAD-TO-TOE full-body portrait. Eye-level camera at chest height, 70mm portrait-lens perspective. Straight horizon. NO overhead angle, NO high angle, NO fisheye, NO wide-angle distortion.",
           // create-engine/face-screen rejects a NEW still that fails CAST_LOOK; old locked PNGs are not recut.
           "Short-drama lead: a strikingly beautiful, camera-ready adult, the kind of face a viewer pauses for. Clear skin, catchlight in the eyes. Flattering, not tired, not plain.",
@@ -234,7 +243,7 @@ export function createOpenRouterImages(): ImageEngine {
       return requestImage(
         [
           tight
-            ? "Tight vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. Face fills the frame, cropped at the chest. No wide-angle distortion."
+            ? `Tight vertical 9:16 HEAD-AND-SHOULDERS portrait at eye level, 85mm portrait-lens perspective. ${TIGHT_CROP_RULE}`
             : "Vertical 9:16 HEAD-TO-TOE full-body portrait. Eye-level camera at chest height, 70mm portrait-lens perspective. Straight horizon. NO overhead angle, NO high angle, NO fisheye, NO wide-angle distortion.",
           "Reference image 1 is the IDENTITY AND COMPLEXION SOURCE. Preserve this exact person and natural skin tone.",
           "Use only the person's face, hair, complexion, and body identity from reference 1. Its room, background, camera angle, lighting fixtures, and photographic setup are contamination: do not copy or reproduce them.",

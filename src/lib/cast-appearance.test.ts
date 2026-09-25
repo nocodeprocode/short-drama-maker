@@ -137,6 +137,28 @@ describe("still prompt", () => {
     expect(source).toMatch(/Do not substitute a default handsome or pretty model face/);
     expect(source).toMatch(/recognisably different people/);
   });
+
+  it("says where a tight crop ends, on both the text and anchored paths", () => {
+    expect(source).toMatch(/BOTTOM EDGE OF THE PICTURE CUTS ACROSS THE CHEST/);
+    expect(source).toMatch(/Not a fashion or lookbook mid-shot/);
+    expect((source.match(/\$\{TIGHT_CROP_RULE\}/g) ?? []).length).toBe(2);
+  });
+});
+
+describe("cast look gate", () => {
+  const rubric = readFileSync(new URL("../engine/ai/vision.ts", import.meta.url), "utf8");
+
+  it("refuses a mid-shot as close, whatever the eyes read like", () => {
+    expect(rubric).toMatch(/a third of the frame height/);
+    expect(rubric).toMatch(/reaches the waist, the hips/);
+  });
+
+  it("refuses an open jacket over bare skin as modest", () => {
+    expect(rubric).toMatch(/covered to the collarbone/);
+    expect(rubric).toMatch(/over bare skin with no garment beneath/);
+    const modesty = readFileSync(new URL("../engine/ai/modesty.ts", import.meta.url), "utf8");
+    expect(modesty).toMatch(/never over bare skin/);
+  });
 });
 
 describe("generated actor creation", () => {
